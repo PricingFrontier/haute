@@ -15,8 +15,9 @@ vi.mock("../../api/app", () => ({
   fetchAppQuotes: vi.fn(),
   fetchAppPeople: vi.fn(),
   openAppQuote: vi.fn(),
+  editAppQuote: vi.fn(async () => ({ editor: "ana@example.com", lease_seconds: 180 })),
+  releaseAppQuote: vi.fn(async () => {}),
   createAppQuote: vi.fn(),
-  watchQuotesClosed: vi.fn(),
 }))
 
 import { fetchAppForm, fetchAppPeople, fetchAppQuotes, fetchAppRelease, openAppQuote, priceAppQuote } from "../../api/app"
@@ -27,11 +28,11 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { detailsTable, sheetForm, stubLayout } from "../../workbench/__tests__/fixtures"
-import { keepCreation, keptCreationKey } from "../quoteValues"
+import { keepCreation, keptCreationKey, QUOTES_RECHECK_MS } from "../quoteValues"
 import { navigate } from "../route"
-import UnderwriterApp, { QUOTES_RECHECK_MS } from "../UnderwriterApp"
+import UnderwriterApp from "../UnderwriterApp"
 import useNewQuoteStore from "../useNewQuoteStore"
-import { answer, CLOSED, OPEN } from "./fixtures"
+import { answer, CLOSED, MISFIT, OPEN, storeRefusal } from "./fixtures"
 
 const release: WorkbenchAppReleaseResponse = {
   id: "0a1b2c3d4e5f",
@@ -44,6 +45,7 @@ const release: WorkbenchAppReleaseResponse = {
   quotes: CLOSED,
   edit_role: null,
   can_edit: true,
+  environment: "test",
 }
 
 async function opened() {
@@ -152,28 +154,34 @@ describe("UnderwriterApp", () => {
     expect(priced).toMatchObject({ tables: { premiums: [{ item: "Crane", premium: 120 }] }, sample: { policy: { state: "NY" } } })
   })
 
-  it("opens no quote while its quotes are closed, saying why, and opens them once the release says so", async () => {
+  it("opens the Quotes page whatever its store holds, the list naming what does not fit until it is read", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
-      vi.mocked(fetchAppQuotes).mockResolvedValue({ quotes: [], next_cursor: null, counts: {} })
+      // The whole store does not fit, as the release says, and the list's own tables do not.
+      vi.mocked(fetchAppQuotes).mockRejectedValueOnce(storeRefusal(MISFIT)).mockResolvedValue({ quotes: [], next_cursor: null, counts: {} })
       vi.mocked(fetchAppPeople).mockResolvedValue({ people: [] })
-      await navigate("/quotes/new", { force: true })
+      await navigate("/", { force: true })
       await opened()
 
-      expect(screen.getByTestId("notice-quotes-closed")).toHaveTextContent(`Quotes are unavailable: ${CLOSED.message}`)
-      expect(screen.queryByTestId("quotes-page")).toBeNull()
-      expect(screen.queryByTestId("new-quote-window")).toBeNull()
-      // Asked for again as the quotes close, and on the bound after.
-      await vi.waitFor(() => expect(vi.mocked(fetchAppRelease).mock.calls.length).toBeGreaterThanOrEqual(2))
-      const asked = vi.mocked(fetchAppRelease).mock.calls.length
+      expect(await screen.findByTestId("quotes-page")).toBeInTheDocument()
+      const said = await screen.findByTestId("quotes-error")
+      expect(said.textContent).toBe(
+        [
+          "The quotes could not be read: The dev database doesn't match the form:",
+          "  policy",
+          "    State (state) is missing",
+        ].join("\n"),
+      )
+      expect(screen.queryByTestId("notice-quotes-closed")).toBeNull()
+      expect(fetchAppQuotes).toHaveBeenCalledTimes(1)
 
-      // Asked for again on the bound, the quotes open once the release says they are.
-      vi.mocked(fetchAppRelease).mockResolvedValue({ ...release, quotes: OPEN })
+      // Asked for again on the store's bound, the list is read once the tables fit.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(QUOTES_RECHECK_MS)
       })
-      await vi.waitFor(() => expect(vi.mocked(fetchAppRelease).mock.calls.length).toBeGreaterThan(asked))
-      expect(await screen.findByTestId("quotes-page")).toBeInTheDocument()
+      expect(await screen.findByTestId("quotes-empty")).toBeInTheDocument()
+      expect(fetchAppQuotes).toHaveBeenCalledTimes(2)
+      expect(release.quotes).toEqual(CLOSED)
     } finally {
       vi.useRealTimers()
       await navigate("/", { force: true })

@@ -184,6 +184,10 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
         "OUTPUT",
         "the Quote Response dry-run route",
     ),
+    ("deploy/_schema.py", "workbench_output_schema"): (
+        "WORKBENCH_OUTPUT",
+        "the Workbench Output's response schema, read from its tables with nothing priced",
+    ),
     ("routes/input_cache.py", "_safe_config"): (
         "DATA_INPUT",
         "the input-cache routes' Data Input source config",

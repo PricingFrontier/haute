@@ -345,6 +345,12 @@ one:
   optional description under it saying what the section is for, aligned left, centre or
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
+- A **Text Box** is a box the underwriter types free text into, such as their comments,
+  over as many lines as they like. It holds one Text column of a one-row table, shown as
+  the column's label over the box; what is typed is that column's value, saved and stored
+  as any input's, so the comment reaches the quote store with the rest of the quote. Add
+  the column to the schema first (a Text input, such as `uw_comments`), then choose it in
+  the Text Box's **Field**.
 - An **Import** is a button that fills an input table from a CSV or an Excel workbook the
   underwriter picks, from a database, or from an API.
 - An **Export** is a button that takes the quote's tables out to a CSV or an Excel
@@ -416,7 +422,8 @@ and a spacer's cross removes it. A
 Table's and a Collection's properties are in two
 panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
 shows, its layout and its look. A Heading's properties are its **Text** and
-**Description**, when it shows, its **Size** and its **Align**ment.
+**Description**, when it shows, its **Size** and its **Align**ment. A Text Box's are its
+**Field**, a Text input of a one-row table, and when it shows.
 
 An Import's and an Export's properties are in the same two panes: **Display** holds its
 **Label**, the text on the button, and when it shows; **Config** starts with its
@@ -456,16 +463,33 @@ a sheet per table.
   **Headers** (the columns' names or labels) and **Values** (raw, or formatted as the
   sheets show them), and a CSV a **Delimiter**.
 - An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
-  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
-  row is a field of a one-row table, the **Sheet** it goes on, the **Cell** it goes in,
-  such as `B3`, and the **Label cell** its label goes in, such as `A3`, or blank for no
-  label. The label is the one the schema gives the field. Pick a field under **Add a cell**
-  to add one, which goes on the last row's sheet in the cell below it, its label below the
-  last row's label. A field can go in more than one cell, but a cell holds one field or one
-  label. Sheets are made in the order the rows first name them. Each cell holds the
-  field's value as the sheets hold it: numbers stay numbers in the field's number format,
-  dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
-  `=`. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
+  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, fields
+  are grouped by the workbook's sheets: **Add a sheet** adds one, named `Sheet2` and so on
+  until you rename it in its header, and each sheet opens and closes, so a long export stays
+  easy to move around. Under a sheet, each row is a field of a one-row table, numbered, with
+  where it goes beside it, such as `B3`. Its settings button opens its **Field**, the
+  **Cell** it goes in, such as `B3`, and where its **Label** goes: **None**, **Above**,
+  **Under**, **Left** or **Right** of the cell, or **Custom**, which shows **Label cell**
+  for an address of your own, such as `A3`. A label above, under, left or right moves with
+  the cell when you change the cell's address. The label is the one the schema gives the
+  field, and **Remove cell** at the foot of the settings takes the row away once you
+  confirm. Drag a row by its grip, or use Alt+Up and Alt+Down, to change the order or move
+  it to another sheet: past a sheet's first or last row it goes into the sheet before or
+  after. Under a sheet's **Add a cell**, type to search the fields by
+  `table.column` or label, and pick one to add it in the cell below the sheet's last row, its label
+  below that row's label. A sheet with no rows isn't saved. When two things would land in
+  one place (two cells, a cell and a label, or a table running over a cell or another
+  table), **Clashes** at the foot of the pane says what clashes and where, and the sheet
+  it's on is marked. A field can go in more than one cell, but a cell holds one field or
+  one label. Sheets are made in the order shown. Each cell holds the
+  field's value as the sheets hold it: numbers stay numbers, in the field's number format
+  while **Values** is **Formatted**, or plain while it is **Raw** (10000 rather than
+  US$10,000, for a system that reads the workbook), dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
+  `=`. Under a True/false field, **True/False** chooses what its tick writes instead:
+  **X / blank**, **blank / X** (an X when the box is not ticked, for a "not provided" box),
+  **Yes / No**, or **Custom**, a **True** and a **False** text of your own. A box that is
+  empty, such as one on a hidden cover, writes the False text. A blank text leaves the cell
+  empty. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
   written as its digits, as text, so none is lost. A field that holds nothing, or that only the underwriter app sets, leaves its cell
   empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
   name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
@@ -473,7 +497,8 @@ a sheet per table.
   quote. Pick a table under **Add a table**: it goes at `A1` of a sheet named after it.
   Set its **Sheet**, its **Cell**, the top-left corner it starts from, and its
   **Header**: the columns' **Labels**, their **Names**, or **None**, which starts the rows
-  at that cell. Pick its columns under **Add a column**, the index among them, and drag
+  at that cell. A table with a True/false column has a **True/False** too, as a cell's,
+  for every True/false column it writes. Pick its columns under **Add a column**, the index among them, and drag
   them, or use Alt+Up and Alt+Down, into the order they go in, left to right. A table of
   many rows writes the rows the quote has (a table with a row for each value, every
   value's row), each output beside the inputs of its row; a one-row table writes its one
@@ -503,7 +528,8 @@ sheet's first), where the original sat, moved down and right past one already th
 selected so you can drag it into place; a column deleted from the schema since you copied
 it is left out of the copy, but for an Export of cells, which keeps it as a problem. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
-Heading with no text, a column no longer in the schema, a table of the other kind, a
+Heading with no text, a Text Box with no field or one that is not a Text input of a
+one-row table, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is a numbered index, tables whose rows do not line up, a pie
 of many rows with more than one field, an Import or an Export with no label or missing
 what its format needs — gets a dashed frame that names the problem. Tab,
@@ -827,12 +853,16 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 - `haute app serve` builds the app from the project as it is saved and serves it at
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
-  the Quotes page as underwriters will before you merge. Only your machine can reach it, at
+  the Quotes page as underwriters will before you merge. It doesn't price your test quotes
+  or check the pipeline as `haute app build` does, so it opens even while those checks would
+  fail; CI's build still runs them. Only your machine can reach it, at
   `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
   quotes you save there are kept in the `dev` environment's database (below), reached through
   its connection in `connections.toml`; the app checks its tables as the hosted app checks
-  its own, so after a change to your schema its quotes stay closed, naming what differs,
-  until you run the schema's SQL on `dev`. `haute app serve --reader` signs you in as an
+  its own. The app always opens, but after a change to your schema a quote can't be opened,
+  made, priced or saved until you run the schema's SQL on `dev`: it lists each field the
+  database is missing or holds wrongly, by its label and column, under its table. The Quotes
+  page lists your quotes as long as `quote_details` fits. `haute app serve --reader` signs you in as an
   underwriter who may only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
@@ -981,7 +1011,7 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
   | What | Why |
   |---|---|
-  | A database user for the app's sign-in, allowed to read, insert and change `quote_details`, to read, insert and delete in the form's other tables, and to read and insert in `haute_activity` | the app checks each as it starts, and keeps its quotes closed, naming each it lacks, until it has them |
+  | A database user for the app's sign-in, allowed to read, insert and change `quote_details`, to read, insert and delete in the form's other tables, and to read and insert in `haute_activity` | the app checks each as it starts, and refuses whatever needs one it lacks, naming each, until it has them |
   | A way through from the app to the server: on Azure SQL, a private endpoint the Container Apps environment's network reaches, or a firewall rule for the environment's outbound address | the server refuses an address it has not been told of |
 
   On Azure SQL, the user for a Container App's system-assigned managed identity takes the
@@ -1053,15 +1083,36 @@ builder on screen. With a quote store it is where they manage their quotes too.
   Field statuses open the corresponding database details. For a field the database lacks,
   **Renamed from** names the database column that held its values under an old name, so
   the comparison checks that column as the field's; it moves no data. **Database changes** lists
-  missing columns grouped by table and labels missing tables **New table**. Its heading
-  counts the additions. **No additions** means all schema names are present; existing
-  types, keys or other details can still differ. The fetch time is in **Refresh**'s tooltip.
+  missing columns, type changes and key changes grouped by table, labels missing tables
+  **New table**, type changes **Type change**, a key column renamed for its index **Rename**
+  and a table given a new key **Key change**. Its heading counts them. **No additions** means all schema
+  names are present and no column needs converting; keys, the type of an index or of a
+  quote_details column, or other details can still differ. The fetch time is in **Refresh**'s tooltip.
 - **Export SQL**, beside **Refresh**, opens the query for the selected database and your
   current working schema, including unsaved edits. Use **Copy SQL** or **Download SQL**.
-  The script creates new tables and columns only. A renamed field becomes a new, empty
-  column; the old column and its values stay intact, even if you chose it in
-  **Renamed from**. Existing column types and keys are unchanged. Data transfers, type/key
-  changes and removal of old names are manual work for the database owner.
+  The script creates new tables and columns, and changes a column the database holds under
+  the field's name to the field's type, converting each value as it stands. That works on
+  SQL Server and PostgreSQL. SQLite cannot change a column's type, so there the script says
+  how to rebuild the column instead. The script runs as one transaction: if a value cannot
+  convert (`n/a` in a column becoming Integer), it stops and nothing changes, additions
+  included. A renamed field becomes a new, empty column of its type; the old column and its
+  values stay intact, even if you chose it in **Renamed from**.
+
+  A many-row table's index is its rows' key, and Haute knows it by its place in the
+  table's primary key, whatever it is called. If you rename the index, the script renames
+  the key column to match, keeping its values and the key. A table made by a Haute from
+  before 5 November 2026 is keyed by Haute's own row number, `quote_row`, with the index
+  in a column beside it. The script makes that column the key instead. A numbered index
+  takes `quote_row`'s number; that store never wrote one, so its column is empty. If a
+  numbered index's column already holds values, its key isn't moved. The index's type is converted, and the
+  primary key is dropped and made again on the index. `quote_row` stays, allowing blanks,
+  with its `DROP` left commented out. If an index value is missing or appears twice in a
+  quote, the script stops and nothing changes. SQLite cannot change a table's key, so there
+  the script says how to rebuild the table instead.
+
+  quote_details' types, the type of an index whose name is new, and other keys are
+  unchanged. Data transfers, those changes and removal of old names are manual work for the
+  database owner.
   The SQL adds missing columns even when existing keys or row structure differ. If a
   name cannot be added, its specific reason appears in the list and SQL comments;
   other valid additions can still be exported. Have the database owner review and run the script, then
@@ -1076,8 +1127,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   primary key, unique key or foreign key other than the one the schema's SQL makes, a
   permission the app's identity lacks, a database it cannot reach, or no environment named.
   A column holding more than the schema's SQL makes, a key or index named otherwise and a
-  missing index that is not unique are fine. It checks again at most every 10
-  seconds, so once the tables are put right the quotes open with no restart. The app's
+  missing index that is not unique are fine. Each part of the app checks only the tables it
+  uses: the Quotes page's list needs `quote_details`, and a quote needs every table. It
+  checks again at most every 10 seconds, so once the tables are put right quotes open with
+  no restart. The app's
   identity needs to read, insert, update and delete in the form's tables and to read and
   insert in haute_activity.
 - The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
@@ -1147,18 +1200,24 @@ its insured, broker and inception date under the labels the sheets give them, re
 quote details. Search matches every word you type against the reference, however its
 letters are cased, the quote name, insured and broker, and `ABC-1/2` finds that option
 alone; in Team you can narrow the list to who a quote is with, and order it by when it was
-saved, by **Reference** (A to Z, each reference's options in order) or by its insured. The
+saved, by **Quote reference** (A to Z, each reference's options in order) or by its
+insured. The list names the quote details' columns as the schema does, by their labels. The
 list, the search and the order are in the page's address, so a link or Back returns to the
-same list. A row opens its quote. Hover over it, or move to it with `Tab`, and its **⋯**
-menu holds what you do to the quote as a whole:
+same list. Each row has **Read**, which opens the quote to look at it, changing nothing,
+**Edit**, which opens it to work on it, and a **⋯** menu holding what you do to the quote as
+a whole; clicking the row itself opens nothing. One person edits a quote at a time: **Edit**
+on a quote someone else is editing says who, and **Read** still opens it. A quote is free
+again as its editor leaves it, or a few minutes after their page closes:
 
 - **Duplicate** and **Renew** open the New quote window over the list, filled from the
-  quote as it is saved, with the reference blank and, for a renewal, **is_renewal** ticked:
-  key the new reference and **Create**.
-- **Create alternative** makes a new option under the same reference at once
-  (`ABC-1/2` from `ABC-1/1`) and opens it.
+  quote as it is saved, its name included, with the reference blank and, for a renewal,
+  **is_renewal** ticked: key the new reference and **Create**.
+- **Create alternative** opens the window too, filled from the quote with its reference
+  already in place: **Create** makes a new option under that reference (`ABC-1/2` from
+  `ABC-1/1`) and opens it.
 - **Archive** takes the quote out of the lists (it opens read only until restored), and can
-  be undone from the message it shows; in **Archived**, **Restore** brings it back.
+  be undone from the message it shows; in **Archived**, **Restore** brings it back. An archived quote opened says so, and is
+  restored from this menu only.
 - **Copy link** copies the quote's address.
 
 A quote made from another is linked to it. `/` jumps to the search.
@@ -1169,7 +1228,8 @@ dates and whether it is a renewal, labelled and checked as on the sheets, starti
 columns' defaults. The reference is up to 40 characters, without `/`, which the app puts
 before the option, and is not `.` or `..`. It is kept as you key it, so `ABC-1` and `abc-1`
 are two references; a reference already in use is refused, naming the quote that holds it,
-with **Open it**. A detail the analyst made required can be left empty here: the quote asks
+with **Open it**. The quote's name must be keyed too, as it can't be changed once the quote
+is made. Any other detail the analyst made required can be left empty here: the quote asks
 for it as it is marked final. **Create** makes the quote, a **Draft** holding what you
 keyed, and opens it; one left with nothing more typed stays a
 **Draft** until archived. **Cancel** or `Escape` closes the window and makes nothing. If the
@@ -1178,8 +1238,15 @@ exactly what it sent, and keeps it if you close it: the app offers it back, with
 again** or **Discard**, the next time it opens in that tab, so a quote is never made twice.
 
 ### A quote
-A quote opens at its own address, under a bar holding its reference and option
-(`ABC-1/2`), its name (its `quote_name`, saved with the next **Save**), its stage, and:
+A quote opens at its own address, read only from **Read** (with **Edit** in its bar) or
+held as yours from **Edit**; a new quote opens to edit. While you edit it, nobody else can
+save or change it; if your page stops renewing its hold, say after the laptop slept, and
+someone else starts editing, your page turns read only, naming them, and keeps what you
+typed in the browser. The app keeps these holds in its memory, so a restart frees every
+quote. If someone else is editing it, **Try again** takes it once they have left.
+**← Quotes** returns to the list as you left it. The bar holds its reference and option
+(`ABC-1/2`), its name (its `quote_name`, given in the New quote window and never changed
+after: a `quote_name` cell on the sheets is read only), its stage, and:
 
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again

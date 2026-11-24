@@ -1,15 +1,17 @@
-"""The underwriter app's quote store as it stands (specs/workbench): open, or closed naming why,
-checked again on a bound until its tables fit.
+"""The underwriter app's quote store as it stands (specs/workbench): each use of it open while
+the tables it uses fit, refused naming why otherwise, checked again on a bound.
 
 The app starts whatever its store holds. :class:`StoreGate` opens the book through its opener,
-``open_book`` for the store's location, as a request first needs it, and, while it cannot,
-keeps the refusal: a database whose catalogue does not hold the release's form's tables, a
-sign-in lacking a privilege the store needs, a database it cannot reach, a location that cannot
-be resolved, or no environment named. Each request in the next :data:`RECHECK_SECONDS` is
-refused with it, and the first after them checks again, so tables put right in SQL open the
-quotes with no restart and no new image. Nothing here answers a request: a route turns a
-:class:`QuoteStoreClosedError` into its 503, from :attr:`QuoteStoreClosedError.detail`. The
-store's modules are imported only as the gate checks, so an app with no store loads none.
+``open_book`` for the store's location, as a request first needs it. A book opens on whatever
+the database holds, naming each table, column or privilege that does not fit the release's
+form, and each use is refused only for those it needs (:meth:`QuoteBook.unfit`): the Quotes
+page's list reads ``quote_details`` alone, and a quote every table. A database the gate cannot
+reach, a location that cannot be resolved, or no environment named refuse every use. Each
+request in the next :data:`RECHECK_SECONDS` is refused with the last check's answer, and the
+first after them checks again, so tables put right in SQL are used with no restart and no new
+image. Nothing here answers a request: a route turns a :class:`QuoteStoreClosedError` into
+its 503, from :attr:`QuoteStoreClosedError.detail`. The store's modules are imported only as
+the gate checks, so an app with no store loads none.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from haute._logging import get_logger
 from haute._workbench_config import ENVIRONMENT_ENV, WorkbenchError
 
 if TYPE_CHECKING:
-    from haute._quote_store import QuoteBook
+    from haute._quote_store import QuoteBook, StoreMisfit, StoreUse
     from haute.schemas import WorkbenchAppQuoteStore
 
 #: How long a closed store's refusal stands before a request checks it again, in seconds.
@@ -40,13 +42,24 @@ logger = get_logger(component="workbench.app.store")
 
 
 class QuoteStoreClosedError(WorkbenchError):
-    """The app's quotes are closed: the refusal's *code*, the message and *differences* say
-    why."""
+    """The store cannot be used as a request asks: the refusal's *code*, the message,
+    *differences* and, for tables that do not fit, *misfits*, each by its table, its column and
+    what is wrong, of *environment*'s database, say why."""
 
-    def __init__(self, message: str, *, code: str, differences: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        differences: Sequence[str] = (),
+        misfits: Sequence[StoreMisfit] = (),
+        environment: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.differences = list(differences)
+        self.misfits = tuple(misfits)
+        self.environment = environment
 
     @property
     def detail(self) -> dict[str, Any]:
@@ -55,6 +68,11 @@ class QuoteStoreClosedError(WorkbenchError):
             "message": self.message,
             "error_code": self.code,
             "differences": self.differences,
+            "misfits": [
+                {"table": misfit.table, "column": misfit.column, "problem": misfit.problem}
+                for misfit in self.misfits
+            ],
+            "environment": self.environment,
         }
 
 
@@ -87,7 +105,16 @@ def _closed_by(exc: BaseException) -> QuoteStoreClosedError | None:
         exc.message or str(exc),
         code=exc.error_code or "quote_store_invalid",
         differences=getattr(exc, "differences", ()),
+        misfits=getattr(exc, "misfits", ()),
+        environment=getattr(exc, "environment", None),
     )
+
+
+def _refusal_for(book: QuoteBook, use: StoreUse) -> QuoteStoreClosedError | None:
+    """The refusal of *use* on *book*, naming what of its database does not fit the use; None
+    when it fits."""
+    mismatch = book.mismatch(use)
+    return None if mismatch is None else _closed_by(mismatch)
 
 
 def no_environment() -> QuoteBook:
@@ -96,9 +123,10 @@ def no_environment() -> QuoteBook:
 
 
 class StoreGate:
-    """The app's quote store: the book *opener* opens while its database fits, else the
-    refusal that closed it, checked again at most once every :data:`RECHECK_SECONDS` on
-    *clock*, one check at a time."""
+    """The app's quote store: the book *opener* opens, each use given it while the tables that
+    use needs fit, else the refusal naming why; a store that cannot be used, or does not fit a
+    use, checked again at most once every :data:`RECHECK_SECONDS` on *clock*, one check at a
+    time."""
 
     def __init__(
         self,
@@ -112,36 +140,50 @@ class StoreGate:
         self._book: QuoteBook | None = None
         self._refusal: QuoteStoreClosedError | None = None
         self._due = 0.0
+        # Whether the last check found anything wrong: the store not used, or a misfit.
+        self._wrong = False
 
-    def book(self) -> QuoteBook:
-        """The open book; :class:`QuoteStoreClosedError` while the quotes are closed, the last
-        check's refusal until the bound has passed, a fresh check's after."""
+    def book(self, use: StoreUse = "quote") -> QuoteBook:
+        """The open book for *use*; :class:`QuoteStoreClosedError` while it cannot be used for
+        it: the store not used, or what of its database does not fit *use*, as the last check
+        found until the bound has passed, as a fresh check finds after."""
         opened = self._book
-        if opened is not None:
+        if opened is not None and not opened.unfit(use):
             return opened
         with self._lock:
-            if self._book is not None:
-                return self._book
-            if self._refusal is not None and self._clock() < self._due:
+            held = self._book
+            if held is not None:
+                refusal = _refusal_for(held, use)
+                if refusal is None:
+                    return held
+                if self._clock() < self._due:
+                    raise refusal
+                # Past the bound the tables may have been put right in SQL: checked again.
+                self._shut()
+            elif self._refusal is not None and self._clock() < self._due:
                 raise self._refusal
-            return self._check()
+            return self._fitting(self._check(), use)
 
-    def recheck(self, seen: QuoteBook | None = None) -> QuoteStoreClosedError | None:
+    def recheck(
+        self, seen: QuoteBook | None = None, use: StoreUse = "quote"
+    ) -> QuoteStoreClosedError | None:
         """Check at once, after a statement the database refused or tables seen to have changed
         under the open book *seen*: the book closed and opened again, None while the tables
-        still fit, else the refusal that now closes them. Another request's check since *seen*
-        stands, so one slow check answers them all: a book it opened is kept, and a refusal it
-        closed the quotes with is answered."""
+        *use* needs still fit, else the refusal that now refuses it. Another request's check
+        since *seen* stands, so one slow check answers them all: a book it opened is judged for
+        *use*, and a refusal it found is answered."""
         with self._lock:
             if seen is not None and self._book is not seen:
-                if self._book is not None or self._refusal is not None:
+                if self._book is not None:
+                    return _refusal_for(self._book, use)
+                if self._refusal is not None:
                     return self._refusal
             self._shut()
             try:
-                self._check()
+                book = self._check()
             except QuoteStoreClosedError as refusal:
                 return refusal
-            return None
+            return _refusal_for(book, use)
 
     def unreachable(self) -> None:
         """Close the quotes as a connection that failed under the running app, checked again
@@ -151,11 +193,12 @@ class StoreGate:
             self._close(QuoteStoreClosedError(UNREACHABLE, code="quote_store_unreachable"))
 
     def state(self) -> WorkbenchAppQuoteStore:
-        """The quotes as the release route answers them, checked as :meth:`book` checks."""
+        """The whole store as the release route answers it, and a rollout checks it: open only
+        while every table and privilege fits, checked as :meth:`book` checks one quote's use."""
         from haute.schemas import WorkbenchAppQuoteStore
 
         try:
-            self.book()
+            self.book("quote")
         except QuoteStoreClosedError as refusal:
             return WorkbenchAppQuoteStore(
                 open=False,
@@ -173,23 +216,40 @@ class StoreGate:
     def _check(self) -> QuoteBook:
         # Under the lock.
         try:
-            self._book = self._opener()
+            book = self._opener()
         except Exception as exc:
-            # A store that does not fit closes the quotes with its refusal; any other
+            # A store that cannot be used refuses every use with its refusal; any other
             # failure is raised on, for the edge to answer.
             refusal = _closed_by(exc)
             if refusal is not None:
                 self._close(refusal)
                 raise refusal from None
             raise
-        if self._refusal is not None:
-            logger.info("quote_store_opened")
+        was_wrong = self._wrong
+        self._book = book
         self._refusal = None
-        return self._book
+        self._wrong = bool(book.misfits)
+        if book.misfits:
+            # The uses its misfits refuse are checked again once the bound has passed.
+            self._due = self._clock() + RECHECK_SECONDS
+            logger.warning(
+                "quote_store_misfits", differences=[misfit.text for misfit in book.misfits]
+            )
+        elif was_wrong:
+            logger.info("quote_store_opened")
+        return book
+
+    @staticmethod
+    def _fitting(book: QuoteBook, use: StoreUse) -> QuoteBook:
+        refusal = _refusal_for(book, use)
+        if refusal is not None:
+            raise refusal
+        return book
 
     def _close(self, refusal: QuoteStoreClosedError) -> None:
         # Under the lock.
         self._refusal = refusal
+        self._wrong = True
         self._due = self._clock() + RECHECK_SECONDS
         logger.warning(
             "quote_store_closed", error_code=refusal.code, differences=refusal.differences

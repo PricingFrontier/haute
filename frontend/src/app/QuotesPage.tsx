@@ -3,9 +3,10 @@
  * lists (My work, Team, Archived) and the stages of the one showing, each with its count;
  * above the list its name, the search, in Team an assignee, the order and New quote, which
  * opens the New quote window over the list as it is; the list itself a table at Haute's
- * density, a page at a time, each row opening its quote and offering, on hover or focus,
- * Open and a menu of what is done to the quote as a whole: Duplicate and Renew (the window
- * again, filled from the quote), Create alternative, Archive or Restore, and Copy link. The
+ * density, a page at a time, each row always offering Read, Edit (for one who may change
+ * quotes, unless someone else is editing it) and a menu of what is done to the quote as a
+ * whole: Duplicate, Renew and Create
+ * alternative (the window again, filled from the quote), Archive or Restore, and Copy link. The
  * list showing is in the page's address.
  */
 import {
@@ -15,7 +16,6 @@ import {
   CircleDashed,
   Copy,
   FileText,
-  FolderOpen,
   GitBranchPlus,
   Link2,
   MoreHorizontal,
@@ -27,20 +27,21 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react"
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react"
+import { useEffect, useRef, useState, type MouseEvent } from "react"
 import { changeAppQuote, type QuotesQuery } from "../api/app"
-import { apiErrorMessage } from "../api/errors"
-import type { WorkbenchAppQuote } from "../api/types"
+import type { FormSpec, WorkbenchAppQuote } from "../api/types"
+import { QUOTE_DETAILS, type QuoteDetailName } from "../utils/workbenchForm"
 import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import { useRequestKind } from "../hooks/useRequestKind"
 import useToastStore from "../stores/useToastStore"
 import { answer, under } from "../utils/answers"
 import { relativeTime } from "../utils/relativeTime"
-import { fullTime, listColumns, listValue } from "./quoteValues"
-import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
-import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, Menu, StageChip, type MenuItem } from "./ui"
+import { appErrorMessage, detailLabel, fullTime, listColumns, listValue, QUOTES_RECHECK_MS } from "./quoteValues"
+import { navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
+import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, Menu, ROW_BUTTON, ROW_FILL_BUTTON, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
+import { editQuote } from "./useOpenQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
 
 const VIEWS: ReadonlyArray<{ view: QuotesQuery["view"]; label: string; icon: LucideIcon; empty: string }> = [
@@ -52,11 +53,13 @@ const STAGES: ReadonlyArray<{ stage: NonNullable<QuotesQuery["stage"]>; label: s
   { stage: "draft", label: "Draft", icon: CircleDashed },
   { stage: "final", label: "Final", icon: BadgeCheck },
 ]
-const SORTS: ReadonlyArray<{ sort: QuotesQuery["sort"]; label: string }> = [
-  { sort: "saved", label: "Newest saved" },
-  { sort: "reference", label: "Reference" },
-  { sort: "insured", label: "Insured" },
+/** The orders, each by the quote_details column it is by, named as the schema names it, or by when saved. */
+const SORTS: ReadonlyArray<{ sort: QuotesQuery["sort"]; by: QuoteDetailName | null }> = [
+  { sort: "saved", by: null },
+  { sort: "reference", by: QUOTE_DETAILS.quote_reference },
+  { sort: "insured", by: QUOTE_DETAILS.insured },
 ]
+const sortLabel = (by: QuoteDetailName | null, form: FormSpec | null): string => (by === null ? "Newest saved" : detailLabel(form, by))
 const SELECT = "focus-ring rounded-md px-1.5 py-1 text-xs"
 const SELECT_STYLE = { border: "1px solid var(--border)", color: "var(--text-primary)" }
 
@@ -96,6 +99,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const counts = useQuoteListStore((s) => s.counts)
   const status = useQuoteListStore((s) => s.status)
   const error = useQuoteListStore((s) => s.error)
+  const storeRefused = useQuoteListStore((s) => s.storeRefused)
+  const refusals = useQuoteListStore((s) => s.refusals)
   const next = useQuoteListStore((s) => s.next)
   const loadingMore = useQuoteListStore((s) => s.loadingMore)
   const load = useQuoteListStore((s) => s.load)
@@ -117,6 +122,15 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   useEffect(() => {
     void load(quotesQueryOf(address.slice(address.indexOf("?") + 1)), true)
   }, [load, address])
+
+  // A list the quote store refused is asked for again on the store's own bound, so tables
+  // put right in SQL list the quotes with no reload; each answer that refuses it again
+  // arms the next (`refusals`), the same refusal as the last among them.
+  useEffect(() => {
+    if (status !== "error" || !storeRefused) return
+    const timer = window.setTimeout(() => void useQuoteListStore.getState().reload(), QUOTES_RECHECK_MS)
+    return () => window.clearTimeout(timer)
+  }, [status, storeRefused, refusals])
 
   // A search reached from the address, by Back or a link, replaces what was typed.
   const [searched, setSearched] = useState(query.search)
@@ -166,12 +180,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             // The list shown when Undo is pressed, which may be another than the one archived from.
             void answer([under(page)], changeAppQuote(archived.reference, archived.option, "restore", archived.version, {}), {
               ok: () => useQuoteListStore.getState().reload(),
-              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`),
+              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
             })
           },
         })
       },
-      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${apiErrorMessage(reason)}`),
+      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
     })
   }
 
@@ -181,7 +195,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
         void useQuoteListStore.getState().reload()
         addToast("success", `Restored ${quote.label}`)
       },
-      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`),
+      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
     })
   }
 
@@ -197,14 +211,13 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   /** What is done to `quote` as a whole, from its row: for one who may only read quotes, Copy link alone. */
   const actions = (quote: WorkbenchAppQuote): MenuItem[] => {
     const from = { reference: quote.reference, option: quote.option }
-    const derive = (relation: "duplicate" | "renewal") => () => void useNewQuoteStore.getState().openDerived({ ...from, relation }, { label: quote.label })
+    const derive = (relation: "duplicate" | "renewal" | "alternative") => () => void useNewQuoteStore.getState().openDerived({ ...from, relation }, { label: quote.label })
     const changing: MenuItem[] = !editor
       ? []
       : [
           { label: "Duplicate", icon: Copy, run: derive("duplicate"), title: "A new quote with this quote's values" },
           { label: "Renew", icon: RefreshCcw, run: derive("renewal"), title: "A new quote renewing this one, from its values" },
-          // Made at once under this reference, at its own address.
-          { label: "Create alternative", icon: GitBranchPlus, run: () => void navigate(newQuotePath({ ...from, relation: "alternative" })), title: "A new option under this reference, from this quote's values" },
+          { label: "Create alternative", icon: GitBranchPlus, run: derive("alternative"), title: "A new option under this reference, from this quote's values" },
           quote.archived ? { label: "Restore", icon: ArchiveRestore, run: () => void restore(quote) } : { label: "Archive", icon: Archive, run: () => void archive(quote) },
         ]
     return [...changing, { label: "Copy link", icon: Link2, run: () => void copyLink(quote) }]
@@ -214,10 +227,6 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const stage = STAGES.find((each) => each.stage === query.stage)
   const filtered = query.search !== "" || query.stage !== null || query.assignee !== null
   const span = 6 + columns.length
-
-  const onRowKey = (event: ReactKeyboardEvent, quote: WorkbenchAppQuote) => {
-    if (event.key === "Enter" && event.target === event.currentTarget) void navigate(quotePath(quote.reference, quote.option))
-  }
 
   return (
     <div className="flex min-h-0 flex-1" data-testid="quotes-page">
@@ -257,7 +266,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             {stage !== undefined && <span style={{ color: "var(--text-secondary)" }}> · {stage.label}</span>}
           </h2>
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <label className="focus-within:ring-accent-ring flex items-center gap-1.5 rounded-md px-1.5" style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}>
+            <label className="flex items-center gap-1.5 rounded-md border border-[var(--border)] px-1.5 focus-within:border-[var(--accent-ring)] focus-within:shadow-[0_0_0_2px_var(--accent-soft)]" style={{ background: "var(--bg-input)" }}>
               <Search size={12} aria-hidden="true" style={{ color: "var(--text-muted)" }} />
               <input
                 ref={searchBox}
@@ -286,7 +295,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             <select aria-label="Order" value={query.sort} onChange={(event) => go({ sort: event.target.value as QuotesQuery["sort"] })} className={SELECT} style={SELECT_STYLE}>
               {SORTS.map((each) => (
                 <option key={each.sort} value={each.sort}>
-                  {each.label}
+                  {sortLabel(each.by, form)}
                 </option>
               ))}
             </select>
@@ -304,9 +313,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-xs" aria-label={view.label}>
             <thead className="sticky top-0 z-10" style={{ background: "var(--bg-elevated)" }}>
-              <tr className="text-left text-[11px] font-semibold tracking-wider uppercase" style={{ color: "var(--text-secondary)" }}>
-                <th className="h-7 w-28 px-3 font-semibold">Ref</th>
-                <th className="h-7 px-2 font-semibold">Quote</th>
+              <tr className="text-left text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase" style={{ color: "var(--text-secondary)" }}>
+                <th className="h-7 px-3 font-semibold">{detailLabel(form, QUOTE_DETAILS.quote_reference)}</th>
+                <th className="h-7 px-2 font-semibold">{detailLabel(form, QUOTE_DETAILS.quote_name)}</th>
                 {columns.map((column) => (
                   <th key={column.key} className="h-7 px-2 font-semibold">
                     {column.label}
@@ -315,7 +324,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                 <th className="h-7 w-20 px-2 font-semibold">Stage</th>
                 <th className="h-7 px-2 font-semibold">With</th>
                 <th className="h-7 w-24 px-2 font-semibold">Saved</th>
-                <th className="h-7 w-24 px-2" aria-label="Actions" />
+                <th className="h-7 px-2" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
@@ -330,7 +339,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               {status === "error" && (
                 <tr>
                   <td colSpan={span} className="px-3 py-6 text-center">
-                    <span role="alert" style={{ color: "var(--danger-text)" }}>
+                    {/* A refusal naming what does not fit reads as it is written: a table to a line, its columns under it. */}
+                    <span role="alert" className="inline-block whitespace-pre-wrap text-left align-top" style={{ color: "var(--danger-text)" }} data-testid="quotes-error">
                       The quotes could not be read: {error}
                     </span>{" "}
                     <button type="button" className={BUTTON} onClick={() => void load(query, true)}>
@@ -364,19 +374,15 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               )}
               {status !== "loading" &&
                 quotes.map((quote) => (
+                  // A row opens nothing, its reference included: Read and Edit open the quote.
                   <tr
                     key={quote.label}
-                    tabIndex={0}
                     data-testid={`quote-row-${quote.label}`}
-                    onClick={() => void navigate(quotePath(quote.reference, quote.option))}
-                    onKeyDown={(event) => onRowKey(event, quote)}
-                    className="group/row h-7 cursor-pointer transition-colors outline-none hover:bg-[var(--bg-hover)] focus-visible:bg-[var(--bg-hover)]"
+                    className="h-7 transition-colors hover:bg-[var(--bg-hover)]"
                     style={{ borderBottom: "1px solid var(--border-subtle)" }}
                   >
-                    <td className="px-3 font-mono text-[11px]">
-                      <a href={quotePath(quote.reference, quote.option)} onClick={(event) => { event.stopPropagation(); followLink(event, quotePath(quote.reference, quote.option)) }} style={{ color: "var(--text-accent)" }}>
-                        {quote.label}
-                      </a>
+                    <td className="px-3 font-mono text-[11px] whitespace-nowrap">
+                      <span style={{ color: "var(--text-accent)" }}>{quote.label}</span>
                     </td>
                     <td className="max-w-[280px] truncate px-2 font-medium" style={{ color: "var(--text-primary)" }} title={quote.title}>
                       {quote.title}
@@ -398,11 +404,29 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     <td className="px-2 whitespace-nowrap" style={{ color: "var(--text-secondary)" }} title={`${fullTime(quote.saved_at)} by ${quote.saved_by}`}>
                       {relativeTime(new Date(quote.saved_at))}
                     </td>
-                    <td className="px-2" onClick={(event) => event.stopPropagation()}>
-                      <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100 has-[[aria-expanded=true]]:opacity-100">
-                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.reference, quote.option))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
-                          <FolderOpen size={12} />
+                    <td className="px-2">
+                      <span className="flex items-center justify-end gap-0.5">
+                        <button
+                          type="button"
+                          className={ROW_BUTTON}
+                          onClick={() => void navigate(quotePath(quote.reference, quote.option))}
+                          title={`Read ${quote.label}, changing nothing`}
+                          aria-label={`Read ${quote.label}`}
+                        >
+                          Read
                         </button>
+                        {editor && (
+                          <button
+                            type="button"
+                            className={ROW_FILL_BUTTON}
+                            style={FILL_STYLE}
+                            onClick={() => void editQuote(quote)}
+                            title={`Edit ${quote.label}, held as yours while you do`}
+                            aria-label={`Edit ${quote.label}`}
+                          >
+                            Edit
+                          </button>
+                        )}
                         <Menu label={`Actions for ${quote.label}`} icon={MoreHorizontal} items={actions(quote)} testId={`quote-actions-${quote.label}`} />
                       </span>
                     </td>

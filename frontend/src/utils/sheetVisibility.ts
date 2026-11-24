@@ -444,12 +444,16 @@ export interface SheetVisibility {
   hidden: ReadonlySet<string>
 }
 
+/** Whether a component takes values typed into its fields: a Table, a Collection or a Text Box. */
+const takesTyping = (widget: Widget): widget is Extract<Widget, { type: "tableInput" | "collection" | "textBox" }> =>
+  widget.type === "tableInput" || widget.type === "collection" || widget.type === "textBox"
+
 /**
- * The columns a component has values typed into: a Table's and a Collection's fields, none
- * of a Chart's, which it only plots, and none of a Heading, which has no fields.
+ * The columns a component has values typed into: a Table's and a Collection's fields and a
+ * Text Box's one, none of a Chart's, which it only plots, and none of a Heading, which has
+ * no fields.
  */
-export const fieldKeys = (widget: Widget): string[] =>
-  widget.type === "tableInput" || widget.type === "collection" ? widget.fields.map((field) => columnKey(field.table, field.column)) : []
+export const fieldKeys = (widget: Widget): string[] => (takesTyping(widget) ? widget.fields.map((field) => columnKey(field.table, field.column)) : [])
 
 /** When a Table's or a Collection's field shows with its component: as its look's `show_when` says, always without one (`_entered` on the server). */
 export const fieldShowWhen = (widget: Widget, field: FieldRef): ShowWhen =>
@@ -459,7 +463,7 @@ export const fieldShowWhen = (widget: Widget, field: FieldRef): ShowWhen =>
 
 /** A component's fields that take values typed, each by its `fieldKey` and its column's `columnKey`, with when it shows. */
 const enteredFields = (widget: Widget): { key: string; column: string; showWhen: ShowWhen }[] =>
-  widget.type === "tableInput" || widget.type === "collection"
+  takesTyping(widget)
     ? widget.fields.map((field) => ({ key: fieldKey(widget.id, field.table, field.column), column: columnKey(field.table, field.column), showWhen: fieldShowWhen(widget, field) }))
     : []
 
@@ -702,7 +706,7 @@ export function takesNothingTyped(spec: Pick<FormSpec, "schema">, holder: Holder
   if ("widgets" in holder) return holder.widgets.every((widget) => takesNothingTyped(spec, widget))
   if ("type" in holder) {
     if (holder.type === "heading" || holder.type === "chart") return true
-    return (holder.type === "tableInput" || holder.type === "collection") && holder.fields.every((field) => takesNothingTyped(spec, field))
+    return takesTyping(holder) && holder.fields.every((field) => takesNothingTyped(spec, field))
   }
   const table = tableOf(spec.schema, holder.table)
   return table === undefined || isOutputColumn(table, holder.column)
@@ -776,7 +780,7 @@ export function withPrice(spec: FormSpec, rows: RowsByTable, visibility: SheetVi
       for (const widget of section.widgets) {
         if (!visibility.widgets.has(widget.id) || !stays(widget, widget.show_when)) continue
         widgets.add(widget.id)
-        if (widget.type !== "tableInput" && widget.type !== "collection") continue
+        if (!takesTyping(widget)) continue
         for (const field of widget.fields) {
           const key = fieldKey(widget.id, field.table, field.column)
           if (visibility.fields.has(key) && stays(field, fieldShowWhen(widget, field))) fields.add(key)

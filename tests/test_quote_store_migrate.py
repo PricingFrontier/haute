@@ -255,7 +255,7 @@ def test_a_retype_is_the_engines_alter_in_place_with_its_note() -> None:
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
-def test_additions_only_sql_keeps_old_columns_types_and_keys(dialect: str) -> None:
+def test_additions_only_sql_keeps_old_columns_and_keys_and_converts_types(dialect: str) -> None:
     base = form(
         table("policy", column("region"), column("value", "float"), column("legacy")),
         table("sites", column("site", "int", index="numbered"), rows="many"),
@@ -273,18 +273,26 @@ def test_additions_only_sql_keeps_old_columns_types_and_keys(dialect: str) -> No
     written = render_sql(planned, proposed, dialect, additions_only=True)
 
     assert "RENAME" not in written and "sp_rename" not in written
-    assert "DROP " not in written and "ALTER COLUMN" not in written
+    assert "DROP " not in written
     assert "UPDATE " not in written and "INSERT " not in written
     assert "policy" in written and "area" in written and "extra" in written
     assert "sites" in written and "location" in written
-    assert "manually" in written and "value" in written
+    assert "manually" in written
+    # value, kept under its name, is converted in place where the engine can; SQLite cannot.
+    converted = {
+        "sqlite": "which SQLite cannot do\n-- in place",
+        "postgresql": "ALTER TABLE policy ALTER COLUMN value TYPE BIGINT USING value::BIGINT",
+        "mssql": "ALTER TABLE policy ALTER COLUMN value BIGINT NULL",
+    }
+    assert converted[dialect] in written
+    assert ("ALTER COLUMN" in written) is (dialect != "sqlite")
     from haute._quote_store._providers import PROVIDERS
     from haute._quote_store._review import review_plan
 
     provider = PROVIDERS["sqlserver" if dialect == "mssql" else dialect]
     review = review_plan(planned, proposed, provider, additions_only=True)
     manual = {change.column for change in review if change.disposition == "manual"}
-    assert manual == {"area", "value", "location"}
+    assert manual == {"area", "location"} | ({"value"} if dialect == "sqlite" else set())
     if dialect == "sqlite":
         with sqlite3.connect(":memory:") as raw:
             raw.executescript(script(None, base))
@@ -332,6 +340,31 @@ def test_additions_only_sql_omits_invalid_names_but_keeps_valid_additions(
         ("policy", "valid_addition"),
         ("valid_table", None),
     }
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
+def test_additions_only_sql_adds_a_renamed_and_retyped_column_at_its_new_type(
+    dialect: str,
+) -> None:
+    from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._review import review_plan
+
+    base = form(table("policy", column("region"), column("value", "float")))
+    proposed = form(table("policy", column("region"), column("amount", "int")))
+    before = structure(base)
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    next(column for column in policy["columns"] if column["name"] == "value")["key"] = "amount"
+    planned = _migrate.plan(structure(proposed), before)
+    assert {"rename column", "retype column"} <= {step.kind for step in planned.steps}
+
+    written = render_sql(planned, proposed, dialect, additions_only=True)
+
+    # The new name is added at its new type; the old column is neither converted nor noted.
+    assert "amount BIGINT" in written
+    assert "ALTER COLUMN" not in written and "changes from" not in written
+    provider = PROVIDERS["sqlserver" if dialect == "mssql" else dialect]
+    review = review_plan(planned, proposed, provider, additions_only=True)
+    assert [change.kind for change in review if change.column == "amount"] == ["rename column"]
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])

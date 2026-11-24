@@ -500,7 +500,7 @@ def _store_compare(
 ) -> WorkbenchStoreCompareResponse:
     from haute._connections import project_environ
     from haute._quote_store import connected_store, render_sql
-    from haute._quote_store._compare import Rename, additions_plan, compare
+    from haute._quote_store._compare import Rename, additions_plan, answered_by, compare
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import provider_of
     from haute._quote_store._review import (
@@ -527,7 +527,8 @@ def _store_compare(
         renames=renames,
     )
     unresolved = rename_problems(renames, comparison.renames, catalogue, spec)
-    additions = additions_plan(spec, catalogue)
+    additions = additions_plan(spec, catalogue, comparison)
+    answered = answered_by(comparison, additions)
     return WorkbenchStoreCompareResponse(
         differences=[
             WorkbenchStoreDifference(
@@ -554,9 +555,9 @@ def _store_compare(
             WorkbenchStoreChange.model_validate(each, from_attributes=True)
             for each in review_plan(additions, spec, provider, additions_only=True)
         ],
-        manual=list(comparison.plan.notes),
+        manual=[each for each in comparison.plan.notes if each not in answered],
         blocked=[
-            *comparison.plan.refusals,
+            *(each for each in comparison.plan.refusals if each not in answered),
             *unresolved,
         ],
         sql=render_sql(
@@ -684,17 +685,18 @@ def _on_branch(config: WorkbenchConfig, branch: str) -> None:
 
 
 def _resolved(config: WorkbenchConfig) -> ResolvedRelease:
-    """The project as saved, resolved as ``haute app build`` resolves it; a project that
-    does not resolve is refused, saying why."""
+    """The project as saved, resolved as ``haute app build`` resolves it but without deploy's
+    dry run, so each test quote prices or fails on its own; a project that does not resolve
+    is refused, saying why."""
     try:
-        return resolve_release(config.project_root)
+        return resolve_release(config.project_root, dry_run=False)
     except HauteError as exc:
         raise _RefusedError(409, exc.message or str(exc)) from None
 
 
 async def _within_deadline(work: Callable[[], _T], timed_out: Callable[[], _T]) -> _T:
     """*work* in the thread pool within ``RUN_TIMEOUT_SECONDS``, its resolution of the project
-    included (which can run the pipeline); past the deadline *timed_out*'s answer, the work
+    included; past the deadline *timed_out*'s answer, the work
     left running to end on its own, releasing what it holds and writing nothing."""
     loop = asyncio.get_running_loop()
     # The work runs in the request's project, including past the deadline.

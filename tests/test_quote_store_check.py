@@ -56,7 +56,7 @@ from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.engine import Dialect, make_url
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
-from haute._quote_store import QuoteStoreMismatchError, store_url
+from haute._quote_store import store_url
 from haute._quote_store._catalogue import (
     CatalogueMovedError,
     CatalogueTable,
@@ -952,17 +952,13 @@ def _browsed(target: Target, sql_schema: str | None) -> Any:
 
 
 def _judged(target: Target, sql_schema: str | None) -> tuple[list[str], list[Difference]]:
-    """What the app's check refuses in the store, none when it opens, and the comparison's
-    marks."""
-    try:
-        engine, _ = open_engine(
-            target.url, FORM, environment=HOSTED, sql_schema=sql_schema, sign_in=target.sign_in
-        )
-    except QuoteStoreMismatchError as refused:
-        refusal = refused.differences
-    else:
-        engine.dispose()
-        refusal = []
+    """What the app's check finds does not fit in the store, none when it all fits, and the
+    comparison's marks."""
+    engine, _, misfits = open_engine(
+        target.url, FORM, environment=HOSTED, sql_schema=sql_schema, sign_in=target.sign_in
+    )
+    engine.dispose()
+    refusal = [misfit.text for misfit in misfits]
     comparison = compare(FORM, _browsed(target, sql_schema), provider=PROVIDERS[target.backend])
     return refusal, list(comparison.differences)
 
@@ -1260,7 +1256,7 @@ def test_the_check_and_the_pane_read_the_store_beside_ddl_its_owners_run(
         pane_read = 0
         try:
             for _ in range(_BESIDE_DDL):
-                engine, _ = open_engine(
+                engine, _, _ = open_engine(
                     target.url, FORM, environment=HOSTED, sign_in=target.sign_in
                 )
                 engine.dispose()

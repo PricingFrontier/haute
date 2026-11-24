@@ -25,7 +25,14 @@ from haute._quote_store import (
     render_sql,
 )
 from haute._quote_store._catalogue import IDENTITY, Catalogue, counting_statement, read_catalogue
-from haute._quote_store._compare import Comparison, Rename, compare, read_store_catalogue
+from haute._quote_store._compare import (
+    Comparison,
+    Rename,
+    additions_plan,
+    answered_by,
+    compare,
+    read_store_catalogue,
+)
 from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._store import make_engine
@@ -116,15 +123,32 @@ def sql(target: Target, release: FormSpec, comparison: Comparison) -> str:
     return render_sql(comparison.plan, release, PROVIDER_DIALECTS[target.backend])
 
 
+def exported(target: Target, release: FormSpec, **given: Any) -> str:
+    """The Workbench's Export SQL for *release* on *target*'s tables, as the schema pane's
+    route writes it: the additions and the type changes alone."""
+    read = catalogue(target)
+    comparison = compare(release, read, provider=PROVIDERS[target.backend], **given)
+    return render_sql(
+        additions_plan(release, read, comparison),
+        release,
+        PROVIDER_DIALECTS[target.backend],
+        additions_only=True,
+    )
+
+
 def kinds(comparison: Comparison) -> set[tuple[str | None, str | None, str]]:
     return {(each.table, each.column, each.kind) for each in comparison.differences}
 
 
 def opens(target: Target, release: FormSpec) -> None:
-    """The app's check finds nothing: the book opens."""
-    open_book(
+    """The app's check finds nothing: the book opens, a quote's use refused naming what does
+    not fit otherwise (:class:`QuoteStoreMismatchError`)."""
+    with open_book(
         target.url, release, environment=ENVIRONMENT, haute_version="1", sign_in=target.sign_in
-    ).close()
+    ) as book:
+        refused = book.mismatch("quote")
+    if refused is not None:
+        raise refused
 
 
 def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
@@ -403,6 +427,120 @@ def test_a_retyped_column_that_takes_no_null_keeps_taking_none(server: Target) -
     assert value is not None and value.kind == "float" and value.nullable is False
 
 
+def test_the_export_converts_a_column_of_another_type_keeping_its_values(target: Target) -> None:
+    made_from_sql(target, RELEASED)
+    quote(target, RELEASED, "A-1", drivers="2")
+    retyped = form(
+        table("policy", column("region"), column("drivers", "int"), column("value", "float"))
+    )
+
+    written = exported(target, retyped)
+
+    if target.backend == "sqlite":
+        # SQLite cannot change a column's type in place: a note says how, and nothing tries.
+        assert "which SQLite cannot do\n-- in place" in written
+        assert "ALTER COLUMN" not in written
+        return
+    assert "ALTER COLUMN drivers" in written
+    target.script(written)
+    opens(target, retyped)
+    assert target.read("SELECT drivers FROM policy") == [(2,)]
+
+
+def test_the_export_converts_a_number_column_to_text_the_app_opens(server: Target) -> None:
+    """To Text, the column takes the text type and comparison Haute keeps (SQL Server's
+    collation among them), so the app's check finds nothing after it."""
+    made_from_sql(server, RELEASED)
+    quote(server, RELEASED, "A-1", value="12.5")
+    retyped = form(table("policy", column("region"), column("drivers"), column("value")))
+
+    written = exported(server, retyped)
+
+    assert "ALTER COLUMN value" in written
+    server.script(written)
+    opens(server, retyped)
+    assert server.read("SELECT value FROM policy") == [("12.5",)]
+
+
+def test_a_value_the_export_cannot_convert_stops_it_changing_nothing(server: Target) -> None:
+    made_from_sql(server, RELEASED)
+    quote(server, RELEASED, "A-1", drivers="n/a")
+    retyped = form(
+        table("cover", column("excess", "float")),
+        table(
+            "policy",
+            column("region"),
+            column("seats", "int"),
+            column("drivers", "int"),
+            column("value", "float"),
+        ),
+    )
+    written = exported(server, retyped)
+    # A table and a column are made before the conversion that fails, and undone with it.
+    converted = written.index("ALTER COLUMN drivers")
+    assert written.index("CREATE TABLE cover") < converted
+    assert written.index("ALTER TABLE policy ADD") < converted
+
+    with pytest.raises(Exception, match=r"(?i)invalid input syntax|error converting"):
+        server.script(written)
+
+    held = catalogue(server)
+    assert held.table("cover") is None
+    policy = held.table("policy")
+    assert policy is not None
+    assert policy.column("seats") is None
+    drivers = policy.column("drivers")
+    assert drivers is not None and drivers.kind == "string"
+    assert server.read("SELECT drivers FROM policy") == [("n/a",)]
+
+
+def test_the_export_converts_no_identity_column(server: Target) -> None:
+    """The identity keeps the store's type, whatever the database holds it as: the SQL says
+    it takes no change, and changes nothing of it."""
+    made_from_sql(server, RELEASED)
+    if server.backend == "postgresql":
+        server.run("ALTER TABLE policy ALTER COLUMN quote_option TYPE INTEGER")
+    else:
+        # SQL Server changes no column of a key or a reference: those go first.
+        (refers,) = server.read(
+            "SELECT name FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID('policy')"
+        )
+        (keyed,) = server.read(
+            "SELECT name FROM sys.key_constraints WHERE type = 'PK' "
+            "AND parent_object_id = OBJECT_ID('policy')"
+        )
+        server.run(
+            f"ALTER TABLE policy DROP CONSTRAINT {refers[0]}",
+            f"ALTER TABLE policy DROP CONSTRAINT {keyed[0]}",
+            "ALTER TABLE policy ALTER COLUMN quote_option INT NOT NULL",
+        )
+    comparison = compared(server, RELEASED)
+    assert ("policy", "quote_option", "type") in kinds(comparison)
+    assert "policy.quote_option takes no change of its type" in comparison.plan.refusals
+
+    written = exported(server, RELEASED)
+
+    assert "ALTER COLUMN quote_option" not in written
+
+
+def test_the_export_converts_no_column_the_analyst_pairs(target: Target) -> None:
+    made_from_sql(target, RELEASED)
+    quote(target, RELEASED, "A-1", drivers="2")
+    paired = form(
+        table("policy", column("region"), column("seats", "int"), column("value", "float"))
+    )
+    pairing = Rename("policy", "seats", "drivers")
+    comparison = compared(target, paired, renames=[pairing])
+    assert {("policy", "seats", "renamed"), ("policy", "seats", "type")} <= kinds(comparison)
+
+    written = exported(target, paired, renames=[pairing])
+
+    # seats is added afresh at its type, drivers left as it is with its values.
+    assert "ALTER COLUMN" not in written and "changes from" not in written
+    target.script(written)
+    assert target.read("SELECT drivers, seats FROM policy") == [("2", None)]
+
+
 def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target) -> None:
     made_from_sql(target, RELEASED)
     quote(target, RELEASED, "A-1", region="north")
@@ -453,6 +591,185 @@ def test_a_renamed_index_is_paired_with_the_databases_key_column_unasked(target:
         (1, "AB12"),
         (2, "CD34"),
     ]
+
+
+def test_the_export_renames_the_key_column_for_a_renamed_index(target: Target) -> None:
+    before = form(_vehicles("row_number"))
+    made_from_sql(target, before)
+    quote(target, before, "A-1")
+    target.run(
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, reg) "
+        "VALUES ('A-1', 1, 1, 'AB12'), ('A-1', 1, 2, 'CD34')"
+    )
+    renamed = form(_vehicles("vehicle_no"))
+
+    written = exported(target, renamed)
+
+    # The key column renamed in place, keeping its values and its place in the key: no column
+    # added beside it.
+    assert "ADD" not in written
+    target.script(written)
+    held = catalogue(target).table("vehicles")
+    assert held is not None and held.primary_key == (*IDENTITY, "vehicle_no")
+    assert compared(target, renamed).matches
+    opens(target, renamed)
+    assert target.read("SELECT vehicle_no, reg FROM vehicles ORDER BY vehicle_no") == [
+        (1, "AB12"),
+        (2, "CD34"),
+    ]
+
+
+#: A quote's policy with two many-row tables, one numbered, one with a row per peril.
+KEYED = form(
+    table("policy", column("region")),
+    table(
+        "sites",
+        {"name": "site", "type": "int", "index": "numbered"},
+        column("cover", "float"),
+        rows="many",
+    ),
+    table(
+        "perils",
+        {
+            "name": "peril",
+            "type": "str",
+            "index": "values",
+            "options": ["fire", "flood"],
+            "options_source": {"file": "perils.csv", "column": "peril"},
+        },
+        column("excess", "float"),
+        rows="many",
+    ),
+)
+
+
+def _kept_by_row_number(target: Target, rows: dict[str, list[str]]) -> None:
+    """:data:`KEYED`'s tables made, a quote A-1 saved, and each many-row table made again as a
+    store keyed by its row number made it before 2026-11-05: keyed by ``quote_row``, its index
+    a column taking a null (an index of values one of ordinary Text), holding *rows*, each the
+    values of its form's columns then its quote_row."""
+    made_from_sql(target, KEYED)
+    quote(target, KEYED, "A-1", region="north")
+    held = catalogue(target)
+    policy = held.table("policy")
+    assert policy is not None
+    text = policy.column("region")
+    assert text is not None
+    for name, values in rows.items():
+        made = held.table(name)
+        assert made is not None
+        typed = {column.name: column.type for column in made.columns}
+        index, other = (column for column in made.columns if column.name not in IDENTITY)
+        index_type = text.type if index.kind == "string" else index.type
+        target.run(f"DROP TABLE {name}")
+        target.run(
+            f"CREATE TABLE {name} (quote_reference {typed['quote_reference']} NOT NULL, "
+            f"quote_option {typed['quote_option']} NOT NULL, {index.name} {index_type} NULL, "
+            f"{other.name} {other.type} NULL, quote_row {typed['quote_option']} NOT NULL, "
+            "PRIMARY KEY (quote_reference, quote_option, quote_row), "
+            "FOREIGN KEY (quote_reference, quote_option) "
+            "REFERENCES quote_details (quote_reference, quote_option))",
+            *(f"INSERT INTO {name} VALUES ('A-1', 1, {each})" for each in values),
+        )
+
+
+def test_the_export_keys_a_table_kept_by_its_row_number_by_its_index(target: Target) -> None:
+    _kept_by_row_number(
+        target,
+        {
+            "sites": ["NULL, 7.5, 1", "NULL, 8.5, 2"],
+            "perils": ["'fire', 1.5, 1", "'flood', 2.5, 2"],
+        },
+    )
+    read = catalogue(target)
+    comparison = compare(KEYED, read, provider=PROVIDERS[target.backend])
+    assert {("sites", "site", "renamed"), ("perils", "peril", "renamed")} <= kinds(comparison)
+    # The index renames the comparison's plan refuses, the old key's column holding the
+    # index's name, and what it notes of that key, are what the export answers.
+    answered = answered_by(comparison, additions_plan(KEYED, read, comparison))
+    assert len(comparison.plan.refusals) == 2
+    assert set(comparison.plan.refusals) <= answered
+    assert set(comparison.plan.notes) <= answered
+
+    written = exported(target, KEYED)
+
+    if target.backend == "sqlite":
+        # SQLite cannot change a table's key in place: a note for each, and nothing tries.
+        assert written.count("SQLite cannot change a\n-- table's key in place") == 2
+        assert "DROP CONSTRAINT" not in written and "ALTER COLUMN" not in written
+        return
+    # The numbered index takes the old key's row numbers; one of values keeps its own.
+    assert "UPDATE sites SET site = quote_row WHERE site IS NULL" in written
+    assert "UPDATE perils" not in written
+    target.script(written)
+    held = catalogue(target)
+    for name, index in (("sites", "site"), ("perils", "peril")):
+        made = held.table(name)
+        assert made is not None and made.primary_key == (*IDENTITY, index)
+        old = made.column("quote_row")
+        assert old is not None and old.nullable
+    assert target.read("SELECT site, cover, quote_row FROM sites ORDER BY site") == [
+        (1, 7.5, 1),
+        (2, 8.5, 2),
+    ]
+    assert target.read("SELECT peril, excess FROM perils ORDER BY peril") == [
+        ("fire", 1.5),
+        ("flood", 2.5),
+    ]
+    assert compared(target, KEYED).matches
+    opens(target, KEYED)
+    # A quote saved now writes its rows with no quote_row, which takes the null.
+    with open_book(
+        target.url, KEYED, environment=ENVIRONMENT, haute_version="1", sign_in=target.sign_in
+    ) as book:
+        book.create(
+            operation="operation-B-1",
+            actor="ana",
+            values={
+                "policy": [{"region": "south"}],
+                "sites": [{"cover": "3"}],
+                "perils": [{"peril": "flood", "excess": "4"}],
+            },
+            at=book.now(),
+            reference="B-1",
+        )
+    assert target.read(
+        "SELECT site, cover, quote_row FROM sites WHERE quote_reference = 'B-1'"
+    ) == [(1, 3.0, None)]
+    assert ("flood", 4.0) in target.read(
+        "SELECT peril, excess FROM perils WHERE quote_reference = 'B-1'"
+    )
+
+
+def test_an_index_value_missing_stops_the_export_changing_nothing(server: Target) -> None:
+    _kept_by_row_number(server, {"perils": ["NULL, 1.5, 1"]})
+    written = exported(server, KEYED)
+    assert "DROP CONSTRAINT" in written
+
+    with pytest.raises(Exception, match=r"(?i)null"):
+        server.script(written)
+
+    made = catalogue(server).table("perils")
+    assert made is not None and made.primary_key == (*IDENTITY, "quote_row")
+    assert server.read("SELECT peril, excess, quote_row FROM perils") == [(None, 1.5, 1)]
+
+
+def test_an_index_value_too_long_for_the_index_stops_the_export_changing_nothing(
+    server: Target,
+) -> None:
+    # Longer than either server's index holds (VARCHAR(255), NVARCHAR(366)): PostgreSQL's cast
+    # to VARCHAR(255) would cut it short and key the table by what was left.
+    long = "x" * 400
+    _kept_by_row_number(server, {"perils": [f"'{long}', 1.5, 1"]})
+    written = exported(server, KEYED)
+    assert "DROP CONSTRAINT" in written
+
+    with pytest.raises(Exception, match=r"(?i)too long|truncated"):
+        server.script(written)
+
+    made = catalogue(server).table("perils")
+    assert made is not None and made.primary_key == (*IDENTITY, "quote_row")
+    assert server.read("SELECT peril, quote_row FROM perils") == [(long, 1)]
 
 
 def _vehicles_of(index: str, other: str) -> dict[str, Any]:
@@ -513,6 +830,28 @@ def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Targe
     opens(target, reused)
 
 
+def test_the_export_frees_a_renamed_keys_name_for_a_new_column(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "seats"))
+    made_from_sql(target, before)
+    reused = form(
+        table(
+            "vehicles",
+            {"name": "vehicle_no", "type": "int", "index": "numbered"},
+            column("seats", "int"),
+            column("row_number"),
+            rows="many",
+        )
+    )
+
+    written = exported(target, reused)
+
+    # The key column is renamed for the index, then row_number added under the name it freed.
+    assert "already exists" not in written
+    assert written.lower().index("rename") < written.index("ALTER TABLE vehicles ADD")
+    target.script(written)
+    opens(target, reused)
+
+
 def test_an_index_renamed_onto_another_columns_name_is_refused(target: Target) -> None:
     before = form(_vehicles_of("row_number", "item_number"))
     made_from_sql(target, before)
@@ -528,6 +867,26 @@ def test_an_index_renamed_onto_another_columns_name_is_refused(target: Target) -
     assert len(comparison.plan.refusals) == 2
     target.script(sql(target, swapped, comparison))
     assert target.read("SELECT row_number, item_number FROM vehicles") == []
+
+
+def test_a_numbered_index_whose_column_holds_values_moves_no_key(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "item_number"))
+    made_from_sql(target, before)
+    quote(target, before, "A-1")
+    target.run(
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, item_number) "
+        "VALUES ('A-1', 1, 1, 42), ('A-1', 1, 2, 7)"
+    )
+    swapped = form(_vehicles_of("item_number", "row_number"))
+    read = catalogue(target)
+    comparison = compare(swapped, read, provider=PROVIDERS[target.backend])
+
+    additions = additions_plan(swapped, read, comparison)
+
+    # 42 and 7 are no rows' numbers: the swap stays refused, and the export keys nothing.
+    assert not any(step.kind in ("rekey table", "rename key") for step in additions.steps)
+    assert comparison.plan.refusals
+    assert not answered_by(comparison, additions)
 
 
 def test_a_tables_rows_are_read_from_its_key(target: Target) -> None:

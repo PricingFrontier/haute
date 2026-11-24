@@ -307,7 +307,8 @@ export interface ApiClientOptions {
 
 type ResolvedRetryPolicy = Required<RetryPolicy>
 type RequestOptions = RequestInit & ApiClientOptions
-type MutationOptions = Pick<ApiClientOptions, "signal" | "timeout">
+/** A write's options: `keepalive` lets one sent as the page closes outlive it. */
+type MutationOptions = Pick<ApiClientOptions, "signal" | "timeout"> & Pick<RequestInit, "keepalive">
 
 // PAIRED INVARIANT with stores/singleFlight.ts: the retry loop's worst case
 // (default 30s timeout × (maxRetries + 1) attempts + backoff ≈ 121s) must stay

@@ -1,6 +1,7 @@
-"""The underwriter app's quote store as it stands (specs/workbench): open while its tables fit,
-closed naming why while they do not, while the store cannot be reached and without one, and
-checked again at most once every bound, one check at a time."""
+"""The underwriter app's quote store as it stands (specs/workbench): each use open while the
+tables it uses fit, refused naming why while they do not, every use refused while the store
+cannot be reached and without one, and checked again at most once every bound, one check at a
+time."""
 
 from __future__ import annotations
 
@@ -16,7 +17,10 @@ from haute._quote_store import (
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
     QuoteStoreUnreachableError,
+    StoreMisfit,
+    StoreUse,
 )
+from haute._quote_store._store import store_mismatch
 from haute._workbench_app_store import (
     NO_ENVIRONMENT,
     RECHECK_SECONDS,
@@ -37,10 +41,25 @@ class Clock:
 
 
 class Book:
-    """A stand-in for the book a check opens."""
+    """A stand-in for the book a check opens on a database not fitting as *misfits* say, each
+    use refused for its own as the store's book refuses it (``QuoteBook.unfit``)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *misfits: StoreMisfit) -> None:
         self.closed = False
+        self.misfits = misfits
+
+    def unfit(self, use: StoreUse) -> tuple[StoreMisfit, ...]:
+        if use == "quote":
+            return self.misfits
+        return tuple(
+            m
+            for m in self.misfits
+            if m.table == "quote_details" and m.privilege in (None, "SELECT")
+        )
+
+    def mismatch(self, use: StoreUse) -> QuoteStoreMismatchError | None:
+        unfit = self.unfit(use)
+        return store_mismatch(unfit, "test") if unfit else None
 
     def close(self) -> None:
         self.closed = True
@@ -61,16 +80,16 @@ class Opener:
         return answer
 
 
-def _refusal(gate: StoreGate) -> QuoteStoreClosedError:
+def _refusal(gate: StoreGate, use: StoreUse = "quote") -> QuoteStoreClosedError:
     with pytest.raises(QuoteStoreClosedError) as refused:
-        gate.book()
+        gate.book(use)
     return refused.value
 
 
-MISMATCH = QuoteStoreMismatchError(
-    "This database's tables do not fit the form: policy.region is missing.",
-    differences=["policy.region is missing"],
-)
+#: A column of a table only a quote reads, missing.
+REGION = StoreMisfit("policy", "region", "is missing", "policy.region is missing")
+#: A column of quote_details, which the list reads too, missing.
+BROKER = StoreMisfit("quote_details", "broker", "is missing", "quote_details.broker is missing")
 
 
 def test_a_store_whose_tables_fit_opens() -> None:
@@ -88,43 +107,72 @@ def test_a_store_whose_tables_fit_opens() -> None:
 
 
 @pytest.mark.parametrize(
-    ("raised", "code", "differences"),
+    ("raised", "code"),
     [
-        (MISMATCH, "quote_store_mismatch", ["policy.region is missing"]),
         (
             QuoteStoreUnreachableError("could not be reached, or it refused the sign-in"),
             "quote_store_unreachable",
-            [],
         ),
-        (
-            OperationalError(None, None, Exception("no route to host")),
-            "quote_store_unreachable",
-            [],
-        ),
+        (OperationalError(None, None, Exception("no route to host")), "quote_store_unreachable"),
         (
             QuoteStoreEnvironmentError("set HAUTE_STORE_DATABASE to its file's path"),
             "quote_store_environment",
-            [],
         ),
     ],
-    ids=["tables", "unreachable", "driver", "location"],
+    ids=["unreachable", "driver", "location"],
 )
-def test_a_store_that_cannot_open_closes_naming_why(
-    raised: Exception, code: str, differences: list[str]
+def test_a_store_that_cannot_open_refuses_every_use_naming_why(
+    raised: Exception, code: str
 ) -> None:
     gate = StoreGate(Opener(raised))
 
     refusal = _refusal(gate)
 
-    assert (refusal.code, refusal.differences) == (code, differences)
+    assert refusal.code == code
     assert refusal.detail == {
         "message": refusal.message,
         "error_code": code,
-        "differences": differences,
+        "differences": [],
+        "misfits": [],
+        "environment": None,
     }
     assert "no route to host" not in refusal.message
+    assert _refusal(gate, "list").code == code
     state = gate.state()
     assert (state.open, state.error_code) == (False, code)
+
+
+def test_a_store_that_does_not_fit_refuses_only_the_uses_its_misfits_touch() -> None:
+    book = Book(REGION)
+    gate = StoreGate(Opener(book))
+
+    # The list reads quote_details alone, which fits.
+    assert gate.book("list") is book
+    refusal = _refusal(gate)
+    assert (refusal.code, refusal.differences) == (
+        "quote_store_mismatch",
+        ["policy.region is missing"],
+    )
+    assert refusal.detail["misfits"] == [
+        {"table": "policy", "column": "region", "problem": "is missing"}
+    ]
+    assert refusal.detail["environment"] == "test"
+    assert "policy.region is missing" in refusal.message
+    # The whole store, as a rollout reads it, does not fit.
+    state = gate.state()
+    assert (state.open, state.error_code, state.differences) == (
+        False,
+        "quote_store_mismatch",
+        ["policy.region is missing"],
+    )
+
+    # A misfit of quote_details refuses the list too, naming it alone.
+    both = StoreGate(Opener(Book(REGION, BROKER)))
+    assert _refusal(both, "list").differences == ["quote_details.broker is missing"]
+    assert _refusal(both).differences == [
+        "policy.region is missing",
+        "quote_details.broker is missing",
+    ]
 
 
 def test_an_app_with_no_store_is_closed_naming_haute_environment() -> None:
@@ -134,41 +182,44 @@ def test_an_app_with_no_store_is_closed_naming_haute_environment() -> None:
     assert "HAUTE_ENVIRONMENT" in NO_ENVIRONMENT
 
 
-def test_a_closed_store_is_checked_again_only_past_the_bound() -> None:
+def test_a_store_that_does_not_fit_is_checked_again_only_past_the_bound() -> None:
     clock = Clock()
-    book = Book()
-    opener = Opener(MISMATCH, MISMATCH, book)
+    first, second, fitting = Book(REGION), Book(REGION), Book()
+    opener = Opener(first, second, fitting)
     gate = StoreGate(opener, clock=clock)
 
     _refusal(gate)
     clock.now += RECHECK_SECONDS - 1
-    # Within the bound each request is answered with the last refusal, nothing checked.
+    # Within the bound each quote is answered with the last refusal, nothing checked, and
+    # the list keeps the book it fits.
     assert _refusal(gate).code == "quote_store_mismatch"
+    assert gate.book("list") is first
     assert gate.state().open is False
     assert opener.checks == 1
     clock.now += 1
     _refusal(gate)
-    assert opener.checks == 2
-    # Put right, the next check past the bound opens the quotes.
+    assert opener.checks == 2 and first.closed
+    # Put right in SQL, the next check past the bound opens the quote's use too.
     clock.now += RECHECK_SECONDS
-    assert gate.book() is book
+    assert gate.book() is fitting
     assert opener.checks == 3
-    assert gate.book() is book and opener.checks == 3
+    assert gate.book() is fitting and gate.book("list") is fitting and opener.checks == 3
 
 
-def test_a_recheck_closes_a_store_whose_tables_no_longer_fit() -> None:
-    first, second = Book(), Book()
-    gate = StoreGate(Opener(first, second, MISMATCH))
+def test_a_recheck_refuses_the_uses_of_tables_that_no_longer_fit() -> None:
+    first, second, third = Book(), Book(), Book(REGION)
+    gate = StoreGate(Opener(first, second, third))
     assert gate.book() is first
 
-    # The tables still fit: the book is opened again and the quotes stay open.
+    # The tables still fit: the book is opened again and every use stays open.
     assert gate.recheck() is None
     assert first.closed and gate.book() is second
-    # They no longer do: the refusal closes them.
+    # They no longer do: a quote's use is refused, the list's not.
     refusal = gate.recheck()
     assert refusal is not None and refusal.code == "quote_store_mismatch"
     assert second.closed
     assert _refusal(gate).code == "quote_store_mismatch"
+    assert gate.recheck(third, "list") is None and gate.book("list") is third
 
 
 def test_a_recheck_for_a_book_opened_again_since_keeps_the_newer_book() -> None:
@@ -185,15 +236,28 @@ def test_a_recheck_for_a_book_opened_again_since_keeps_the_newer_book() -> None:
     assert gate.book() is third
 
 
-def test_a_recheck_for_a_book_another_check_closed_answers_that_checks_refusal() -> None:
+def test_a_recheck_for_a_book_another_check_replaced_answers_that_checks_finding() -> None:
     first = Book()
-    opener = Opener(first, MISMATCH)
+    opener = Opener(first, Book(REGION))
     gate = StoreGate(opener)
     assert gate.book() is first
     refusal = gate.recheck(first)
     assert refusal is not None and refusal.code == "quote_store_mismatch"
-    # A second request refused on the first book is answered with that check's refusal,
+    # A second request refused on the first book is answered with what that check found,
     # rather than waiting on a check of its own.
+    again = gate.recheck(first)
+    assert again is not None and again.differences == refusal.differences
+    assert gate.recheck(first, "list") is None
+    assert opener.checks == 2
+
+
+def test_a_recheck_for_a_book_another_check_closed_answers_that_checks_refusal() -> None:
+    first = Book()
+    opener = Opener(first, QuoteStoreUnreachableError("could not be reached"))
+    gate = StoreGate(opener)
+    assert gate.book() is first
+    refusal = gate.recheck(first)
+    assert refusal is not None and refusal.code == "quote_store_unreachable"
     assert gate.recheck(first) is refusal
     assert opener.checks == 2
 

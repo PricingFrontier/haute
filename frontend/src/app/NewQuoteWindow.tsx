@@ -1,8 +1,9 @@
 /**
  * The New quote window (specs/workbench), over the page it was asked for from: the
- * reference, then the columns of quote_details the underwriter types, drawn as a Collection
- * draws them, with Create and Cancel; while its creation is unanswered it takes no typing,
- * and with no answer it offers Try again, sending what was sent, and Close, keeping it.
+ * reference, an alternative's its source's and taking no typing, then the columns of
+ * quote_details the underwriter types, drawn as a Collection draws them, with Create and
+ * Cancel; while its creation is unanswered it takes no typing, and with no answer it offers
+ * Try again, sending what was sent, and Close, keeping it.
  */
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { FormSpec } from "../api/types"
@@ -10,6 +11,7 @@ import ModalShell from "../components/ModalShell"
 import { ModalFormHeader } from "../components/ModalForm"
 import { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import { cellKey } from "../utils/sheetValues"
+import { columnKey } from "../utils/sheetVisibility"
 import { COLLECTION_OPTIONS, QUOTE_DETAILS_NAME, type SampleValue } from "../utils/workbenchForm"
 import { FieldBoxes } from "../workbench/sheet/FieldBoxes"
 import { NO_MARKS, fieldLabel } from "../workbench/sheet/fieldCells"
@@ -26,6 +28,8 @@ const YES_STYLE = { background: "var(--structure-action)", color: "var(--text-on
 
 /** The window's one row is set cell by cell: there are no rows to add or delete. */
 const KEEP_ROWS = () => {}
+/** An alternative's reference, its source's, which takes no typing. */
+const REFERENCE_LOCKED: ReadonlySet<string> = new Set([columnKey(QUOTE_DETAILS_NAME, REFERENCE_COLUMN)])
 
 export default function NewQuoteWindow() {
   const shown = useNewQuoteStore((s) => s.shown)
@@ -71,8 +75,8 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
     visibility: NO_VISIBILITY,
     quoted: form.schema,
     readOnly: !editing,
-    // The reference takes typing here, as it does nowhere else.
-    locked: NOTHING_LOCKED,
+    // The reference takes typing here, as it does nowhere else, but for an alternative's.
+    locked: shown.source?.relation === "alternative" ? REFERENCE_LOCKED : NOTHING_LOCKED,
     // A quote not made yet is exported nowhere.
     exportCells: null,
     importRows: null,
@@ -83,9 +87,10 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
     return found === null || problem === undefined ? [] : [`${fieldLabel(found)}: ${problem}`]
   })[0]
 
-  // After the shell has taken the focus, the reference takes it, as the window takes typing.
+  // After the shell has taken the focus, the first field taking typing takes it, as the window
+  // takes typing: the reference, or an alternative's name.
   useEffect(() => {
-    if (editing) holder.current?.querySelector<HTMLElement>("input, select")?.focus()
+    if (editing) holder.current?.querySelector<HTMLElement>("input:not([disabled]), select:not([disabled])")?.focus()
   }, [editing])
 
   const openTaken = () => {
@@ -112,7 +117,7 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
             Reading the quote…
           </div>
         ) : shown.status === "failed" ? (
-          <div role="alert" className="px-4 py-4 text-[12px]" style={{ color: "var(--danger-text)" }}>
+          <div role="alert" className="whitespace-pre-wrap px-4 py-4 text-[12px]" style={{ color: "var(--danger-text)" }}>
             The quote could not be read: {shown.error}
           </div>
         ) : (
@@ -188,7 +193,7 @@ function WindowMessage({ shown, onOpenTaken }: { shown: Shown; onOpenTaken: () =
   if (shown.status !== "editing" || shown.error === null) return null
   return (
     <div role="alert" className="flex items-center gap-2 px-4 pt-3 text-[12px]" style={{ color: "var(--danger-text)" }} data-testid="new-quote-refused">
-      <span className="min-w-0 flex-1">{shown.error}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap">{shown.error}</span>
       {shown.taken !== null && (
         <button type="button" className={BUTTON} style={OTHER_STYLE} onClick={onOpenTaken}>
           Open it

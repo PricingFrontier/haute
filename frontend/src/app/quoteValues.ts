@@ -6,8 +6,8 @@
  * quote, and the values kept in the browser until they are saved or discarded.
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
-import { apiErrorCode, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
-import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppQuoteStore, WorkbenchAppRelatedQuote } from "../api/types"
+import { apiErrorCode, apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
+import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppRelatedQuote } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
@@ -15,7 +15,7 @@ import { operationKey } from "../utils/operationKey"
 import { hasInputs, tableIndex } from "../utils/quoteIdentity"
 import { formattedNumber, indexKey, KEPT_KEY, withPresetRows } from "../utils/sheetValues"
 import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
+import { fieldColumn, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -198,25 +198,74 @@ export function savedPrice(
 
 // ── The quote store's refusals ───────────────────────────────────────────
 
-/** The codes the app's routes close its quotes with: tables that do not fit, a store not reached, no store. */
-export const QUOTE_STORE_CLOSED: ReadonlySet<string> = new Set([
-  "quote_store_mismatch",
-  "quote_store_unreachable",
-  "quote_store_environment",
-])
+/** One way the store's database does not fit, as a refusal names it: its table, its column when it is one, and what is wrong. */
+export interface StoreMisfit {
+  table: string
+  column: string | null
+  problem: string
+}
 
 /**
- * The refusal a 503 carries when the app's quotes are closed, its code one of the store's;
- * null for any other failure, a busy pricing's 503 among them.
+ * The misfits a 503 names when the tables a route uses do not fit the release's form, and
+ * the environment whose database it is; null for any other failure, a store that cannot be
+ * reached or a busy pricing among them.
  */
-export function quotesClosedBy(error: unknown): WorkbenchAppQuoteStore | null {
-  const code = apiErrorCode(error)
-  if (apiErrorStatus(error) !== 503 || code === null || !QUOTE_STORE_CLOSED.has(code)) return null
+export function storeMisfits(error: unknown): { misfits: StoreMisfit[]; environment: string | null } | null {
+  if (apiErrorStatus(error) !== 503 || apiErrorCode(error) !== "quote_store_mismatch") return null
   const detail = apiErrorRawDetail(error)
-  const message = typeof detail?.message === "string" ? detail.message : null
-  const listed = Array.isArray(detail?.differences) ? detail.differences : []
-  const differences = listed.filter((each): each is string => typeof each === "string")
-  return { open: false, error_code: code, message, differences }
+  const listed = Array.isArray(detail?.misfits) ? detail.misfits : []
+  const misfits = listed.flatMap((each): StoreMisfit[] => {
+    if (typeof each !== "object" || each === null) return []
+    const { table, column, problem } = each as Record<string, unknown>
+    if (typeof table !== "string" || typeof problem !== "string") return []
+    return [{ table, column: typeof column === "string" ? column : null, problem }]
+  })
+  if (misfits.length === 0) return null
+  return { misfits, environment: typeof detail?.environment === "string" ? detail.environment : null }
+}
+
+/** While the quote store refuses the Quotes page's list or a quote's opening, it is asked for again this often: the store's own bound. */
+export const QUOTES_RECHECK_MS = 10_000
+
+/** How often a quote open to edit renews its lease, well within the server's (`EDIT_LEASE_SECONDS`, 3 minutes). */
+export const EDIT_RENEW_MS = 30_000
+
+/** Who else is editing the quote, when `error` is a change refused as theirs (409 `quote_being_edited`); else null. */
+export function beingEditedBy(error: unknown): string | null {
+  if (apiErrorStatus(error) !== 409 || apiErrorCode(error) !== "quote_being_edited") return null
+  const editor = apiErrorRawDetail(error)?.editor
+  return typeof editor === "string" ? editor : null
+}
+
+/** Whether `error` is the quote store refusing a route (503 with a code of the store's), which a check past its bound may lift. */
+export const storeRefused = (error: unknown): boolean =>
+  apiErrorStatus(error) === 503 && (apiErrorCode(error) ?? "").startsWith("quote_store_")
+
+/** A misfit as the page says it: a column by its label on `form`'s sheets and its name, a table's own as the table's. */
+function misfitSaid(misfit: StoreMisfit, form: FormSpec | null): string {
+  if (misfit.column === null) return `The table ${misfit.problem}`
+  const found = form === null ? null : fieldColumn(form, { table: misfit.table, column: misfit.column })
+  const label = found?.column.label || readableName(misfit.column)
+  return `${label} (${misfit.column}) ${misfit.problem}`
+}
+
+/**
+ * What the app says of a route's failure (specs/workbench): tables that do not fit named
+ * misfit by misfit under each table, each column by its label on `form`'s sheets and its
+ * name; any other failure as its message. On one line with `oneLine`, as a bar shows it.
+ */
+export function appErrorMessage(error: unknown, form: FormSpec | null, { oneLine = false }: { oneLine?: boolean } = {}): string {
+  const found = storeMisfits(error)
+  if (found === null) return apiErrorMessage(error)
+  const database = found.environment === null ? "The quote store's database" : `The ${found.environment} database`
+  const tables = new Map<string, string[]>()
+  for (const misfit of found.misfits) tables.set(misfit.table, [...(tables.get(misfit.table) ?? []), misfitSaid(misfit, form)])
+  if (oneLine) {
+    const listed = [...tables].map(([table, said]) => `${table}: ${said.join(", ")}`)
+    return `${database} doesn't match the form: ${listed.join("; ")}.`
+  }
+  const listed = [...tables].flatMap(([table, said]) => [`  ${table}`, ...said.map((each) => `    ${each}`)])
+  return [`${database} doesn't match the form:`, ...listed].join("\n")
 }
 
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
@@ -278,13 +327,20 @@ export interface ListColumn {
 /** The quote_details columns the Quotes page lists after the quote's reference and title. */
 const LISTED = ["insured", "broker", "inception_date"] as const satisfies readonly QuoteDetailName[]
 
+/** The quote_details column `key` of `form`'s schema, or null when it has none. */
+function detailColumn(form: FormSpec | null, key: QuoteDetailName): SchemaColumn | null {
+  const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
+  return table?.inputs.find((candidate) => candidate.name === key) ?? null
+}
+
+/** A quote_details column as the schema names it: its label, else its name read as words. */
+export function detailLabel(form: FormSpec | null, key: QuoteDetailName): string {
+  return detailColumn(form, key)?.label || readableName(key)
+}
+
 /** The listed columns, as the release's sheets label and format them. */
 export function listColumns(form: FormSpec | null): ListColumn[] {
-  const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
-  return LISTED.map((key) => {
-    const column = table?.inputs.find((candidate) => candidate.name === key) ?? null
-    return { key, label: column?.label || readableName(key), column }
-  })
+  return LISTED.map((key) => ({ key, label: detailLabel(form, key), column: detailColumn(form, key) }))
 }
 
 /** A value as the list shows it: a date as a day, a number as its column formats it, a dash when blank. */
@@ -387,42 +443,6 @@ export function clearDraft(key: string): void {
 
 /** A new operation key (`utils/operationKey.ts`), which the pipeline save shares. */
 export { operationKey }
-
-// ── A quote asked for ────────────────────────────────────────────────────
-
-const CREATING_PREFIX = "haute-app-creating"
-
-/**
- * Where the operation key of a quote asked for is held in this tab until its answer comes:
- * one per app, person and what was asked, a new quote or one made from a quote.
- */
-export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
-
-/**
- * The operation key held under `key`, or a new one held there: a reload before the answer
- * came asks again with the same key, so the quote is made once. A tab that keeps nothing
- * asks with a new key each time.
- */
-export function heldOperation(key: string): string {
-  try {
-    const held = window.sessionStorage.getItem(key)
-    if (held !== null) return held
-    const operation = operationKey()
-    window.sessionStorage.setItem(key, operation)
-    return operation
-  } catch {
-    return operationKey()
-  }
-}
-
-/** Let go of the key held under `key`: its quote was made, or refused, and the next is asked for anew. */
-export function releaseOperation(key: string): void {
-  try {
-    window.sessionStorage.removeItem(key)
-  } catch {
-    // Nothing held, nothing to let go.
-  }
-}
 
 // ── A new quote keyed in the window ──────────────────────────────────────
 

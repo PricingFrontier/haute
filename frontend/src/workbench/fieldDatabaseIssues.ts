@@ -53,10 +53,29 @@ export function fieldDatabaseIssues(
       issues.push({ title: "New column needed", description: renamed ? sides() : `${column.name} is not in this database.`, action })
     }
   }
+  // A many-row table's key the export moves to its index: renamed for it, or the table keyed
+  // by the index's own column. Its name, type, text comparison and blanks come with it.
+  const keyMove = answer.changes.find((each) => (each.kind === "rename key" || each.kind === "rekey table") &&
+    each.table === table.name && each.column === column.name)
+  if (keyMove !== undefined) {
+    const was = databaseColumn().name
+    if (keyMove.kind === "rename key") {
+      issues.push({ title: "Different column name", description: sides(),
+        action: `Export SQL renames ${was} to ${column.name}, keeping its values and the table's key. Run the query on this database.` })
+    } else {
+      const filled = column.index === "numbered" ? `, taking ${was}'s row number where ${column.name} is empty` : ""
+      issues.push({ title: "Different row key", description: `The database keys these rows by ${was}; Haute keys them by ${column.name}.`,
+        action: keyMove.disposition === "sql"
+          ? `Export SQL makes ${column.name} the key in place of ${was}${filled}. Run the query on this database; a value missing or held twice stops it, changing nothing. ${was} stays, allowing blanks.`
+          : keyMove.description })
+    }
+  }
+  const coveredByKey = new Set(["renamed", "type", "collation", "null"])
   // A new definition supplies the name, type and text comparison together. The old
   // column is untouched; presenting each diagnostic as another repair would mislead.
   const coveredByAddition = new Set(["missing", "renamed", "type", "collation", "null"])
   for (const difference of differences) {
+    if (keyMove !== undefined && coveredByKey.has(difference.kind)) continue
     if (addition !== undefined && coveredByAddition.has(difference.kind) &&
       !(difference.kind === "null" && retainedRequiredSource)) continue
     switch (difference.kind) {
@@ -73,17 +92,20 @@ export function fieldDatabaseIssues(
         break
       case "type": {
         const found = databaseColumn()
-        if (DATABASE_TYPES[found.kind] === expectedType) {
-          // Of the field's type but holding less than Haute keeps there (a REAL for a Decimal).
-          issues.push({ title: "Database type too narrow",
-            description: `Haute: ${column.name} (${expectedType}). Database: ${found.name} (${found.type}), which holds less than ${expectedType} needs.`,
-            action: "Widen the database column as SQL details shows. Export SQL does not convert existing columns." })
-          break
-        }
-        issues.push({ title: "Different data type", description: sides(),
-          action: IDENTITY_NAMES.has(column.name) || table.name === QUOTE_DETAILS_NAME
-            ? `Convert this database column to ${expectedType} manually after checking its values; Haute has a fixed type.`
-            : "Change the type in Haute to match, or convert the data manually. Export SQL does not convert existing columns." })
+        // Of the field's type but holding less than Haute keeps there (a REAL for a Decimal).
+        const narrow = DATABASE_TYPES[found.kind] === expectedType
+        const retype = answer.changes.find((each) => each.kind === "retype column" && each.table === table.name && each.column === column.name)
+        const action = retype?.disposition === "sql"
+          ? `Export SQL ${narrow ? "widens" : "converts"} this column. Run the query on this database; a value that cannot convert stops it, changing nothing.`
+          : retype !== undefined ? "SQLite cannot change a column's type in place: rebuild the column and copy its values manually."
+            : narrow ? "Widen the database column as SQL details shows. Export SQL leaves its type unchanged."
+              : IDENTITY_NAMES.has(column.name) || table.name === QUOTE_DETAILS_NAME
+                ? `Convert this database column to ${expectedType} manually after checking its values; Haute has a fixed type.`
+                : "Change the type in Haute to match, or convert the data manually. Export SQL leaves its type unchanged."
+        issues.push(narrow
+          ? { title: "Database type too narrow", action,
+            description: `Haute: ${column.name} (${expectedType}). Database: ${found.name} (${found.type}), which holds less than ${expectedType} needs.` }
+          : { title: "Different data type", description: sides(), action })
         break
       }
       case "collation":

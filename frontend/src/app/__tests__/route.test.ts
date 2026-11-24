@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, renderHook } from "@testing-library/react"
-import { navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf, routeOf, setLeaveGuard, useAppRoute } from "../route"
+import { editPath, listPath, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf, routeOf, setLeaveGuard, useAppRoute } from "../route"
 
 const at = (path: string) => {
   const [pathname, search = ""] = path.split(/(?=\?)/)
@@ -28,11 +28,11 @@ describe("routeOf", () => {
     })
     expect(at("/quotes/new")).toEqual({ page: "new", from: null })
     expect(at("/quotes/new?from=ABC+1&option=2&as=renewal")).toEqual({ page: "new", from: { reference: "ABC 1", option: 2, relation: "renewal" } })
-    expect(at("/quotes/ABC-1/2/")).toEqual({ page: "quote", reference: "ABC-1", option: 2 })
+    expect(at("/quotes/ABC-1/2/")).toEqual({ page: "quote", reference: "ABC-1", option: 2, mode: "read" })
     // The reference decoded, as the address encodes it.
-    expect(at("/quotes/caf%C3%A9%20%231/1")).toEqual({ page: "quote", reference: "café #1", option: 1 })
+    expect(at("/quotes/caf%C3%A9%20%231/1")).toEqual({ page: "quote", reference: "café #1", option: 1, mode: "read" })
     // A quote whose reference is "new" is one of its own.
-    expect(at("/quotes/new/1")).toEqual({ page: "quote", reference: "new", option: 1 })
+    expect(at("/quotes/new/1")).toEqual({ page: "quote", reference: "new", option: 1, mode: "read" })
     expect(at("/elsewhere")).toEqual({ page: "missing" })
   })
 
@@ -53,7 +53,14 @@ describe("routeOf", () => {
     expect(newQuotePath(from)).toBe("/quotes/new?from=abc+1&option=2&as=alternative")
     expect(at(newQuotePath(from))).toEqual({ page: "new", from })
     expect(quotePath("a b/c", 4)).toBe("/quotes/a%20b%2Fc/4")
-    expect(at(quotePath("café #1", 3))).toEqual({ page: "quote", reference: "café #1", option: 3 })
+    expect(at(quotePath("café #1", 3))).toEqual({ page: "quote", reference: "café #1", option: 3, mode: "read" })
+    // Back to Quotes returns to the list as it was last shown.
+    at("/?view=team")
+    at("/quotes/ABC-1/2")
+    expect(listPath()).toBe("/?view=team")
+    // Opened to edit at an address of its own.
+    expect(editPath("a b/c", 4)).toBe("/quotes/a%20b%2Fc/4/edit")
+    expect(at(editPath("café #1", 3))).toEqual({ page: "quote", reference: "café #1", option: 3, mode: "edit" })
   })
 })
 
@@ -73,7 +80,7 @@ describe("navigate", () => {
       expect(await navigate("/quotes/abc/1")).toBe("moved")
     })
     expect(window.location.pathname).toBe("/quotes/abc/1")
-    expect(result.current).toEqual({ page: "quote", reference: "abc", option: 1 })
+    expect(result.current).toEqual({ page: "quote", reference: "abc", option: 1, mode: "read" })
 
     const before = reads
     const entries = window.history.length

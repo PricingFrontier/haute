@@ -469,9 +469,10 @@ class WorkbenchStoreExtra(BaseModel):
 
 
 class WorkbenchStoreChange(BaseModel):
-    """An addition from the exported SQL plan; compatibility details are separate."""
+    """An addition, a type change or a many-row table's key moved to its index from the
+    exported SQL plan; compatibility details are separate."""
 
-    kind: Literal["create table", "add column"]
+    kind: Literal["create table", "add column", "retype column", "rename key", "rekey table"]
     table: str
     column: str | None
     disposition: Literal["sql", "manual"]
@@ -711,6 +712,9 @@ class WorkbenchAppReleaseResponse(BaseModel):
     edit_role: str | None = None
     #: Whoever is signed in may change quotes; one who may not reads them.
     can_edit: bool = True
+    #: The environment whose quote store the app keeps quotes in (dev, test, prod), when one
+    #: is named.
+    environment: str | None = None
 
 
 class WorkbenchAppFormResponse(BaseModel):
@@ -942,6 +946,21 @@ class WorkbenchAppPeopleResponse(BaseModel):
     assigned to without typing a name."""
 
     people: list[str]
+
+
+class WorkbenchAppEditing(BaseModel):
+    """The page taking, renewing or letting go of a quote to edit: its session, a key of its
+    own for each opening of the quote, so one tab's leaving lets go of no other's hold."""
+
+    session: str = Field(min_length=8, max_length=64)
+
+
+class WorkbenchAppEditingResponse(BaseModel):
+    """Who holds the quote to edit after the request: the one asking once taken or renewed,
+    none once let go; a lease lapses *lease_seconds* after it was taken unless renewed."""
+
+    editor: str | None
+    lease_seconds: float
 
 
 # ---------------------------------------------------------------------------

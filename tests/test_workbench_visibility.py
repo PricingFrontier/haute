@@ -71,6 +71,45 @@ def test_what_shows_is_what_the_shared_cases_say(case: dict[str, Any]) -> None:
     assert sorted([list(pair) for pair in result.hidden]) == case["hidden_columns"]
 
 
+@pytest.mark.parametrize("ticked", [True, False])
+def test_a_text_box_s_column_shows_with_it_and_is_left_out_only_while_it_is_hidden(
+    ticked: bool,
+) -> None:
+    """A column a Text Box holds is a column values are typed into: kept in the quote while
+    the box shows, as a Collection's field is, and left out while it is hidden."""
+    form = copy.deepcopy(CASES["forms"]["tests"])
+    page = next(held for held in form["pages"] if held["id"] == "p_target")
+    widgets = page["sections"][0]["widgets"]
+    place = next(at for at, held in enumerate(widgets) if held["id"] == "w_target")
+    widgets[place] = {
+        "id": "w_box",
+        "name": "text_box_1",
+        "type": "textBox",
+        **{key: widgets[place][key] for key in ("x", "y", "w", "h")},
+        "fields": [{"table": "target", "column": "x"}],
+        "show_when": {"match": "all", "conditions": []},
+    }
+    page["show_when"] = {
+        "match": "all",
+        "conditions": [
+            {
+                "table": "inputs",
+                "column": "tick",
+                "op": "ticked",
+                "values": [],
+                "field": None,
+                "days": 0,
+            }
+        ],
+    }
+
+    result = visibility(FormSpec.model_validate(form), {"inputs": [{"tick": ticked}]})
+
+    assert ("w_box" in result.widgets) is ticked
+    assert (("w_box", "target", "x") in result.fields) is ticked
+    assert (("target", "x") in result.hidden) is not ticked
+
+
 def every_type_form(**show_when: Any) -> FormSpec:
     """The fixture's form of every type, its second sheet shown as *show_when* says."""
     form = copy.deepcopy(CASES["forms"]["tests"])

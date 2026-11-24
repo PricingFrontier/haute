@@ -14,10 +14,12 @@ vi.mock("../../api/app", () => ({
   changeAppQuote: vi.fn(),
   fetchAppPeople: vi.fn(),
   openAppQuote: vi.fn(),
+  editAppQuote: vi.fn(async () => ({ editor: "ana@example.com", lease_seconds: 180 })),
+  releaseAppQuote: vi.fn(async () => {}),
   createAppQuote: vi.fn(),
 }))
 
-import { changeAppQuote, fetchAppPeople, fetchAppQuotes, openAppQuote, type QuotesQuery } from "../../api/app"
+import { changeAppQuote, editAppQuote, fetchAppPeople, fetchAppQuotes, openAppQuote, type QuotesQuery } from "../../api/app"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppQuote, WorkbenchAppQuotesResponse } from "../../api/types"
 import ToastContainer from "../../components/Toast"
@@ -86,9 +88,11 @@ describe("QuotesPage", () => {
     expect(within(row).getByText(/2026/)).not.toHaveTextContent("2026-11-01")
     expect(within(row).getByText("You")).toBeInTheDocument()
     expect(within(row).getByTestId("stage-final")).toBeInTheDocument()
-    expect(within(row).getByRole("link", { name: "Q-000001/1" })).toHaveAttribute("href", "/quotes/Q-000001/1")
+    // The reference is the quote's label, opening nothing: Read and Edit open it.
+    expect(within(row).getByText("Q-000001/1")).toBeInTheDocument()
+    expect(within(row).queryByRole("link")).toBeNull()
     expect(within(screen.getByTestId("quote-row-Q-000002/1")).getByText("jo@example.com")).toBeInTheDocument()
-    for (const header of ["Ref", "Quote", "Insured", "Placing broker", "Inception date", "Stage", "With", "Saved"]) {
+    for (const header of ["Quote reference", "Quote name", "Insured", "Placing broker", "Inception date", "Stage", "With", "Saved"]) {
       expect(screen.getByRole("columnheader", { name: header })).toBeInTheDocument()
     }
     expect(screen.getByTestId("list-team")).toHaveTextContent("5")
@@ -168,13 +172,24 @@ describe("QuotesPage", () => {
     expect(screen.getByText("2 quotes")).toBeInTheDocument()
   })
 
-  it("opens a quote from its row, and duplicates one in the New quote window over the list", async () => {
+  it("reads a quote from its row's Read and edits it from Edit, the row itself opening nothing, and duplicates one in the window", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2, version: 3 })]))
     vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ insured: "Acme" }] } }))
     show()
 
-    fireEvent.click(await screen.findByTestId("quote-row-ABC 1/2"))
+    const row = await screen.findByTestId("quote-row-ABC 1/2")
+    fireEvent.click(within(row).getByText("ABC 1/2"))
+    fireEvent.click(within(row).getByText("Fleet"))
+    expect(window.location.pathname).toBe("/")
+    // Read, Edit and the menu show whether or not the row is hovered.
+    expect(within(row).getByRole("button", { name: "Actions for ABC 1/2" })).toBeInTheDocument()
+    fireEvent.click(within(row).getByRole("button", { name: "Read ABC 1/2" }))
     expect(window.location.pathname).toBe("/quotes/ABC%201/2")
+    await navigate("/", { force: true })
+    fireEvent.click(within(await screen.findByTestId("quote-row-ABC 1/2")).getByRole("button", { name: "Edit ABC 1/2" }))
+    // Held as the asker's first, then opened to edit.
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC%201/2/edit"))
+    expect(editAppQuote).toHaveBeenCalledWith("ABC 1", 2, expect.any(String))
     await navigate("/", { force: true })
     await pick("ABC 1/2", "Duplicate")
 
@@ -199,7 +214,7 @@ describe("QuotesPage", () => {
     expect(window.location.pathname).toBe("/")
   })
 
-  it("makes an alternative at its own address, and copies a quote's link", async () => {
+  it("copies a quote's link", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2 })]))
     const writeText = vi.fn(async () => {})
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } })
@@ -208,9 +223,21 @@ describe("QuotesPage", () => {
     await pick("ABC 1/2", "Copy link")
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/quotes/ABC%201/2`))
     expect(await screen.findByText("Link to ABC 1/2 copied")).toBeInTheDocument()
+  })
+
+  it("starts an alternative in the window over the list, filled from the quote under its reference", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2 })]))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ quote_name: "Fleet", insured: "Acme" }] } }))
+    show()
 
     await pick("ABC 1/2", "Create alternative")
-    expect(`${window.location.pathname}${window.location.search}`).toBe("/quotes/new?from=ABC+1&option=2&as=alternative")
+
+    const window_ = await screen.findByRole("dialog", { name: "Alternative of ABC 1/2" })
+    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Quote name" })).toHaveValue("Fleet"))
+    expect(within(window_).getByRole("textbox", { name: "Quote reference" })).toHaveValue("ABC 1")
+    expect(within(window_).getByRole("textbox", { name: "Quote reference" })).toBeDisabled()
+    expect(openAppQuote).toHaveBeenCalledWith("ABC 1", 2)
+    expect(window.location.pathname).toBe("/")
   })
 
   it("closes a row's menu on Escape, giving the focus back to its button", async () => {
@@ -233,7 +260,7 @@ describe("QuotesPage", () => {
     show()
     await screen.findByTestId("quote-row-Q-000001/1")
 
-    expect(within(screen.getByRole("combobox", { name: "Order" })).getByRole("option", { name: "Reference" })).toHaveValue("reference")
+    expect(within(screen.getByRole("combobox", { name: "Order" })).getByRole("option", { name: "Quote reference" })).toHaveValue("reference")
     fireEvent.click(screen.getByTestId("new-quote"))
 
     expect(screen.getByRole("dialog", { name: "New quote" })).toBeInTheDocument()
@@ -379,6 +406,18 @@ describe("QuotesPage", () => {
     }
   })
 
+  it("says who is editing a quote whose Edit is pressed, staying on the list", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
+    const detail = { message: "jo@example.com is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo@example.com" }
+    vi.mocked(editAppQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, detail.message, { detail }, detail))
+    show()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Q-000001/1" }))
+
+    expect(await screen.findByText("jo@example.com is editing Q-000001/1")).toBeInTheDocument()
+    expect(window.location.pathname).toBe("/")
+  })
+
   it("offers one who may only read quotes nothing that changes them", async () => {
     useAppStore.setState({ release: { ...release, can_edit: false, edit_role: "Quotes.Edit" } })
     vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page([appQuote()])).mockResolvedValueOnce(page([]))
@@ -386,7 +425,8 @@ describe("QuotesPage", () => {
 
     await screen.findByTestId("quote-row-Q-000001/1")
     expect(screen.queryByTestId("new-quote")).toBeNull()
-    expect(screen.getByRole("button", { name: "Open Q-000001/1" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Read Q-000001/1" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Edit Q-000001/1" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Actions for Q-000001/1" }))
     expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy link"])
     fireEvent.keyDown(document.body, { key: "Escape" })

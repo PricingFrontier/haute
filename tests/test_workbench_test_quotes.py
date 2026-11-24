@@ -443,6 +443,29 @@ def test_a_pipeline_failing_on_the_quote_fails_it(project: Path) -> None:
     assert result["moves"] == []
 
 
+def test_a_quote_is_priced_on_a_pipeline_deploys_dry_run_refuses(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deploy's dry run prices the null quote, which a pipeline can fail while every quote it
+    is given prices; the Preview's test quotes are priced without it, each on its own, and
+    the build still runs it."""
+    import haute.deploy._schema as schema
+    from haute._workbench_output import WorkbenchOutputError
+
+    def refused(*_: Any, **__: Any) -> Any:
+        raise WorkbenchOutputError("pricing does not fit the null quote")
+
+    http = client()
+    assert _save(http).status_code == 200
+    monkeypatch.setattr(schema, "_dry_run_output_schema", refused)
+    # Every dry run runs: none is answered from the schema cache.
+    monkeypatch.setattr(schema, "_read_schema_cache", lambda _path: {})
+
+    assert _run(http).json()["outcome"] == "unchanged"
+    with pytest.raises(WorkbenchOutputError, match="does not fit the null quote"):
+        build_release(project, project / "build" / "app")
+
+
 def test_a_pricing_past_its_deadline_fails_and_closes_its_release_when_it_ends(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -893,9 +916,9 @@ def test_a_run_whose_resolution_runs_past_the_deadline_fails(
     resolving = threading.Event()
     real_resolve = routes.resolve_release
 
-    def slow_resolve(root: Path) -> Any:
+    def slow_resolve(root: Path, **options: Any) -> Any:
         resolving.wait(5)
-        return real_resolve(root)
+        return real_resolve(root, **options)
 
     monkeypatch.setattr(routes, "resolve_release", slow_resolve)
     monkeypatch.setattr(routes, "RUN_TIMEOUT_SECONDS", 0.05)

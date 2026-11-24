@@ -914,9 +914,12 @@ Out of scope:
     only its content scrolls, keeping Close and Download SQL visible on short screens.
     Secondary actions use the existing quiet icon actions and all controls use theme tokens.
 
-    The schema pane's collapsed Database changes section lists only missing columns,
-    grouped by table, and missing tables labelled New table. Its heading counts columns
-    and tables to add instead of saying Needs attention. With no additions it says No
+    The schema pane's collapsed Database changes section lists only missing columns, type
+    changes and key changes, grouped by table, missing tables labelled New table, type
+    changes Type change, a key column renamed for its index Rename and a table keyed by its
+    index Key change. Its heading counts columns and tables to add, type changes and key
+    changes instead of saying Needs attention; a field the export re-keys reads Rename or Key
+    change, not Needs attention, while the change is the SQL's. With none it says No
     additions, not that the database is compatible. It has no migration-review prose,
     retained-field lists, rename decisions, provider/revision metadata or Check environments
     action. The original snapshot time is available in Refresh's tooltip. It uses only the
@@ -924,15 +927,40 @@ Out of scope:
 
     Live SQL export and this list use the same name-based additions plan: each Haute schema
     column absent from its database table is added, and each missing table is created.
-    Existing columns are never changed, renamed or removed, regardless of type, key, row
-    structure or explicit rename choices. Renaming a field adds its new name empty if absent.
+    An existing column held under the field's name and of another type (or holding less, a
+    REAL for a Decimal) is changed to the field's type in place, each value converted as it
+    stands, on SQL Server and PostgreSQL; SQLite, which cannot, gets a note and the change is
+    manual (2026-11-23, reversing 2026-11-07's additions only for types). The script is one
+    transaction, so a value that does not convert stops it and nothing changes, additions
+    included. quote_details' and the identity's types and a table of other rows are never
+    changed. A many-row table's index, known by its place in the primary key whatever it is
+    named, moves the key with it (2026-11-23, reversing 2026-11-07's rule for keys too): a
+    key column of the index's type and comparison under another name, no column holding the
+    index's name, is renamed for the index, keeping its values and the key; a table keyed by
+    a column beside one holding the index's name, as a store keyed by its row number made it
+    before 2026-11-05 (`quote_row`, the index a column of its own, a numbered one left
+    empty), is keyed by that column, a numbered index's only while its column holds no values
+    (values there, as a swap of two names leaves them, would be taken for the rows' numbers):
+    a numbered index filled from the old key's row number where empty, the index typed as
+    the store types it and made to take no null, the primary
+    key dropped by whatever name it has and made again as the store makes it, the old key
+    column kept taking a null, its DROP commented out. An index value missing or held twice
+    in a quote stops the script, changing nothing. SQLite, which cannot change a key, gets a
+    note and the change is manual. An index under a new name whose type differs from the key
+    column's is added beside it with its note, as before: converted row numbers would match
+    no allowed value. The comparison's refusals of such an index's rename, and its notes of
+    the old key column, are not blockers while the export re-keys the table. Other columns
+    are never renamed or removed, regardless of key, row structure or explicit rename
+    choices, and a column the analyst pairs is not converted: renaming a field adds its new
+    name empty, at its type, if absent.
     Index/row conflicts cannot suppress unrelated additions within the same table. Matching
     ignores column-name case when deciding whether adding another would duplicate a name.
     New columns on existing tables are nullable; existing data and keys remain intact.
     SQL omits migration, retention and unresolved-rename commentary. Only a problem that
     prevents an addition, such as an invalid provider name, is shown beside that addition
     and in SQL comments. Valid additions remain exportable. The shared renderer still writes
-    the script, and the offline API keeps its additions-only policy.
+    the script, and the offline API keeps additions and type changes; its plan from an
+    earlier form has no catalogue, so an index's rename there is still added with its note.
     Full compatibility checks, saved fields, schema editing and field/table difference
     details remain separate from this additions list; no additions does not imply the
     current app can use the database. Operational guidance belongs in documentation.
@@ -1325,7 +1353,7 @@ Out of scope:
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Section and a
-  Heading, in the structure colour, a Collection and a Table, in the entry colour, a Chart,
+  Heading, in the structure colour, a Collection, a Table and a Text Box, in the entry colour, a Chart,
   in Explore's colour, an Import and an Export, in the data colour the Data Input and the
   Data Output have, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
@@ -1344,7 +1372,8 @@ Out of scope:
   dragged component moves (a Table 720 by 200 with 3 rows, numbered, compact,
   lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns
   across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
-  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, an
+  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, a
+  Text Box 480 by 120 holding no column, an
   Import 160 by 40 labelled "Import", from a CSV whose delimiter is found from the file,
   filling no table and replacing a many-row table's rows, an Export 160 by 40 labelled
   "Export", of no tables, to a CSV named `{quote_reference}-{quote_option}`, headed by the
@@ -1440,13 +1469,16 @@ Out of scope:
   layout and its look; the tabs are drawn in the component's colour, Config first,
   and the pane chosen for a component is kept for it while the editor is open. A Chart's
   panel stays one list. Every component's panel starts with its **Component name**, at
-  the top of its Config pane, or of its one list for a Chart and a Heading: a text field
+  the top of its Config pane, or of its one list for a Chart, a Heading and a Text Box: a text field
   committed on blur or Enter as one undo step, a name that is not an identifier or that
   another component has, whatever its case, refused at the field saying which, the
   component keeping its name. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
-  also move between. An Import's and an Export's panels are in the two panes too:
+  also move between. A Text Box's panel has its Field, a select of every one-row table's
+  Text inputs, grouped by table and each by its label, but those the underwriter app sets
+  ("Choose a Text column" for none, a column it holds that it can no longer take shown
+  first, disabled), and its Show when. An Import's and an Export's panels are in the two panes too:
   **Config**, what it does, and **Display**, its Label, committed on blur or Enter, and its
   Show when. Config starts with its Format, CSV, Excel or SQL, three toggles the arrow keys
   also move between, a format chosen starting with a new component's settings for it but
@@ -1474,27 +1506,81 @@ Out of scope:
   cross that takes the name away. An Export's then
   holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
   the file name and starting the other's settings afresh; a file's File name, a CSV's
-  Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
-  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: under a
-  heading row naming Field, Sheet, Cell and Label cell, a row for each cell in order, with
-  a select of the columns of the one-row tables, by table, each by its label (as a
-  Collection's fields are offered), the sheet's name, the cell's address and its label's
-  address, each in a text field committed on blur or Enter, each address trimmed and taken
-  in capitals, and a cross that takes the cell away; a
-  cell whose column is no longer in the schema, or no longer of a one-row table, shows it
-  first, as "Missing column" or the column's label, disabled. Under them Add a cell, a
-  select of the same columns, a column chosen adding a cell of it on the last cell's sheet
-  in the cell under the last cell's, its label in the cell under the last cell's label
-  while that cell has one, or `Sheet1` and `A1` with no label for the first, the select
-  showing Add a cell again. Then Tables: for each block in order, its table's name, or
+  Delimiter (Comma, Semicolon or Tab), but for Cells Headers (Names or Labels), and
+  Values (Raw or Formatted, a workbook of cells Formatted until Raw is chosen); or a
+  database's Connection. Then, of Cells, Cells: the workbook's sheets, as the
+  workbook makes them, those its cells name in the order first named, then those only its
+  tables are written to, then those added and holding nothing yet (a name matched whatever
+  its case, as Excel matches it, shown as first spelled), each a group that is opened and
+  closed, open to start: its header, a toggle, its name in a text field committed on blur
+  or Enter (a new name, refused while blank, while Excel would refuse it or while another
+  sheet, one a table alone is written to included, holds it, renaming the sheet of each of
+  its cells and of each table written to it, in one change, whether or not it holds cells,
+  the focus staying in the name while it was there), how many cells it holds and, while
+  any table is written to it, how many tables, and a warning mark while one of its cells or
+  tables clashes; under it, while
+  open, a row for each of its cells in order, as a schema column's row is drawn: a grip it
+  is dragged by, and Alt+Up and Alt+Down moving it, the order the cells of every sheet in
+  turn, a cell moved past its sheet's first or last going to the sheet before or after,
+  dropped on another sheet's cell taking its place in that sheet, or on another sheet's
+  header going last in that sheet; its number in that order; its column's label, or
+  "Missing column" for one the schema no longer holds; on one line after it, its address
+  (`B3`), its label's address and its True/False text while it has them; a settings
+  button opening its settings under it, one cell's at a time, the open cell staying open
+  as it or another moves, is added or is taken away, and none open after a change from
+  outside the list (an undo's); and, under its cells, Add a cell to the sheet, a
+  `ColumnSelector` of the columns a cell can be given drawn as a quiet "+ Add a cell" text
+  action, a column chosen
+  adding a cell of it under the sheet's last cell, in the cell under that cell's, its label
+  in the cell under that cell's label while that cell has one, or in `A1` with no label in
+  a sheet with none. A sheet keeps what its rows hold (a cell's open Custom) while the
+  sheets around it change. Under the sheets Add a sheet, a dashed add button as wide as the
+  pane, a sheet named `SheetN` (the first such
+  name no sheet holds) shown last, open and holding no cells until a cell is added to it
+  or moved into it, with a cross while it holds no cells and no table is written to it,
+  that takes it away and forgets it was closed; a sheet holding no cells is not saved. A cell's settings: Field, a searchable
+  `ColumnSelector` of the one-row tables' columns as a sheet shows them, each as
+  `table.column` with its label and its type, searched by any of them, a column the schema
+  no longer holds, or no longer of a
+  one-row table, shown and marked but never offered; Cell, in a text field committed on
+  blur or Enter, the address trimmed and taken in capitals; Label, a select of
+  None, Above, Under, Left, Right and Custom, read from where the label is (None while it
+  has none, one of the four while it is that cell next to the cell, Custom anywhere else),
+  a position past the sheet's edge, or any while the cell's address is not a cell,
+  disabled; a position chosen puts the label in that cell, None takes it away, and Custom
+  shows Label cell, its address in a text field committed on blur or Enter, trimmed and
+  taken in capitals, staying shown until another choice; while the label is in a position,
+  a new address for the cell takes its label with it to the same position, in one change,
+  the label left where it is when the new address has no such cell; and, while its column
+  is True/false or it holds True/False text, True/False: a select of
+  TRUE / FALSE (Excel's own), X / blank, blank / X, Yes / No and Custom, Custom showing a
+  True and a False text field committed on blur or Enter, Custom chosen from TRUE / FALSE
+  writing the blank True and False its fields show, a cell given a column that is not
+  True/false losing its text; and at their foot Remove cell, in the danger colour, asking
+  "Remove cell n, its label?" with where it stops writing (its sheet and address, and its
+  label's address while it has one), Remove in the danger colour, and taking the cell away
+  only on Remove. The cells are written in the order shown, each sheet's together: a form
+  whose cells interleave sheets is shown grouped, and written grouped at its next change of
+  the cells, which leaves the workbook as it was, each sheet then written under the
+  spelling its cells first name it by, its tables' too, as Excel holds two spellings as
+  one sheet. A sheet stays closed or open as it was left, while the editor is open. Then Tables: for each block in order, its table's name, or
   "Missing table", with a cross that takes the block away; its Sheet and its Cell, the
   address of its top-left corner, in text fields as a cell's are; its Header, a select of
-  Labels, Names or None; its columns in order, each by its label, or "Missing column",
+  Labels, Names or None; while one of its columns is True/false or it holds True/False text,
+  its True/False, as a cell's, for every True/false column it writes; its columns in order, each by its label, or "Missing column",
   with a cross that takes it out, dragged or moved with Alt+Up and Alt+Down into a new
   order; and Add a column, a select of its table's columns as a sheet shows them (the
   index among them) that it does not hold yet. Under them Add a table, a select of the
   schema's tables, a table chosen adding a block of it with no columns, headed by labels,
-  at `A1` of a sheet named by the table. Otherwise Tables, a
+  at `A1` of a sheet named by the table. At the pane's foot, held there as the pane scrolls,
+  while a workbook of cells writes two things to one place, Clashes, in the warning colour:
+  how many, and a line for each, saying what clashes: an address written by more than one
+  cell or label (`Slip!B2 is written by cell 1 (Limit) and the label of cell 2 (Region)`),
+  a table running over an address written already, or a table running over another table
+  on its sheet (a table runs down from its address over its columns, as its rows are not
+  known until it is written), each cell by its number and its field's label, each table by
+  its number, its table and where it starts, a sheet's name matched whatever its case, as
+  Excel matches it; these are the clashes the export's problems name. Otherwise Tables, a
   checkbox per schema table, ticked in order; and a table it exports that is no longer
   in the schema a row of its own, "Missing table", with a cross. Each change is one undo
   step. While building, the showing sheet's tab has a settings
@@ -1790,6 +1876,22 @@ Out of scope:
   typed. While building, a Heading with no text says "Type its text in the panel on the
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
+- **Text Boxes.** A Text Box is a box an underwriter types free text into, such as their
+  comments on the risk, over as many lines as they like. It holds one column, a Text input
+  of a one-row table, chosen in its panel, and is drawn as that column's label, with its
+  required mark and help as a Collection's field has them, over a box filling the rest of
+  the component, in the sheets' colours as a Collection's box is (the input cells' fill, the
+  borders' colour and the font's), which wraps what is typed and scrolls past its height.
+  A draft is kept to its column: given another column while typing, the box starts afresh. What is typed is the column's value, committed as the box is left, as a
+  Collection's box commits it: saved, priced and stored as any input's, so a comment goes
+  to the quote store as Text (`NVARCHAR(max)` on SQL Server), however long, and breaks the
+  column's rules (required, its options) as a box's value does, marked the same way. The
+  box is read only while the values are or the app sets the column, and while the column
+  it holds is no longer a Text input of a one-row table. Hidden, its column is left out of
+  the quote, as a Collection's field is. While building, a Text Box with no column says
+  "Choose its field in the panel on the right"; in Preview it shows nothing, only the
+  dashed frame any component with a problem has. A Text Box with no column, a column no
+  longer in the schema, or one that is not a Text input of a one-row table is a problem.
 - **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
   box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
   Import, a database's or an API's, a globe), with no label its mark alone, in a frame of the sheets' border colour on the
@@ -1823,7 +1925,9 @@ Out of scope:
   `quote_details`, held whole; an output as priced; and nothing for one holding no value
   or one only the app sets, which Preview's sample holds none of (the quote's reference
   and option are Preview's stand-in, `PREVIEW` and 1). A number
-  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, and text is always
+  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, or, where its cell
+  or block gives True/False text, that text, as text: the True text for a ticked box and the
+  False text for one unticked or empty, a blank text leaving the cell empty; and text is always
   text, never read as a formula or an error value, whatever it starts with; a whole number
   past 2^53, which Excel cannot hold exactly as a number, is written as its digits, as text,
   so no digit is lost. A cell's label cell holds its column's label as the sheets label
@@ -1835,7 +1939,10 @@ Out of scope:
   sample, the rows the sheets hold anything typed in, in their order, or, for a table with
   a row for each value, every value's row in the values' order, each output that of the
   priced row of the same index; a table of outputs alone its priced rows in their order. A many-row table with no rows writes its header alone. A block whose rows would
-  run past row 1,048,576 is refused, naming it. A number cell
+  run past row 1,048,576 is refused, naming it. While its Values are Raw, a number is
+  written as it is in Excel's General format, with no currency sign, grouping or fixed
+  places (10000, a percent as its fraction, 0.175), for a system that reads the workbook;
+  a date is still shown `yyyy-mm-dd`. While they are Formatted, a number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped
   unless the column says not), the value itself written unrounded; where the sheets trim
@@ -2020,7 +2127,8 @@ Out of scope:
   panel beside the sheets listing them by name:
   - **Priced as saved.** Test quotes are priced on the project as saved, resolved as
     `haute app build` resolves it (the pipeline file, the form folder and the allowed
-    values its params files give), through the scorer the underwriter app prices with, one
+    values its params files give) but without deploy's dry run, so each quote prices or
+    fails on its own, through the scorer the underwriter app prices with, one
     quote a request and its answer whole: no row limit, and a quote too large for a
     request, or one that runs out of memory or time, fails, named so. While the project
     has unsaved changes, each of the panel's actions that prices saves it first, the
@@ -2130,7 +2238,7 @@ Out of scope:
   revision or another release is refused (409), so a page loaded from an earlier release
   reloads rather than price on a newer contract or model, a release that changed the
   model alone included: the page says it was drawn for an earlier release and offers
-  Reload. While the app's quotes are closed (below) it prices nothing. The request is built
+  Reload. While the store cannot take a quote (below) it prices nothing. The request is built
   as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
@@ -2157,7 +2265,10 @@ Out of scope:
   since who may change quotes cannot be told. `haute app serve` builds a release of the
   project as it is saved and serves it on the analyst's machine, the principal the
   analyst's git identity, able to change quotes unless `--reader` signs them in as a
-  reader, so the sheets underwriters will see are checked before a merge. Served so, the
+  reader, so the sheets underwriters will see are checked before a merge. It builds that
+  release without the checks a deploy runs: no test quote is priced and the pipeline is
+  not dry-run, so the app opens whatever those would find, and `haute app build`, which CI
+  runs, and deploy still run them. Served so, the
   app binds loopback and takes a request only for a loopback host (`localhost`,
   `127.0.0.1` or `::1`, on any port) and only without forwarded metadata (`Forwarded` or
   an `X-Forwarded-*` header), refusing any other (400) before it signs the request in:
@@ -2171,11 +2282,16 @@ Out of scope:
   at the database `connections.toml` names for `[dev]` and signed in from `.env` or Microsoft
   Entra ID. In every environment, the people who own that database make and change its tables
   in SQL, starting from the SQL the schema's pane writes.
-  The app starts whatever its store holds, and its quotes are open only while the store's
-  check (below) finds nothing wrong. Until then they are closed: every quote route and
-  `POST /api/app/price` answer 503 naming why, `quote_store_mismatch` with each way the
-  database's tables differ from the release's form and each privilege its sign-in lacks,
-  `quote_store_read_only` for a SQLite store whose file, or the folder it is in, the app
+  The app starts whatever its store holds, and its page opens whatever the store holds too:
+  the store is checked where it is used, for the tables that use reads and writes. The
+  Quotes page's list and the people quotes are with read `quote_details` alone; everything
+  done with one quote (making, opening, saving, assigning, noting, archiving, restoring,
+  marking final, amending and exporting it, and reading its activity) reads and writes every
+  table of the release's form and the store's activity table, and the pricing is held to
+  them too, since nothing is priced that could not be saved. Each use is answered 503 naming
+  why while what it uses cannot be used: `quote_store_mismatch` with each way the tables it
+  uses differ from the release's form and each privilege its sign-in lacks on them, so the
+  list is read while a table only a quote reads differs, `quote_store_read_only` for a SQLite store whose file, or the folder it is in, the app
   cannot write to, naming the file, since no save could land,
   `quote_store_unreachable` for a server database the app cannot reach or that refuses its
   sign-in, said naming the variables that place it and sign in to it, never what the driver
@@ -2187,14 +2303,22 @@ Out of scope:
   up; and
   `quote_store_environment` for an app started with no environment named, naming
   `HAUTE_ENVIRONMENT`, or one whose environment or database cannot be resolved, naming the
-  variable to set. `GET /api/app/release` says whether the quotes are open (`quotes`) and,
-  while they are closed, the refusal; the page then opens no quote, new or saved, saying the
-  quotes are unavailable, so nothing is keyed or priced that could not be saved, and a quote
-  open as they close stops pricing and saving, its values kept in the browser as unsaved
-  values are (below) and offered back once they open. A closed app checks again at most once
-  every 10 seconds, a request in between answered with the last check's refusal, and the
-  page asks `GET /api/app/release` again on the same bound, so tables put right in SQL open
-  the quotes with no restart, no new image and no reload. A statement the database refuses
+  variable to set; the last three refuse every use. A mismatch's refusal holds each misfit by
+  its table, its column when it is one, and what is wrong (`misfits`), beside the text of
+  each (`differences`, as `policy_details.is_renewal is missing`), and names the environment
+  whose database it is. `GET /api/app/release` says whether the whole store fits (`quotes`),
+  every table and privilege, as a rollout checks it; the page does not close on it. The page
+  shows a refusal where it was met, each misfit under its table, a column by its label on
+  the sheets and its name ("Renewal (is_renewal) is missing"), and nothing more, as whoever
+  reads it knows who looks after the database: the Quotes page says why where its list would
+  be, and asks for it again every 10
+  seconds until it is read; a quote that cannot be opened says why where it would open, and
+  asks for it again on the same bound, still saying why, until it opens; one that cannot be
+  made says why in the New quote window, nothing made or kept; and a quote open when its pricing or a save is refused stays open, saying why, its
+  values kept in the browser as unsaved values are (below). A store whose tables do not fit,
+  or that cannot be used, is checked again at most once every 10 seconds, a request in
+  between answered with the last check's refusal, so tables put right in SQL are used with no
+  restart, no new image and no reload. A statement the database refuses
   because a table or column is not as the check found it makes the app check again at once:
   the request is refused as above when the check finds a difference, and when it finds none
   is answered 422 `quote_store_refused`, saying the store refused the change and the quote's
@@ -2244,18 +2368,21 @@ Out of scope:
   the list are its name, a search box (`/` focuses it) matching every word typed in the
   reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
   reference matched whatever the case of its letters), in Team an assignee to
-  narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
-  order, or insured) and New quote (`N`), which opens the new quote's window over the list;
+  narrow it to, the order (newest saved, quote reference, A to Z with each reference's
+  options in order, or insured) and New quote (`N`), which opens the new quote's window over the list;
   neither key acts from a control it is typed or picked in, so `N` in a select picks its
   option. The list is a table at Haute's
   density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
   quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
-  else its reference and option), its insured, broker and inception date under their columns'
+  else its reference and option), each under its column's name as the schema names
+  quote_details' columns (its label, else its name read as words: Quote reference, Quote
+  name), as the order names them too, its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
   relative, with the time on hover. Relative times in the app read as everywhere in Haute:
   "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
-  ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open and a menu of what is done to the quote as a whole:
+  ago") below a week, then the day and month, with the year when it is not this year. A row opens nothing, its reference included, and
+  always shows Read, Edit for one who may change quotes, a filled button in the accent blue,
+  and a menu of what is done to the quote as a whole:
   Duplicate, Renew, Create alternative, Archive or Restore, and Copy link, Copy link alone
   for one who may only read quotes. Archive and Restore reload, once answered, the list
   showing then, whichever list the underwriter has moved to. These are the list's, not the
@@ -2264,10 +2391,29 @@ Out of scope:
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
   none archived.
-- **A quote in the app.** A quote opens at `/quotes/{reference}/{option}` on the sheets,
+- **A quote in the app.** A quote opens to read at `/quotes/{reference}/{option}`, the
+  address Copy link copies, and to edit at `/quotes/{reference}/{option}/edit`, a new quote
+  opening to edit once it is made. Read shows the quote as saved, its price as saved, taking
+  no typing and no change, with Edit in its bar. One person edits a quote at a time, the same
+  person from any tab: Edit holds the quote for its editor, and pressed on a quote someone
+  else is editing it says who and opens nothing. The hold is a lease the page renews every 30
+  seconds while the quote is open to edit, let go as the page leaves the quote or the tab
+  closes, and lapsing three minutes after the page stops renewing it, so a closed laptop
+  frees the quote; it is kept in the app's memory, right for an app running as one replica,
+  and a restart frees every quote. While it is held every save and change from anyone else is
+  refused naming its editor, and a page whose lease someone else took once it lapsed holds
+  the quote read only, saying who is editing it, what was typed kept in the browser. Nothing
+  is lost when a lease lapses early: a save over a version the quote moved past is refused
+  as ever. A quote read only says so beside its stage, its Save, Mark final and Amend saying
+  to press Edit, and shows that it is final or archived however it was opened; the notice
+  naming who is editing it offers Try again, which takes the quote once it is free, and says
+  what was typed is kept only when something was. Back to Quotes returns to the list as it
+  was last shown, its list, stage, search and order. The bar names the environment the app
+  keeps its quotes in beside the release. Mark final on a quote saved without a price says
+  the quote has no price yet. The quote is on the sheets,
   under its bar: back to Quotes, its reference and option, its name (its
-  `quote_details.quote_name`, typed in the bar as on the sheets and saved with the next
-  Save), its stage, Draft or Final, and, when archived, Archived, who it is with (reassigned
+  `quote_details.quote_name`, given in the New quote window as the quote is made and
+  never changed after), its stage, Draft or Final, and, when archived, Archived (restored from the Quotes page's menu alone, as its notice says), who it is with (reassigned
   from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
   Amend, which asks why, History, and why the quote has no price. Beneath are who saved it
   and when and the quote it came from. The quote is priced as it is
@@ -2302,39 +2448,40 @@ Out of scope:
   saving anything typed since; only a refusal (a status below 500) lets it go, and a repeat
   that landed and was changed since by someone else is let go as done, the page offering
   the newest. While a save or a change is being made, Save and every control that changes
-  the quote are off. The cells of the columns the app sets take no typing; assigning,
+  the quote are off. The cells of the columns the app sets take no typing, nor, once the quote is made,
+  does its name's, which every save keeps as it was made; assigning,
   restoring, marking final and amending each change the quote's details, its
   values and prices kept, which the sheets take on, what was typed kept. A new quote is
   keyed in a window before it is made. New quote opens it over the Quotes page, its list as
-  it was; Duplicate and Renew over the Quotes page they are pressed on; and
-  Save as new, after a save conflict, over the quote, its unsaved values kept. The window
+  it was; Duplicate, Renew and Create alternative over the Quotes page they are pressed
+  on; and Save as new, after a save conflict, over the quote, its unsaved values kept. The window
   holds the quote's reference and the other columns of `quote_details` the underwriter types
   (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date` and `is_renewal`) in
   the table's order, each drawn as a Collection draws its column, every one shown and
   checked whatever the sheets show or hide: the reference required and fitting its rules,
-  and every value fitting its column, a required one left empty for Mark final to ask for;
+  the quote's name required, as it is never changed after, and every value fitting its
+  column, a required one left empty for Mark final to ask for;
   Create waits on them, and Cancel or `Escape` closes a window that has sent nothing,
   leaving the page behind it as it was. New quote's starts as a new quote's defaults;
-  Duplicate's and Renew's are filled from the source as it is kept, without the details the
-  app set for it, its reference blank, a renewal with `is_renewal` ticked, which the
+  Duplicate's, Renew's and Create alternative's are filled from the source as it is kept,
+  without the details the app set for it, its name kept, its reference blank, but
+  for an alternative, whose reference is the source's and takes no typing, a renewal with `is_renewal` ticked, which the
   underwriter can untick, as one not made by Renew can be ticked by hand; Save as new's from
   the values on the sheets. A reference is trimmed and kept as keyed, in Unicode's composed
   form, 1 to 40 characters, no `/`, which the app puts before the option, no control
   character, and not `.` or `..`; two are one reference only when they are the same, case
   included, so `ABC-1` and `abc-1` are two. Create makes the quote from what the window holds
   over a new quote's defaults, the source's values or the sheets' values, under the reference
-  keyed as option 1, and moves to its own address; a reference in use is refused naming the
+  keyed as option 1, an alternative under its source's reference as its next option, and
+  moves to its own address; a reference in use is refused naming the
   quote holding it, with Open it. The whole creation is kept in the tab before it is sent:
   while unanswered the window takes no typing; a refusal lets it go and opens the window for
   typing again; an answer lost, or a failure of the server, offers Try again, which sends
   the creation as it was, and Close, which keeps it, and a kept creation is offered back
   with Try again and Discard the next time the app opens in the tab, so a quote is made once
   and nothing typed is lost. `/quotes/new` is the Quotes page with the window open,
-  `/quotes/new?from=…&option=…&as=` `duplicate` or `renewal` the Quotes page with the window
-  filled from that quote. Create alternative is made at once from the source's values under
-  the source's reference as its next option (`as=alternative`), its creation's operation key
-  held in the tab until the answer comes, so a reload before then asks with it again and it
-  is made once. A quote made from another names what it was made from and any row of it that
+  `/quotes/new?from=…&option=…&as=` `duplicate`, `renewal` or `alternative` the Quotes page
+  with the window filled from that quote. A quote made from another names what it was made from and any row of it that
   no longer fits. Made, it is clean: left as it opened it keeps no draft and asks nothing on
   leaving, and one left with nothing typed stays a draft; an answer arriving once the page
   moved on does not move it, nor does leaving a quote whose unsaved values the leave guard
@@ -2356,8 +2503,9 @@ Out of scope:
   holds the handover note, edited there, the quotes it came from or that were made from it,
   and what was done to the quote, by whom and when, newest first, with Amend's reasons.
   Ctrl+S saves.
-  While the quotes are closed the app opens on no quote and says they are unavailable,
-  asking again until they open. One who may only read quotes is offered nothing that changes them: no
+  While its store cannot be used the app still opens: the Quotes page says why its list
+  cannot be read, asking again until it can, and a quote says why it cannot be opened, made,
+  priced or saved, naming each table and column that does not fit. One who may only read quotes is offered nothing that changes them: no
   New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
   saying that changing it needs the app's edit role.
 - **Shown when.** A sheet, a section, a component, or a Table's column or a Collection's
@@ -2604,7 +2752,11 @@ Out of scope:
     per table under the stand-in identity, the rows a preview runs on before the workbench
     supplies values, its answer held to them as any request's is (Each output row on its
     input row, below). A node that cannot take a
-    null fails that dry run with its own error. Nothing deployed reads the sample, so the
+    null fails that dry run with its own error. The response's schema is the Workbench
+    Output's tables', each under its name as a quote holds it, so nothing is priced to
+    learn it, and the dry run is a check that the pipeline prices: deploy and `haute app
+    build` run it, `haute app serve` and the Preview's test quotes do not, and the release
+    is the same either way. Nothing deployed reads the sample, so the
     bundle leaves it out and carries the tables alone: the quote an analyst typed while
     building stays in the project. Deploy's test quotes are not held to the
     tables as a Quote Input's are to its columns: a quote may leave a table out, and the
@@ -3309,8 +3461,7 @@ Out of scope:
   values settle on. A column's rules mark the cells that break them but never stop a
   pricing or a save: refusing a quote is for validations, to come. The one exception is the
   new quote's window, whose required columns of `quote_details` are an entry requirement
-  of the quote's making alone: an alternative made at once, and every save after, keep a
-  quote its rules mark. Clear is gone: it emptied a quote
+  of the quote's making alone: every save after keeps a quote its rules mark. Clear is gone: it emptied a quote
   at one press, after asking, and could not be undone. Preview's quote is the saved
   sample, so Reset starts it again as a new quote through the form's history instead:
   one undo step, so it asks nothing, and a new quote's defaults rather than nothing, as
@@ -3598,9 +3749,15 @@ Out of scope:
   configured environment's live catalogue, writes the migration SQL from the live tables as
   they are (with quote counts on affected columns and tables), and the app's gate checks the
   tables it finds, which is all the app needs: that each table and column it reads and writes
-  is there as it reads and writes it. A closed app stays up and opens no quote, rather than
-  refusing to start, so the tables put right open its quotes with no new image, and nothing
-  is keyed or priced that could not be saved.
+  is there as it reads and writes it. An app whose store does not fit stays up rather than
+  refusing to start, so the tables put right are used with no new image. At first such an
+  app closed its whole page, opening no quote and listing none; reversed on 23 November
+  2026, since an analyst running `haute app serve` on a database they could not reach yet,
+  or whose tables lagged the form, could not see the app at all: the page always opens, each
+  use of the store is checked for the tables it uses, so the list is read while a table only
+  a quote reads differs, and a refusal names each table and column that does not fit by its
+  label and name. Nothing is keyed or priced that could not be saved still: a quote the store
+  cannot take is neither made, opened nor priced.
 - **Required gates final, never a save.** An underwriter saves whenever they like, a draft
   with any field empty; only a value the store cannot hold as its column's type refuses a
   save, since writing it would lose it. Required is what a quote needs before it is offered,
@@ -3877,12 +4034,14 @@ Out of scope:
 - A quote that breaks a column's rule is priced all the same: its cells are marked once
   anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
   "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and
-  a save then keeps the quote unpriced; a pricing refused because the quotes are closed
-  closes them on the page instead, its values kept unsaved.
+  a save then keeps the quote unpriced; a pricing refused because the store cannot take the
+  quote says why in its bar, naming what does not fit, its values kept unsaved.
 - An app whose quote store does not fit its release's form, cannot be reached, signs in
   without a privilege the store needs or was started with no environment named starts all
-  the same, its quotes closed: no quote opens, none is priced or saved, and each quote route
-  and the pricing route answer 503 naming why, until a check finds the tables fit.
+  the same and its page opens: the Quotes page lists the quotes while `quote_details` fits
+  and may be read, else says why where the list would be; making, opening, pricing and
+  saving a quote, and each other change to one, answer 503 naming each table and column
+  that does not fit, or why the store cannot be used, until a check finds the tables fit.
 - An app served by `haute app serve` refuses a request for a host that is not loopback, or
   one carrying `Forwarded` or an `X-Forwarded-*` header, with 400 before it signs the
   request in, so such a request reads, prices and changes nothing as the analyst, the

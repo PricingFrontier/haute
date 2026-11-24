@@ -758,9 +758,38 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
         ],
     }
 
-    # Built again, into the same directory or another, it is the same release.
+    # Built again, into the same directory or another, it is the same release, and so it is
+    # built as `haute app serve` builds it, nothing priced.
     assert build_release(project, project / "build" / "app").release.id == built.id
     assert build_release(project, project / "elsewhere").release.id == built.id
+    assert build_release(project, project / "unchecked", checks=False).release.id == built.id
+
+
+def test_a_workbench_outputs_schema_is_the_one_its_dry_run_answers_with(project: Path) -> None:
+    """The release's output schema is the Workbench Output's tables', read with nothing
+    priced, and is the schema a dry run of its pipeline answers with, an output table
+    nothing fills included, in its order."""
+    from haute.deploy._schema import _dry_run_output_schema, _read_sample_row
+
+    notes = form_table("notes", outputs=[("comment", "str"), ("loading", "float")])
+    write_sheets(project, [*PROJECT_TABLES, notes])
+
+    release = workbench_app.resolve_release(project, dry_run=False)
+    try:
+        resolved = release.resolved
+        graph, inputs = resolved.pruned_graph, resolved.input_node_ids
+        answered = _dry_run_output_schema(
+            graph,
+            _read_sample_row(graph, inputs),
+            output_node_id=resolved.output_node_id,
+            input_node_ids=inputs,
+            artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
+        )
+    finally:
+        release.close()
+
+    assert "notes" in resolved.output_schema
+    assert list(resolved.output_schema.items()) == list(answered.items())
 
 
 def test_an_output_column_nothing_fills_is_built_and_answered_null_alone(project: Path) -> None:
@@ -1152,6 +1181,45 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     unnamed = CliRunner().invoke(cli, ["app", "serve"])
     assert unnamed.exit_code != 0
     assert "Set your git identity first" in unnamed.output
+
+
+def test_haute_app_serve_prices_nothing_leaving_the_checks_to_haute_app_build(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The checks a deploy runs, the dry run and the test quotes, are CI's: serve builds and
+    serves a release of a pipeline that fails on every quote, which `haute app build` refuses."""
+    from click.testing import CliRunner
+
+    import haute.deploy._scorer as scorer
+    from haute._workbench_output import WorkbenchOutputError
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    _declare_dev(project)
+    (project / "connections.toml").write_text(DEV_CONNECTION, encoding="utf-8")
+    (project / "tests" / "quotes").mkdir(parents=True)
+    (project / "tests" / "quotes" / "policy.json").write_text(
+        json.dumps([{"input": {"policy": {"state": "NY", "limit": 1000}}}]), encoding="utf-8"
+    )
+    priced: list[str] = []
+
+    def pricing(*_: Any, **__: Any) -> Any:
+        priced.append("priced")
+        raise WorkbenchOutputError("the pipeline fails on every quote")
+
+    monkeypatch.setattr(scorer, "score_graph_lazy", pricing)
+
+    result = CliRunner().invoke(cli, ["app", "serve"])
+
+    assert result.exit_code == 0, result.output
+    assert priced == []
+    assert "app" in served
+    assert (project / ".haute" / "app" / "release" / "release.json").is_file()
+
+    refused = CliRunner().invoke(cli, ["app", "build", "out"])
+    assert refused.exit_code == 1, refused.output
+    assert "the pipeline fails on every quote" in refused.output
+    assert priced
 
 
 def test_haute_app_serve_refuses_a_project_declaring_no_dev_environment(

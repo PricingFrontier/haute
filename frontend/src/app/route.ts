@@ -2,9 +2,9 @@
  * The underwriter app's routes (specs/workbench): its one page reads where it is from the
  * address, so a quote has a link of its own, a reload stays on it and Back returns to the
  * list as it was. `/` is the Quotes page, its list in the query; `/quotes/new` the Quotes
- * page with the New quote window open, filled from a quote to duplicate or renew when the
- * query names one, or, for an alternative, the alternative made at once; and
- * `/quotes/{reference}/{option}` a quote, its reference URL-encoded. A leave guard, set while
+ * page with the New quote window open, filled from a quote to duplicate, renew or make an
+ * alternative of when the query names one; `/quotes/{reference}/{option}` a quote opened to
+ * read, its reference URL-encoded; and `/quotes/{reference}/{option}/edit` one opened to edit. A leave guard, set while
  * a quote has unsaved values, is asked before the page moves, Back included.
  */
 import { useSyncExternalStore, type MouseEvent } from "react"
@@ -14,7 +14,7 @@ import { answer, newest, requestKind, type Part } from "../utils/answers"
 export type AppRoute =
   | { page: "quotes"; query: QuotesQuery }
   | { page: "new"; from: QuoteSource | null }
-  | { page: "quote"; reference: string; option: number }
+  | { page: "quote"; reference: string; option: number; mode: QuoteMode }
   | { page: "missing" }
 
 const VIEWS = ["mine", "team", "archived"] as const
@@ -49,7 +49,14 @@ export function quotesPath(query: QuotesQuery): string {
   return text === "" ? "/" : `/?${text}`
 }
 
+/** How a quote is opened: to read it, or to edit it, held by the one editing it. */
+export type QuoteMode = "read" | "edit"
+
+/** The quote `reference`/`option` opened to read, the address its link shares. */
 export const quotePath = (reference: string, option: number): string => `/quotes/${encodeURIComponent(reference)}/${option}`
+
+/** The quote `reference`/`option` opened to edit. */
+export const editPath = (reference: string, option: number): string => `${quotePath(reference, option)}/edit`
 export const newQuotePath = (from?: QuoteSource): string =>
   from === undefined
     ? "/quotes/new"
@@ -64,10 +71,20 @@ function decoded(text: string): string | null {
   }
 }
 
+/** The Quotes page's address as it was last shown, its list, stage, search and order. */
+let lastList = "/"
+
+/** The Quotes page as the underwriter left it: where Back to Quotes goes. */
+export const listPath = (): string => lastList
+
 /** Where `location` is. */
 export function routeOf(location: { pathname: string; search: string }): AppRoute {
   const path = location.pathname.replace(/\/+$/, "") || "/"
-  if (path === "/") return { page: "quotes", query: quotesQueryOf(location.search) }
+  if (path === "/") {
+    const query = quotesQueryOf(location.search)
+    lastList = quotesPath(query)
+    return { page: "quotes", query }
+  }
   if (path === "/quotes/new") {
     const params = new URLSearchParams(location.search)
     const reference = params.get("from")
@@ -76,10 +93,10 @@ export function routeOf(location: { pathname: string; search: string }): AppRout
     const from = reference && Number.isInteger(option) && option >= 1 && relation !== null ? { reference, option, relation } : null
     return { page: "new", from }
   }
-  const quote = /^\/quotes\/([^/]+)\/(\d+)$/.exec(path)
+  const quote = /^\/quotes\/([^/]+)\/(\d+)(\/edit)?$/.exec(path)
   const reference = quote === null ? null : decoded(quote[1])
   if (quote !== null && reference !== null && Number(quote[2]) >= 1) {
-    return { page: "quote", reference, option: Number(quote[2]) }
+    return { page: "quote", reference, option: Number(quote[2]), mode: quote[3] === undefined ? "read" : "edit" }
   }
   return { page: "missing" }
 }

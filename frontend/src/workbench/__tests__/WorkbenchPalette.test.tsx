@@ -23,7 +23,7 @@ describe("WorkbenchPalette", () => {
     useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false, creating: null })
   })
 
-  it("offers a Section, then a Heading, a Collection, a Table, a Chart, an Import and an Export, with the switcher at the bottom", () => {
+  it("offers a Section, then a Heading, a Collection, a Table, a Text Box, a Chart, an Import and an Export, with the switcher at the bottom", () => {
     render(<WorkbenchPalette />)
 
     expect(screen.getByRole("heading", { name: "Components" })).toBeInTheDocument()
@@ -32,12 +32,14 @@ describe("WorkbenchPalette", () => {
       "palette-item-heading",
       "palette-item-collection",
       "palette-item-tableInput",
+      "palette-item-textBox",
       "palette-item-chart",
       "palette-item-import",
       "palette-item-export",
     ])
     expect(screen.getByTestId("palette-item-tableInput")).toHaveTextContent("Table")
     expect(screen.getByTestId("palette-item-collection")).toHaveTextContent("Collection")
+    expect(screen.getByTestId("palette-item-textBox")).toHaveTextContent("Text Box")
     expect(screen.getByTestId("palette-item-chart")).toHaveTextContent("Chart")
     expect(screen.getByTestId("palette-item-heading")).toHaveTextContent("Heading")
     expect(screen.getByTestId("palette-item-import")).toHaveTextContent("Import")

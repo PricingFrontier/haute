@@ -23,6 +23,40 @@ describe("ColumnSelector", () => {
     expect(onChange).toHaveBeenCalledWith("weight")
   })
 
+  it("shows an option's label after its name and finds it by its label", () => {
+    const onChange = vi.fn()
+    const labelled = [
+      { name: "policy.br_period", dtype: "int", label: "Reporting period" },
+      { name: "policy.state", dtype: "str", label: "State" },
+    ]
+    render(<ColumnSelector compact trigger="add" label="Add a cell" value="" placeholder="Add a cell" columns={labelled} onChange={onChange} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add a cell" }))
+    const search = screen.getByRole("combobox", { name: "Search Add a cell" })
+    fireEvent.change(search, { target: { value: "reporting per" } })
+    const [option, ...rest] = screen.getAllByRole("option")
+    expect(rest).toEqual([])
+    expect(option).toHaveTextContent("policy.br_periodReporting periodint")
+    expect(option).toHaveAttribute("title", "policy.br_period: Reporting period")
+    fireEvent.keyDown(search, { key: "Enter" })
+    expect(onChange).toHaveBeenCalledWith("policy.br_period")
+  })
+
+  it("keeps a compact menu open through a scroll that moved nothing since it opened, and closes it once a scroll moves its trigger", () => {
+    render(<ColumnSelector compact trigger="add" label="Add a cell" value="" placeholder="Add a cell" columns={columns} onChange={vi.fn()} />)
+    const trigger = screen.getByRole("button", { name: "Add a cell" })
+    fireEvent.click(trigger)
+    const search = () => screen.queryByRole("combobox", { name: "Search Add a cell" })
+
+    // A scroll told just after the menu opened, one that finished before it: nothing moved.
+    fireEvent.scroll(document)
+    expect(search()).toBeInTheDocument()
+
+    const moved = { x: 0, y: -40, top: -40, left: 0, bottom: -16, right: 120, width: 120, height: 24, toJSON: () => ({}) }
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(moved as DOMRect)
+    fireEvent.scroll(document)
+    expect(search()).toBeNull()
+  })
+
   it("keeps a saved unavailable value visible without making it selectable", () => {
     render(<ColumnSelector label="Offset column" value="removed_column" columns={columns} onChange={vi.fn()} optional />)
     expect(screen.getByRole("button", { name: "Offset column" })).toHaveTextContent("removed_column")
@@ -67,6 +101,19 @@ describe("a compact ColumnSelector's trigger looks", () => {
     fireEvent.click(trigger)
     fireEvent.click(screen.getAllByRole("option").find((option) => option.firstElementChild?.textContent === "region")!)
     expect(onChange).toHaveBeenCalledWith("region")
+  })
+
+  it("draws a quiet text action reading its placeholder, whose menu adds the column chosen", () => {
+    const onChange = vi.fn()
+    render(<ColumnSelector compact trigger="quiet" label="Add a cell" value="" placeholder="Add a cell" columns={columns} onChange={onChange} />)
+    const trigger = screen.getByRole("button", { name: "Add a cell" })
+    expect(trigger).toHaveTextContent("Add a cell")
+    expect(trigger).toHaveClass("quiet-action")
+    expect(trigger).not.toHaveClass("add-row-btn")
+
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getAllByRole("option").find((option) => option.firstElementChild?.textContent === "weight")!)
+    expect(onChange).toHaveBeenCalledWith("weight")
   })
 
   it("opens under its trigger, or over it near the window's foot where it would not fit below", () => {

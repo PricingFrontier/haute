@@ -2,7 +2,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { createPortal } from "react-dom"
 import { ChevronDown, Plus } from "lucide-react"
 
-export type ColumnOption = { name: string; dtype: string }
+/** A column offered: its name, its type and, where it has one, a label shown after its name and searched as it is. */
+export type ColumnOption = { name: string; dtype: string; label?: string }
 type Props = {
   label: string
   value: string
@@ -18,10 +19,11 @@ type Props = {
   compact?: boolean
   /**
    * How a compact trigger is drawn: a list row's small box (the default), a
-   * form field's, or a dashed add button reading its placeholder, for
-   * choosing a column to add (it shows no value).
+   * form field's, a dashed add button reading its placeholder, or a quiet
+   * "+" text action reading it, as `QuietAction` draws one, the two for
+   * choosing a column to add (they show no value).
    */
-  trigger?: "row" | "field" | "add"
+  trigger?: "row" | "field" | "add" | "quiet"
   /** The trigger's place in the tab order, for a list that keeps one row's controls in it. */
   tabIndex?: number
   /** Called as the trigger takes the focus, for a list that selects the row first. */
@@ -34,6 +36,9 @@ const EDGE = 8
 const GAP = 4
 /** A compact menu's narrowest, so a narrow row's names stay readable. */
 const COMPACT_MENU_MIN_WIDTH = 240
+/** The dashed add button's look, the `add` trigger's, for a plain add button to match. */
+export const ADD_BUTTON_CLASS = "add-row-btn focus-ring flex w-full min-w-0 items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-xs font-medium"
+export const ADD_BUTTON_STYLE = { color: "var(--accent)", background: "var(--accent-soft-subtle)", border: "1px dashed var(--accent-ring)" } as const
 
 /** A column-only searchable combobox. Saved unavailable values remain visible,
  * but are deliberately never offered as a new selectable option. */
@@ -59,6 +64,8 @@ export function ColumnSelector({
   const menuRef = useRef<HTMLDivElement>(null)
   const optionRefs = useRef<Array<HTMLLIElement | null>>([])
   const animationFrame = useRef<number | null>(null)
+  /** Where the trigger was as the compact menu was placed under or over it. */
+  const placedBy = useRef<{ top: number; left: number } | null>(null)
   const known = columns.some((column) => column.name === value)
   // A saved value is only flagged once the columns have arrived.
   const unavailable = value !== "" && columns.length > 0 && !known
@@ -67,7 +74,8 @@ export function ColumnSelector({
     const matching = columns.filter(
       (column) =>
         column.name.toLowerCase().includes(needle) ||
-        column.dtype.toLowerCase().includes(needle),
+        column.dtype.toLowerCase().includes(needle) ||
+        (column.label ?? "").toLowerCase().includes(needle),
     )
     return optional && (needle === "" || "none".includes(needle))
       ? [{ name: "", dtype: "" }, ...matching]
@@ -125,6 +133,7 @@ export function ColumnSelector({
   useLayoutEffect(() => {
     if (!compact || !open || triggerRef.current === null) return
     const trigger = triggerRef.current.getBoundingClientRect()
+    placedBy.current = { top: trigger.top, left: trigger.left }
     const width = Math.max(trigger.width, COMPACT_MENU_MIN_WIDTH)
     const left = Math.max(EDGE, Math.min(trigger.left, window.innerWidth - EDGE - width))
     const height = menuRef.current?.offsetHeight ?? 0
@@ -137,8 +146,10 @@ export function ColumnSelector({
     )
   }, [compact, open])
 
-  // It closes on a press outside it or its trigger, and as anything scrolls or
-  // the window changes, which would leave it away from its trigger.
+  // It closes on a press outside it or its trigger, as a scroll moves its trigger
+  // and as the window changes, any of which would leave it away from its trigger.
+  // A scroll that moved nothing since it was placed, such as one that finished
+  // just before it opened and is told just after, leaves it open.
   useEffect(() => {
     if (!compact || !open) return
     const inside = (target: EventTarget | null) =>
@@ -148,7 +159,10 @@ export function ColumnSelector({
       if (!inside(event.target)) closeMenu()
     }
     const scrolled = (event: Event) => {
-      if (!(event.target instanceof Node && menuRef.current?.contains(event.target))) closeMenu()
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return
+      const trigger = triggerRef.current?.getBoundingClientRect()
+      const placed = placedBy.current
+      if (trigger === undefined || placed === null || trigger.top !== placed.top || trigger.left !== placed.left) closeMenu()
     }
     const away = () => closeMenu()
     document.addEventListener("pointerdown", outside, true)
@@ -241,6 +255,7 @@ export function ColumnSelector({
             aria-selected={value === column.name}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => select(column.name)}
+            title={column.label ? `${column.name}: ${column.label}` : undefined}
             className={`flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 ${text} font-mono`}
             style={{
               background:
@@ -251,6 +266,12 @@ export function ColumnSelector({
             }}
           >
             <span className={compact ? "min-w-0 truncate" : undefined}>{column.name || "None"}</span>
+            {column.label && (
+              // Muted after the name, giving way to it first as the menu narrows.
+              <span className="min-w-0 flex-1 shrink-[2] truncate font-sans" style={{ color: "var(--text-muted)" }}>
+                {column.label}
+              </span>
+            )}
             {column.dtype && (
               <span
                 className={compact ? "shrink-0 text-[10px]" : "text-[11px]"}
@@ -323,15 +344,19 @@ export function ColumnSelector({
           !compact
             ? "flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-mono"
             : trigger === "add"
-              ? "add-row-btn focus-ring flex w-full min-w-0 items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-xs font-medium"
-              : trigger === "field"
+              ? ADD_BUTTON_CLASS
+              : trigger === "quiet"
+                ? "quiet-action focus-ring inline-flex items-center gap-1 rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
+                : trigger === "field"
                 ? "flex w-full min-w-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-left text-xs font-mono focus:outline-none focus:border-[var(--accent)]"
                 : "flex w-full min-w-0 items-center gap-1 rounded border px-1 py-px text-left text-[11px] font-mono focus:outline-none focus:border-[var(--accent)]"
         }
         style={
           compact && trigger === "add"
-            ? { color: "var(--accent)", background: "var(--accent-soft-subtle)", border: "1px dashed var(--accent-ring)" }
-            : {
+            ? ADD_BUTTON_STYLE
+            : compact && trigger === "quiet"
+              ? undefined
+              : {
                 background: "var(--bg-input)",
                 ...(compact
                   ? { borderColor: unavailable ? "var(--danger)" : "var(--border)" }
@@ -340,8 +365,8 @@ export function ColumnSelector({
               }
         }
       >
-        {compact && trigger === "add" && <Plus size={12} className="shrink-0" aria-hidden="true" />}
-        <span className={compact && trigger === "add" ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>{display}</span>
+        {compact && (trigger === "add" || trigger === "quiet") && <Plus size={trigger === "quiet" ? 11 : 12} className="shrink-0" aria-hidden="true" />}
+        <span className={compact && (trigger === "add" || trigger === "quiet") ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>{display}</span>
         {known && !compact && (
           <span
             className="shrink-0 text-[11px]"
@@ -350,7 +375,7 @@ export function ColumnSelector({
             {dtype}
           </span>
         )}
-        {!(compact && trigger === "add") && (
+        {!(compact && (trigger === "add" || trigger === "quiet")) && (
           <ChevronDown
             size={compact ? 11 : 13}
             className="shrink-0"

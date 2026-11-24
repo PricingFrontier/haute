@@ -69,9 +69,12 @@ from haute._quote_store._store import (
     QuoteNotReadyError,
     QuoteStoreChangedError,
     QuoteStoreError,
+    QuoteStoreMismatchError,
     ReferenceTakenError,
     StaleQuoteError,
+    StoreMisfit,
     WriteSupersededError,
+    store_mismatch,
     writing,
 )
 from haute._workbench_form import (
@@ -89,6 +92,9 @@ Relation = Literal["duplicate", "renewal", "alternative"]
 View = Literal["mine", "team", "archived"]
 #: The orders a list is read in.
 Sort = Literal["saved", "reference", "insured"]
+#: What a request uses the store for: the Quotes page's list and the people quotes are with,
+#: which read ``quote_details`` alone, or one quote, which reads and writes every table.
+StoreUse = Literal["list", "quote"]
 #: What an activity row records.
 Action = Literal[
     "created",
@@ -375,7 +381,9 @@ def _blank(value: Any) -> bool:
 class QuoteBook:
     """The underwriter app's quotes on the store's database: *engine* holding *schema*, the
     tables of *form*, written by an app running Haute *haute_version*; *clock* gives the moment
-    each write is stamped with. Closing the book disposes of the engine."""
+    each write is stamped with. *misfits* are each way *environment*'s database does not fit
+    the store as it opened, which refuse the uses that need them (:meth:`unfit`). Closing the
+    book disposes of the engine."""
 
     def __init__(
         self,
@@ -385,6 +393,8 @@ class QuoteBook:
         *,
         haute_version: str | None,
         clock: Callable[[], datetime] | None = None,
+        misfits: tuple[StoreMisfit, ...] = (),
+        environment: str = "",
     ) -> None:
         self._engine = engine
         self._schema = schema
@@ -393,6 +403,24 @@ class QuoteBook:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._details = schema.details.table
         self._activity = schema.activity
+        self.misfits = misfits
+        self.environment = environment
+
+    def unfit(self, use: StoreUse) -> tuple[StoreMisfit, ...]:
+        """What of the database does not fit *use*: for the list, ``quote_details`` as it is
+        read (its columns and constraints, and SELECT on it); for one quote, every misfit."""
+        if use == "quote":
+            return self.misfits
+        return tuple(
+            misfit
+            for misfit in self.misfits
+            if misfit.table == self._details.name and misfit.privilege in (None, "SELECT")
+        )
+
+    def mismatch(self, use: StoreUse) -> QuoteStoreMismatchError | None:
+        """The refusal of *use* naming what of the database does not fit it; None when it fits."""
+        unfit = self.unfit(use)
+        return store_mismatch(unfit, self.environment) if unfit else None
 
     def now(self) -> datetime:
         """The moment a save is stamped with, read once before it is priced, so its request
@@ -413,14 +441,17 @@ class QuoteBook:
     def managed(self, quote: AppQuote | None, *, at: datetime, actor: str) -> dict[str, Any]:
         """The details the app sets on a write of *quote* (None for a new quote) by *actor* at
         *at*, by name: its identity, who it is with and whether archived as it has them, its
-        stage, when it was made and by whom, when it was changed and by whom, and the Haute
-        version the app runs. A new quote's identity is taken as it is written."""
+        stage, when it was made and by whom, its name as it was made, when it was changed and
+        by whom, and the Haute version the app runs. A new quote's identity and name are taken
+        as they are written."""
         made: dict[str, Any] = (
             {"created_date": _day(at), "created_by": actor}
             if quote is None
             else {
                 "created_date": quote.details.get("created_date"),
                 "created_by": quote.details.get("created_by"),
+                # Named as it is made, a quote is never renamed.
+                "quote_name": quote.details.get("quote_name"),
             }
         )
         return {
@@ -964,13 +995,13 @@ class QuoteBook:
         at: datetime,
     ) -> OpenQuote:
         """The quote saved over *version* at *at*, with what it holds as written: its rows
-        written whole from *values*, with the app's details set over them, and from *priced*'s
-        document, or none of the output tables when unpriced. Refused with nothing written
-        when the quote has moved past *version*, is final or is archived; repeated with
-        *operation*'s key, it answers what that key wrote and writes nothing more."""
+        written whole from *values*, with the app's details set over them, its name among them
+        as it was made, and from *priced*'s document, or none of the output tables when
+        unpriced. Refused with nothing written when the quote has moved past *version*, is
+        final or is archived; repeated with *operation*'s key, it answers what that key wrote
+        and writes nothing more."""
         _check_operation(operation)
         actor = _check_principal(actor, "Who saves a quote")
-        _check_name(details_of(without_app_details(values)))
         current = self.get(reference, option)
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)

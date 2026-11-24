@@ -117,12 +117,12 @@ describe("SchemaPane", () => {
     selectDev()
     fireEvent.click(await screen.findByText("Database changes · 3 columns · 1 table"))
     const review = screen.getByTestId("store-plan-review")
-    const policy = within(review).getByRole("region", { name: "Additions for policy" })
+    const policy = within(review).getByRole("region", { name: "Changes for policy" })
     expect(within(policy).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
       "flood_zone", "territory", "invalid_nameName is too long for this database.",
     ])
     expect(within(policy).getByRole("alert")).toHaveTextContent("Name is too long")
-    expect(within(review).getByRole("region", { name: "Additions for pricing" })).toHaveTextContent("New table")
+    expect(within(review).getByRole("region", { name: "Changes for pricing" })).toHaveTextContent("New table")
     expect(review).not.toHaveTextContent(/primary key|rename|rebuild|saves clear|quotes|Add Text/)
     expect(review.querySelector("details")).toBeNull()
     expect(screen.queryByText(/Saved revision/)).not.toBeInTheDocument()

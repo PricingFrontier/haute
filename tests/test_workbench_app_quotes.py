@@ -673,8 +673,13 @@ def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: P
     assert untyped.status_code == 200, untyped.text
     made = untyped.json()["quote"]
     assert (made["label"], made["stage"]) == ("Q-000002/1", "draft")
-    # The details the app sets are not typing, whatever the page sends of them.
-    for values in ({}, {"quote_details": [{"quote_reference": "Q-9", "stage": "final"}]}):
+    # The details the app sets are not typing, whatever the page sends of them, and nor is a
+    # name, which the quote keeps as it was made.
+    for values in (
+        {},
+        {"quote_details": [{"quote_reference": "Q-9", "stage": "final"}]},
+        {"quote_details": [{"quote_name": "Fleet"}]},
+    ):
         refused = page.save(made, shown=None, values=values)
         assert refused.status_code == 422
         assert refused.json()["detail"] == "Type the quote first"
@@ -684,12 +689,25 @@ def test_a_quote_name_past_its_length_is_refused_naming_the_limit(page: Page) ->
     named = {**VALUES, "quote_details": [{**DETAILS, "quote_name": "x" * 240}]}
 
     refused = page.create(values=named)
-    quote = page.create().json()["quote"]
-    resaved = page.save(quote, values=named, shown=None)
 
-    for each in (refused, resaved):
-        assert each.status_code == 422
-        assert "at most 200 characters" in each.json()["detail"]["message"]
+    assert refused.status_code == 422
+    assert "at most 200 characters" in refused.json()["detail"]["message"]
+
+
+def test_a_save_keeps_the_name_the_quote_was_made_with_whatever_the_page_sends(
+    page: Page,
+) -> None:
+    quote = page.create().json()["quote"]
+
+    for name in ("Fleet renewal", "x" * 240, None):
+        details = {**DETAILS, "quote_name": name}
+        sent = {**VALUES, "quote_details": [{k: v for k, v in details.items() if v is not None}]}
+        saved = page.save(quote, values=sent, shown=None)
+        assert saved.status_code == 200, saved.text
+        quote = saved.json()["quote"]
+        assert (quote["details"]["quote_name"], quote["title"]) == ("Fleet", "Fleet")
+    opened = page.client.get(address(quote), headers=ANA).json()
+    assert opened["values"]["quote_details"][0]["quote_name"] == "Fleet"
 
 
 def test_a_write_from_a_page_of_another_release_is_refused(page: Page) -> None:
@@ -713,6 +731,24 @@ def test_a_quote_opens_with_what_it_holds(page: Page) -> None:
     missing = page.client.get("/api/app/quotes/nope/1", headers=ANA)
     assert missing.status_code == 404
     assert missing.json()["detail"]["error_code"] == "quote_not_found"
+
+
+def test_text_over_many_lines_and_many_characters_is_stored_and_reopens_as_typed(
+    page: Page, path: Path
+) -> None:
+    """A Text Box's comment: lines, tabs and quotes kept inside, its typed spaces trimmed
+    from its ends alone, however long."""
+    typed = '  Risk seen on site.\n\tSprinklered; "no" hot work.\r\n' + "x" * 10_000 + "\n"
+    kept = typed.strip()
+    quote = page.create().json()["quote"]
+    values = {**VALUES, "quote_details": [{**DETAILS, "insured": typed}]}
+
+    saved = page.save(quote, values=values)
+
+    assert saved.status_code == 200, saved.text
+    assert sql(path, "SELECT insured FROM quote_details") == [(kept,)]
+    opened = page.client.get(address(saved.json()["quote"]), headers=ANA).json()
+    assert opened["values"]["quote_details"][0]["insured"] == kept
 
 
 # ── Versions and operation keys ───────────────────────────────────────────
@@ -1055,7 +1091,13 @@ def test_a_store_the_app_cannot_write_to_is_reported_closed_naming_why(
 def _slip_id(client: TestClient) -> str:
     """The Export's id as the app's form holds it, which the page names it by."""
     form = client.get("/api/app/form", headers=ANA).json()["form"]
-    (widget,) = [w for page in form["pages"] for s in page["sections"] for w in s["widgets"]]
+    (widget,) = [
+        w
+        for page in form["pages"]
+        for s in page["sections"]
+        for w in s["widgets"]
+        if w["type"] == "export"
+    ]
     return str(widget["id"])
 
 
@@ -1064,16 +1106,43 @@ def _slip_form() -> dict[str, Any]:
     and the quote's reference, under a file name made of the quote's details."""
     spec = json.loads(json.dumps(FORM))
 
-    def cell(table: str, column: str, address: str) -> dict[str, str]:
+    def cell(
+        table: str, column: str, address: str, true_false: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         return {
             "table": table,
             "column": column,
             "sheet": "Slip",
             "cell": address,
             "label_cell": "",
+            "true_false": true_false,
         }
 
+    # A tick the sheets hide, its box showing only for a state the quote is not in, so the
+    # saved quote holds it empty, as a hidden cover's box is.
+    policy = next(table for table in spec["schema"]["tables"] if table["name"] == "policy_details")
+    policy["inputs"].append({"name": "sprinklered", "type": "bool"})
     spec["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_hidden",
+            "name": "hidden",
+            "type": "collection",
+            "x": 200,
+            "y": 0,
+            "w": 160,
+            "h": 40,
+            "fields": [{"table": "policy_details", "column": "sprinklered"}],
+            "show_when": {
+                "conditions": [
+                    {
+                        "table": "policy_details",
+                        "column": "state",
+                        "op": "equals",
+                        "values": ["ZZ"],
+                    }
+                ]
+            },
+        },
         {
             "id": "w_slip",
             "name": "slip",
@@ -1092,10 +1161,13 @@ def _slip_form() -> dict[str, Any]:
                     cell("quote_details", "quote_reference", "B2"),
                     cell("policy_details", "state", "B3"),
                     cell("pricing_output", "premium", "B4"),
+                    cell("policy_details", "sprinklered", "B5", {"true": "", "false": "X"}),
+                    cell("policy_details", "sprinklered", "B6", {"true": "X", "false": ""}),
+                    cell("policy_details", "sprinklered", "B7"),
                 ],
                 "blocks": [],
             },
-        }
+        },
     ]
     return spec
 
@@ -1124,7 +1196,17 @@ def test_a_final_quote_exports_its_values_and_prices_naming_the_release(tmp_path
     assert 'filename="Acme Q-000001.xlsx"' in exported.headers["content-disposition"]
     workbook = load_workbook(BytesIO(exported.content))
     slip = workbook["Slip"]
-    assert [slip[f"B{row}"].value for row in range(1, 5)] == ["Acme", "Q-000001", "NY", 500]
+    # The empty tick writes its False text: X for "blank / X", nothing for "X / blank"; with
+    # no text, nothing at all.
+    assert [slip[f"B{row}"].value for row in range(1, 8)] == [
+        "Acme",
+        "Q-000001",
+        "NY",
+        500,
+        "X",
+        None,
+        None,
+    ]
     properties = {held.name: held.value for held in workbook.custom_doc_props.props}
     assert properties == {"Haute release": page.release}
     assert (entries[-1]["action"], entries[-1]["actor"]) == ("exported", "jo@example.com")
@@ -1282,7 +1364,41 @@ def test_an_app_on_a_database_without_its_forms_tables_starts_with_its_quotes_cl
         assert "Change the dev database's tables in SQL" in quotes["message"]
 
 
-def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path: Path) -> None:
+def test_an_app_whose_quote_tables_lag_its_form_lists_its_quotes_and_refuses_a_quote(
+    release_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """quote_details fits and a table only a quote reads lacks a column: the list is read,
+    and every use of one quote is refused naming that column, until it is put back."""
+    monkeypatch.setattr(_workbench_app_store, "RECHECK_SECONDS", 0.0)
+    store = tmp_path / "lagging.sqlite"
+    url = _prepared(store, release_dir)
+    sql(store, "ALTER TABLE policy_details DROP COLUMN exposure")
+
+    with TestClient(create_app(release_dir, store=StoreLocation(DEV, url))) as app:
+        quotes = app.get("/api/app/release", headers=ANA).json()["quotes"]
+        assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_mismatch")
+        assert app.get("/api/app/quotes", headers=ANA).status_code == 200
+        assert app.get("/api/app/people", headers=ANA).status_code == 200
+        page = Page(app)
+        for refused in (page.create(), page.price(VALUES)):
+            assert refused.status_code == 503, refused.text
+            detail = refused.json()["detail"]
+            assert detail["error_code"] == "quote_store_mismatch"
+            assert detail["differences"] == ["policy_details.exposure is missing"]
+            assert detail["misfits"] == [
+                {"table": "policy_details", "column": "exposure", "problem": "is missing"}
+            ]
+            assert detail["environment"] == DEV
+
+        # Put back in SQL, a quote is made and priced with no restart.
+        sql(store, "ALTER TABLE policy_details ADD COLUMN exposure FLOAT")
+        assert page.priced()["reference"]
+        assert app.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
+
+
+def test_a_column_dropped_under_a_running_app_refuses_its_quotes_and_not_the_list(
+    page: Page, path: Path
+) -> None:
     saved = page.priced()
     with sqlite3.connect(path) as raw:
         raw.execute("PRAGMA foreign_keys=OFF")
@@ -1291,10 +1407,20 @@ def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path
     refused = page.save(saved)
 
     assert refused.status_code == 503, refused.text
-    assert refused.json()["detail"]["error_code"] == "quote_store_mismatch"
-    assert "policy_details.exposure is missing" in refused.json()["detail"]["differences"]
-    # Closed until a check finds the tables fit, the next request answered as closed.
-    assert page.client.get("/api/app/quotes", headers=ANA).status_code == 503
+    detail = refused.json()["detail"]
+    assert detail["error_code"] == "quote_store_mismatch"
+    assert "policy_details.exposure is missing" in detail["differences"]
+    assert {"table": "policy_details", "column": "exposure", "problem": "is missing"} in detail[
+        "misfits"
+    ]
+    assert detail["environment"] == TEST
+    # Refused until a check finds the tables fit: the quote, and its pricing, as nothing is
+    # priced that could not be saved; the list reads quote_details alone and is read.
+    opened = page.client.get(address(saved), headers=ANA)
+    assert opened.status_code == 503
+    assert opened.json()["detail"]["differences"] == detail["differences"]
+    assert page.client.get("/api/app/quotes", headers=ANA).status_code == 200
+    assert page.client.get("/api/app/people", headers=ANA).status_code == 200
 
 
 def test_a_statement_refused_on_tables_as_checked_is_said_with_an_incident(

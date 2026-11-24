@@ -140,7 +140,7 @@
 | `frontend/src/utils/constantValues.ts` | A Constant's reading of the grammar: `constantValue` and `ConstantHeld` (the value's column type and value, or null for a refusal) and `numberText`, a float's canonical text; held to the same case file as the server's `constant_value`. |
 | `frontend/src/utils/numberRule.ts` | A number field's rule: `NumberRule`, `readNumberDraft` (the number a draft reads as by the grammar, null for a blank optional field, or why it is refused), `numberRuleWords` and `NumberRead`. |
 | `frontend/src/components/form/fieldStyle.ts` | The look the panels' fields share: `INPUT_STYLE` (the input's colours, which `panels/editors/_shared.tsx` re-exports), `FIELD_CLASS` (a small field in a side panel), `COMPACT_FIELD_CLASS` (the same in the schema editor's dense rows). |
-| `frontend/src/components/form/LabelledRow.tsx` | `LabelledRow`, a side panel's row of a label in a fixed column beside its control, so the controls line up, or with no label that column left blank, as for tick boxes under labelled rows; and `SelectRow`, a labelled select of named choices, its label its name unless given a `name` of its own. |
+| `frontend/src/components/form/LabelledRow.tsx` | `LabelledRow`, a side panel's row of a label in a fixed column beside its control, so the controls line up, or with no label that column left blank, as for tick boxes under labelled rows; and `SelectRow`, a labelled select of named choices, any marked `disabled` shown and not chosen, its label its name unless given a `name` of its own. |
 | `frontend/src/components/form/QuietAction.tsx` | `QuietAction`, the quiet "+ Add" text action under a list (`.quiet-action`: accent text, underlined on hover), a plus before it unless another icon is given, its other props passed to the button. |
 | `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing, and the message a response is discarded with when the document it was computed against (its file and revision) is no longer on screen; the save's answer belongs to that document (`useScopedNodeSave`, through `utils/answers.ts`). |
 | `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking (a node is marked edited only once its update is accepted, so a refused update locks no other node), edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. A save first settles the open edits through the barrier the pipeline's save uses (`settleEdits`: every open draft committed, every node update still resolving landed or failed), so it sends the node as the panel shows it; a failed settle saves nothing and says why. |
@@ -177,9 +177,13 @@
   held one's, or other content under its key, so the held write is sent first, exactly; holds `write`; calls `send(write,
   ticket)`, whose endpoint function sends the body through `sendKeyed(url, body,
   ticket, options)`, which refuses a ticket that is not that call's own; and lets the
-  write go once `keyedWriteSettled` says its answer settles it: an answer, or an
-  `ApiError` below 500. No answer, a timeout, an answer of 500 or more, or one that
-  does not parse keeps it held. A caller whose content changes asks for a new key
+  write go once `keyedWriteSettled` says its answer settles it: an answer, an
+  `ApiError` below 500, or a 503 whose code says it was refused before anything was
+  written (`REFUSED_UNWRITTEN`: quote_store_mismatch, quote_store_environment), on the write's first send:
+  answering a held write sent again (`answeredResends`), the server's refusal of a store that does not fit,
+  made before it reads what the key wrote, says nothing of the earlier send, so it stays held. No
+  answer, a timeout, any other answer of 500 or more, or one that does not parse keeps
+  it held. A caller whose content changes asks for a new key
   (`operationKey`); the same content is sent again under the held key.
 - **`HauteNodeData`** (`types/node.ts`): the typed view of a pipeline
   node's `Record<string, unknown>` data — `label`, `nodeType`, `config`,

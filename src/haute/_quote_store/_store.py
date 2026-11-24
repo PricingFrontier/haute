@@ -3,9 +3,10 @@ checked against a form.
 
 A database is the form's own tables and Haute's activity (:mod:`._schema`), made and changed
 in SQL by the people who own it, starting from the SQL Haute writes (:mod:`._migrate`), in
-every environment alike. :func:`open_engine` opens a database whose own catalogue holds the
-form's tables as the store reads and writes them, and refuses any other, naming why. Nothing
-it does makes, adopts or changes a table.
+every environment alike. :func:`open_engine` opens a database and names each way its own
+catalogue does not hold the form's tables as the store reads and writes them
+(:class:`StoreMisfit`), which the book refuses the uses that need them for, and refuses a
+database it cannot reach. Nothing it does makes, adopts or changes a table.
 
 On SQLite the store takes SQLAlchemy's recipe for the pysqlite driver: the driver leaves
 transactions to SQLAlchemy, which begins each with ``BEGIN``, and a write with ``BEGIN
@@ -185,15 +186,55 @@ class QuoteStoreReadOnlyError(QuoteStoreError):
     error_code = "quote_store_read_only"
 
 
+@dataclass(frozen=True)
+class StoreMisfit:
+    """One way the database does not fit the store: its *table*, its *column* when it is one,
+    what is wrong (*problem*, the words that follow its name), the *privilege* the sign-in
+    lacks on the table when that is what is wrong, and the whole as one *text*
+    (``policy_details.is_renewal is missing``, ``SELECT on policy``)."""
+
+    table: str
+    column: str | None
+    problem: str
+    text: str
+    privilege: str | None = None
+
+
 class QuoteStoreMismatchError(QuoteStoreError):
-    """The database does not hold the form's tables as the store needs them: *differences*
-    names each, and the message what resolves them."""
+    """The database does not hold the form's tables as the store needs them: *misfits* names
+    each, ``differences`` their texts, *environment* whose database it is, and the message what
+    resolves them."""
 
     error_code = "quote_store_mismatch"
 
-    def __init__(self, message: str, *, differences: Sequence[str] = ()) -> None:
+    def __init__(
+        self, message: str, *, misfits: Sequence[StoreMisfit] = (), environment: str | None = None
+    ) -> None:
         super().__init__(message)
-        self.differences = list(differences)
+        self.misfits = tuple(misfits)
+        self.differences = [misfit.text for misfit in self.misfits]
+        self.environment = environment
+
+
+def store_mismatch(misfits: Sequence[StoreMisfit], environment: str) -> QuoteStoreMismatchError:
+    """The refusal of *environment*'s database for *misfits*: each table or column that does not
+    fit and what resolves them, then each privilege its sign-in lacks."""
+    tables = [misfit.text for misfit in misfits if misfit.privilege is None]
+    lacking = [misfit.text for misfit in misfits if misfit.privilege is not None]
+    said: list[str] = []
+    if tables:
+        said.append(
+            "This database's tables do not fit the form: "
+            + "; ".join(tables)
+            + f". {_resolve(environment)}"
+        )
+    if lacking:
+        said.append(
+            "The identity the app signs in as lacks what the quote store needs: "
+            + "; ".join(lacking)
+            + ". Grant them to it."
+        )
+    return QuoteStoreMismatchError(" ".join(said), misfits=misfits, environment=environment)
 
 
 def store_url(path: Path) -> str:
@@ -347,9 +388,13 @@ def _resolve(environment: str) -> str:
     )
 
 
-def _catalogue_differences(
+def _column_misfit(table: str, column: str, problem: str) -> StoreMisfit:
+    return StoreMisfit(table, column, problem, f"{table}.{column} {problem}")
+
+
+def _catalogue_misfits(
     catalogue: Catalogue, schema: StoreSchema, dialect: Dialect
-) -> list[str]:
+) -> list[StoreMisfit]:
     """Each way the database's own *catalogue* differs from the tables *schema* derives, the
     tables the SQL Haute writes makes, which every write and read of the store takes as they
     are: a table or a column missing, of another kind or holding less, taking a null where
@@ -358,29 +403,38 @@ def _catalogue_differences(
     (:func:`._catalogue.column_problems`); each constraint of the store's table not held
     (:func:`._catalogue.table_problems`); and a column of those tables the store does not
     write that takes no null, so no row could be inserted."""
-    differences: list[str] = []
+    misfits: list[StoreMisfit] = []
     for table in [*(stored.table for stored in schema.tables), schema.activity]:
         found = catalogue.table(table.name)
         if found is None:
-            differences.append(f"the table {table.name} is missing")
+            misfits.append(
+                StoreMisfit(table.name, None, "is missing", f"the table {table.name} is missing")
+            )
             continue
         for column in table.columns:
             held = found.column(column.name)
             if held is None:
-                differences.append(f"{table.name}.{column.name} is missing")
+                misfits.append(_column_misfit(table.name, column.name, "is missing"))
                 continue
-            differences.extend(
-                f"{table.name}.{column.name} {said}"
+            misfits.extend(
+                _column_misfit(table.name, column.name, said)
                 for _, said in column_problems(column, held, dialect)
             )
         for extra in found.columns:
             if extra.name not in table.columns and not extra.nullable:
-                differences.append(
-                    f"{table.name}.{extra.name} is no column of the release's and takes no "
-                    "null, so no row of it could be saved"
+                misfits.append(
+                    _column_misfit(
+                        table.name,
+                        extra.name,
+                        "is no column of the release's and takes no null, so no row of it "
+                        "could be saved",
+                    )
                 )
-        differences.extend(f"{table.name} {said}" for _, said in table_problems(table, found))
-    return differences
+        misfits.extend(
+            StoreMisfit(table.name, None, said, f"{table.name} {said}")
+            for _, said in table_problems(table, found)
+        )
+    return misfits
 
 
 def _refuse_unwritable(engine: Engine) -> None:
@@ -415,49 +469,49 @@ def open_engine(
     sql_schema: str | None = None,
     sign_in: SignIn | None = None,
     named_by: str = HOST_VARIABLES,
-) -> tuple[Engine, StoreSchema]:
+) -> tuple[Engine, StoreSchema, tuple[StoreMisfit, ...]]:
     """An engine on the database at *url*, signed in as *sign_in* says, with *form*'s store
-    schema in the SQL schema *sql_schema*, once the database's own catalogue holds the form's
-    tables as the store reads and writes them and the sign-in holds every privilege the app
-    needs on them; refused otherwise, naming each difference and what resolves it, and a
-    database not reached naming *named_by*. A database is judged by its catalogue alone:
-    nothing in it says which environment it is or what made its tables."""
+    schema in the SQL schema *sql_schema*, and each way the database does not fit it: each
+    table and column its own catalogue does not hold as the store reads and writes it, then
+    each privilege the sign-in lacks on the tables it holds, which the app refuses only the
+    uses that need them for (:meth:`QuoteBook.unfit`). A database not reached is refused,
+    naming *named_by*.
+    A database is judged by its catalogue alone: nothing in it says which environment it is or
+    what made its tables."""
     schema = store_schema(form, sql_schema=sql_schema)
     names = [*(stored.table.name for stored in schema.tables), schema.activity.name]
 
-    def checked(connection: Connection) -> Catalogue:
+    def checked(connection: Connection) -> tuple[Catalogue, list[StoreMisfit]]:
         catalogue = read_catalogue(connection, sql_schema, names)
-        differences = _catalogue_differences(catalogue, schema, connection.dialect)
-        if differences:
-            raise QuoteStoreMismatchError(
-                "This database's tables do not fit the form: "
-                + "; ".join(differences)
-                + f". {_resolve(environment)}",
-                differences=differences,
+        misfits = _catalogue_misfits(catalogue, schema, connection.dialect)
+        misfits.extend(
+            StoreMisfit(
+                table,
+                None,
+                f"needs {kind} granted to the identity the app signs in as",
+                f"{kind} on {table}",
+                privilege=kind,
             )
-        lacking = missing_privileges(connection, schema)
-        if lacking:
-            raise QuoteStoreMismatchError(
-                "The identity the app signs in as lacks what the quote store needs: "
-                + "; ".join(lacking)
-                + ". Grant them to it.",
-                differences=lacking,
+            for table, kind in missing_privileges(
+                connection, schema, tables={found.name for found in catalogue.tables}
             )
-        return catalogue
+        )
+        return catalogue, misfits
 
     engine = make_engine(url, sign_in=sign_in)
     try:
         with reaching(url, environment, named_by):
-            catalogue = read_store(engine, checked)
+            catalogue, misfits = read_store(engine, checked)
         if engine.dialect.name == "sqlite":
             _refuse_unwritable(engine)
     except Exception:
         engine.dispose()
         raise
-    return engine, with_kept_columns(
+    kept = with_kept_columns(
         schema,
         {
             found.name: [(column.name, column.kind) for column in found.columns]
             for found in catalogue.tables
         },
     )
+    return engine, kept, tuple(misfits)

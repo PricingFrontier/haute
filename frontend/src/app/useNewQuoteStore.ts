@@ -2,19 +2,20 @@
  * The New quote window (specs/workbench): where the underwriter keys a new quote's reference
  * and the quote_details columns they type before the quote is made, over the page it was
  * asked for from, which it leaves as it was. New quote starts it from a new quote's defaults;
- * Duplicate and Renew from a quote's values as the store keeps them on the current sheets,
- * its reference blank, a renewal ticked as one; Save as new from the values on the open
- * quote's sheets. Only the reference must be keyed: a required detail left empty is asked for
- * as the quote is marked final. Create makes the whole creation once and keeps it in the tab
- * before it is sent: refused, it is let go and the window takes typing again, saying why;
- * unanswered, it may have been made, so it is kept and sent again exactly as it was, and
- * offered back the next time the app opens in the tab, before anything else is made. An
- * alternative is not made here: it takes its source's reference (`useOpenQuoteStore.openNew`).
+ * Duplicate, Renew and Create alternative from a quote's values as the store keeps them on the
+ * current sheets, its reference blank, a renewal ticked as one, an alternative under its
+ * source's reference, which takes no typing; Save as new from the values on the open quote's
+ * sheets. The reference and the quote's name must be keyed, the name as it is never changed
+ * after: a required detail left empty is asked for as the quote is marked final. Create makes
+ * the whole creation once and keeps it in the tab as it is sent: refused, it is let go and the
+ * window takes typing again, saying why; unanswered, it may have been made, so it is kept and
+ * sent again exactly as it was, and offered back the next time the app opens in the tab,
+ * before anything else is made.
  */
 import { create } from "zustand"
 import { createAppQuote, openAppQuote, type QuoteSource } from "../api/app"
 import { contentWithout, keyedWriteSettled, sendHeld, type KeyedHold } from "../api/keyedWrites"
-import { apiErrorCode, apiErrorMessage, apiErrorRawDetail } from "../api/errors"
+import { apiErrorCode, apiErrorRawDetail } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
@@ -23,6 +24,7 @@ import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
 import { answer, newest, requestKind, under } from "../utils/answers"
 import {
+  appErrorMessage,
   asRenewal,
   clearDraft,
   forgetCreation,
@@ -38,16 +40,18 @@ import {
   type KeptCreation,
   type Values,
 } from "./quoteValues"
-import { navigate, quotePath } from "./route"
+import { editPath, navigate } from "./route"
 import useAppStore from "./useAppStore"
 import useOpenQuoteStore, { openDraftKey } from "./useOpenQuoteStore"
 
 /** The quote_details column of the quote's reference, keyed in the window alone. */
 export const REFERENCE_COLUMN = QUOTE_DETAILS.quote_reference
+/** The quote_details column of the quote's name, keyed in the window and never changed after. */
+export const NAME_COLUMN = QUOTE_DETAILS.quote_name
 
-/** A quote made from another in the window: a duplicate or a renewal. */
+/** A quote made from another in the window: a duplicate, a renewal or an alternative. */
 export interface WindowOrigin extends QuoteSource {
-  relation: "duplicate" | "renewal"
+  relation: "duplicate" | "renewal" | "alternative"
 }
 
 /**
@@ -112,27 +116,33 @@ interface NewQuoteState {
   discard: () => void
 }
 
-/** The window's fields: the reference, required, then the columns of quote_details the underwriter types, in the table's order. */
+/**
+ * The window's fields: the reference and the quote's name, both required, then the other
+ * columns of quote_details the underwriter types, in the table's order.
+ */
 export function windowFields(form: FormSpec): ShownField[] {
   const table = form.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
   if (table === undefined) return []
   const reference = table.inputs.find((column) => column.name === REFERENCE_COLUMN)
-  const typed = table.inputs.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.name))
+  const typed = table.inputs
+    .filter((column) => !QUOTE_DETAILS_MANAGED.has(column.name))
+    .map((column) => (column.name === NAME_COLUMN ? { ...column, required: true } : column))
   const columns = [...(reference === undefined ? [] : [{ ...reference, required: true }]), ...typed]
   return columns.map((column) => ({ key: columnKey(table.name, column.name), found: { table, column } }))
 }
 
 /**
- * What stops each field fitting, by `cellKey`: the reference's rules, and each column's
- * (`cellProblem`) but whether it is required, which marking the quote final asks, checked
- * whatever the sheets show and whatever else is typed.
+ * What stops each field fitting, by `cellKey`: the reference's rules, the quote's name left
+ * empty, and each other column's (`cellProblem`) but whether it is required, which marking the
+ * quote final asks, checked whatever the sheets show and whatever else is typed.
  */
 export function windowProblems(fields: readonly ShownField[], reference: string, details: SampleRow): Record<string, string> {
   const problems: Record<string, string> = {}
   for (const { found } of fields) {
     if (found === null) continue
     const { table, column } = found
-    const problem = column.name === REFERENCE_COLUMN ? referenceProblem(reference) : cellProblem({ ...column, required: false }, details[column.name])
+    const problem =
+      column.name === REFERENCE_COLUMN ? referenceProblem(reference) : cellProblem({ ...column, required: column.name === NAME_COLUMN }, details[column.name])
     if (problem !== null) problems[cellKey(table.name, 0, column.name)] = problem
   }
   return problems
@@ -213,8 +223,9 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       key: (kept) => kept.operation,
       content: (kept) => contentWithout(kept, "operation"),
     }
+    // An alternative is made under its source's reference, so it names none of its own.
     const sending = sendHeld(hold, creation, ({ operation, form_revision, release, values, source, reference }, ticket) =>
-      createAppQuote({ operation, form_revision, release, values }, source, reference, ticket))
+      createAppQuote({ operation, form_revision, release, values }, source, source?.relation === "alternative" ? null : reference, ticket))
     // The window closes nothing while it sends (`shut`), and opens no other: its answer is always
     // the window's.
     await answer([under(fills)], sending, {
@@ -231,7 +242,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         }
         // Answered once the page moved on, Back included, the quote is made and the page stays,
         // as it does when the leave guard keeps the quote behind the window: either says so.
-        const opened = here() === sentFrom && (await navigate(quotePath(made.quote.reference, made.quote.option), { force: savedAsNew })) === "moved"
+        const opened = here() === sentFrom && (await navigate(editPath(made.quote.reference, made.quote.option), { force: savedAsNew })) === "moved"
         if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${made.quote.label}`)
       },
       failed: (error) => {
@@ -242,13 +253,13 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           update({
             status: "editing",
             kept: null,
-            error: apiErrorMessage(error),
+            error: appErrorMessage(error, useAppStore.getState().form),
             taken: apiErrorCode(error) === "reference_taken" ? takenBy(error) : null,
             releaseMoved: moved,
           })
         } else {
           // No answer, or a server failure: it may have been made, so it stays kept.
-          update({ status: "unknown", error: apiErrorMessage(error) })
+          update({ status: "unknown", error: appErrorMessage(error, useAppStore.getState().form, { oneLine: true }) })
         }
       },
     })
@@ -294,10 +305,12 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     openDerived: async (from, options = {}) => {
       if (!free() || offerKept()) return
       const named = options.label === undefined ? "quote" : options.label
-      const title = from.relation === "renewal" ? `Renew ${named}` : `Duplicate ${named}`
+      const title = from.relation === "renewal" ? `Renew ${named}` : from.relation === "alternative" ? `Alternative of ${named}` : `Duplicate ${named}`
       const source = { reference: from.reference, option: from.option, relation: from.relation }
       const belongsTo = [newest(fills)] as const
-      set({ shown: { ...opened(title, {}, source, options.addressed ?? false), status: "loading" } })
+      // An alternative is the source's next option, under its reference.
+      const reference = from.relation === "alternative" ? from.reference : ""
+      set({ shown: { ...opened(title, {}, source, options.addressed ?? false), reference, status: "loading" } })
       // Its values on the current sheets, without the details the app set for it.
       await answer(belongsTo, openAppQuote(from.reference, from.option), {
         ok: (read) => {
@@ -305,7 +318,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           const base = from.relation === "renewal" ? asRenewal(values) : values
           update({ status: "editing", base, details: typedDetails(base), dropped: read.dropped })
         },
-        failed: (error) => update({ status: "failed", error: apiErrorMessage(error) }),
+        failed: (error) => update({ status: "failed", error: appErrorMessage(error, useAppStore.getState().form) }),
       })
     },
 
@@ -324,7 +337,9 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     offerKept,
 
     setReference: (reference) => {
-      if (get().shown?.status === "editing") update({ reference })
+      // An alternative's reference is its source's.
+      const { shown } = get()
+      if (shown?.status === "editing" && shown.source?.relation !== "alternative") update({ reference })
     },
 
     setDetail: (columnId, value) => {
@@ -340,7 +355,8 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         update({ checked: true })
         return
       }
-      // Made once and kept before it is sent: tried again, after a reload too, it is sent as it was.
+      // Made once and kept in the tab as it is sent (`sendHeld`), never before: tried again,
+      // after a reload too, it is sent as it was. A tab that keeps nothing sends it all the same.
       const creation: KeptCreation = {
         operation: operationKey(),
         form_revision: revision,
@@ -350,9 +366,6 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         source: shown.source,
         title: shown.title,
       }
-      const key = keptKey()
-      // A tab that keeps nothing sends it all the same.
-      if (key !== null) keepCreation(key, creation)
       await send(creation)
     },
 

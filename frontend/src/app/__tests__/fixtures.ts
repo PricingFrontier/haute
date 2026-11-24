@@ -1,4 +1,5 @@
 /** Quotes as the underwriter app's routes answer them, for its tests. */
+import { ApiError } from "../../api/client"
 import type {
   WorkbenchAppQuote,
   WorkbenchAppQuoteChangeResponse,
@@ -17,6 +18,26 @@ export const CLOSED: WorkbenchAppQuoteStore = {
   differences: [],
 }
 
+/** A route the dev database's tables refuse: policy's state missing there. */
+export const MISFIT = {
+  message:
+    "This database's tables do not fit the form: policy.state is missing. Change the dev database's tables in SQL to fit this release's form: the Workbench view's schema pane writes the SQL to start from.",
+  error_code: "quote_store_mismatch",
+  differences: ["policy.state is missing"],
+  misfits: [{ table: "policy", column: "state", problem: "is missing" }],
+  environment: "dev",
+}
+/** A route refused because the quote store's database cannot be reached. */
+export const UNREACHED = {
+  message: "The app cannot reach its quote store just now.",
+  error_code: "quote_store_unreachable",
+  differences: [],
+  misfits: [],
+  environment: null,
+}
+/** `detail` as a 503 of the store's refuses a route. */
+export const storeRefusal = (detail: Record<string, unknown> & { message: string }): ApiError => new ApiError("HTTP 503", 503, detail.message, { detail }, detail)
+
 export const release: WorkbenchAppReleaseResponse = {
   id: "rel-1",
   form_revision: "rev-9",
@@ -28,6 +49,7 @@ export const release: WorkbenchAppReleaseResponse = {
   quotes: OPEN,
   edit_role: null,
   can_edit: true,
+  environment: "test",
 }
 export const VALUES = { policy: [{ state: "NY" }] }
 export const TABLES = { premiums: [{ item: "Crane", premium: 120 }] }

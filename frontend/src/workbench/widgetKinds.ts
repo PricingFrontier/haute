@@ -1,4 +1,4 @@
-import { ChartColumn, Database, FileInput, FileOutput, FileSpreadsheet, FileText, Globe, Heading, LayoutGrid, Rows3, Table2, type LucideIcon } from "lucide-react"
+import { ChartColumn, Database, FileInput, FileOutput, FileSpreadsheet, FileText, Globe, Heading, LayoutGrid, Rows3, Table2, TextCursorInput, type LucideIcon } from "lucide-react"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import type { Size } from "../utils/sheetGeometry"
 import type { ImportFormat, PaletteType, WidgetType } from "../utils/workbenchForm"
@@ -73,6 +73,14 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
     size: { w: 480, h: 48 },
     min: { w: 80, h: 24 },
   },
+  textBox: {
+    label: "Text Box",
+    icon: TextCursorInput,
+    color: COMPONENT_COLOR,
+    hint: "A box an underwriter types free text into, such as their comments, held in a Text column of a one-row table",
+    size: { w: 480, h: 120 },
+    min: { w: 160, h: 72 },
+  },
   import: {
     label: "Import",
     icon: FileInput,
@@ -95,7 +103,7 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
 export const FORMAT_MARKS: Record<ImportFormat, LucideIcon> = { csv: FileText, excel: FileSpreadsheet, sql: Database, http: Globe }
 
 /** What the palette offers, in order: a section, then the components. */
-export const PALETTE_KINDS: readonly PaletteType[] = ["section", "heading", "collection", "tableInput", "chart", "import", "export"]
+export const PALETTE_KINDS: readonly PaletteType[] = ["section", "heading", "collection", "tableInput", "textBox", "chart", "import", "export"]
 
 /** A palette entry by what it adds. */
 export const paletteKind = (type: PaletteType): PaletteKind => (type === "section" ? SECTION_KIND : WIDGET_KINDS[type])
