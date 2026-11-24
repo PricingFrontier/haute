@@ -270,14 +270,16 @@ export default function OptimiserConfig({
   // --- Actions (polling is handled by useBackgroundJobs hook in App.tsx) ---
 
   // A start records its own outcome under the node's result key (`startOptimiserSolve`).
-  const handleSolve = useCallback(async () => {
-    await answer([under(life)], startOptimiserSolve({ nodeId, config, allNodes, requestScope }), {}, {
+  // Optimise and Stop are presses: nothing waits for them; a failed start is written to the
+  // node's job and a failed stop to a toast.
+  const handleSolve = useCallback(() => {
+    void answer([under(life)], startOptimiserSolve({ nodeId, config, allNodes, requestScope }), {}, {
       inFlight: setSubmitting,
     })
   }, [requestScope, allNodes, config, nodeId, life])
 
-  const handleStop = useCallback(async () => {
-    await answer([under(life)], stopOptimiserSolve(resultKey), {
+  const handleStop = useCallback(() => {
+    void answer([under(life)], stopOptimiserSolve(resultKey), {
       failed: (error) => useToastStore.getState().addToast("error", `Could not stop the optimisation: ${apiErrorMessage(error)}`),
     }, { inFlight: setStopping })
   }, [resultKey, life])

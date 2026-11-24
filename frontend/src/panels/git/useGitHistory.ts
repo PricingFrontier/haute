@@ -244,7 +244,7 @@ export function useGitHistory({
     return () => asked.release()
   }, [applyAction, commitNonce, peeking, refresh, life])
 
-  const toggleExpand = useCallback(async (sha: string) => {
+  const toggleExpand = useCallback((sha: string) => {
     const current = stateRef.current.expanded[sha]
     if (current !== undefined) {
       applyAction({ type: "expand", sha, value: undefined })
@@ -258,7 +258,7 @@ export function useGitHistory({
     }
 
     applyAction({ type: "expand", sha, value: "loading" })
-    await answer([under(life)], getMilestoneSaves(sha), {
+    void answer([under(life)], getMilestoneSaves(sha), {
       ok: (response) => {
         writeMilestoneSaves(sha, response.saves)
         applyAction({ type: "resolve-expansion", sha, saves: response.saves })

@@ -1,6 +1,6 @@
 import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import { useEffect, useRef } from "react"
-import type { Node, Edge, EdgeChange, NodeChange } from "@xyflow/react"
+import type { Node, Edge, EdgeChange, FitView, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
@@ -131,7 +131,7 @@ interface KeyboardShortcutsParams {
   ) => void
   undo: () => void
   redo: () => void
-  fitView: (options?: { padding?: number }) => void
+  fitView: FitView
   clipboard: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: React.MutableRefObject<number>
   setSelectedNode: (node: Node | null) => void
@@ -340,7 +340,7 @@ export default function useKeyboardShortcuts({
       // Ctrl+1 → fit view
       if (BINDING_BY_ID.fitView.matches?.(e, mod)) {
         e.preventDefault()
-        fitView({ padding: 0.8 })
+        void fitView({ padding: 0.8 })
         return
       }
 

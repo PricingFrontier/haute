@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import type { FitView } from "@xyflow/react"
 import {
   computeNextNodeId,
   filterIncomingEdges,
@@ -41,7 +42,7 @@ interface WebSocketSyncParams {
   preservedBlocksRef: React.MutableRefObject<string[]>
   graphRefreshingRef: React.MutableRefObject<number>
   nodeIdCounter: React.MutableRefObject<number>
-  fitView: (options?: { padding?: number }) => void
+  fitView: FitView
   enabled?: boolean
   /** After a document from disk is installed, the open view kept or closed by it. */
   onDocumentReload?: () => void
@@ -532,7 +533,7 @@ export default function useWebSocketSync({
             scheduleDelayed(() => {
               if (!mounted || updateSeq !== graphUpdateSeq) return
               if (focused === null) {
-                fitView({ padding: 0.8 })
+                void fitView({ padding: 0.8 })
               } else {
                 useUIStore.getState().setChangeFocus(focused.length > 0 ? focused : null)
               }

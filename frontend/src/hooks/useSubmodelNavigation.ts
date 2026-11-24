@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, FitView } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { normalizeEdges } from "../utils/graphHelpers"
 import { documentRequestGraph, withSavedAddresses } from "../utils/documentRequest"
@@ -33,7 +33,7 @@ interface SubmodelNavParams {
   descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
-  fitView: (options?: { padding?: number }) => void
+  fitView: FitView
   reservedApiInputFrameLabels: ReadonlySet<string>
   resolveCanonicalIdentities?: typeof resolveCanonicalGraphIdentities
 }
@@ -305,7 +305,7 @@ export default function useSubmodelNavigation({
               addToast("success", "nodeId" in selection
                 ? "Instance created"
                 : `Submodel "${selection.name}" created - save to apply`)
-              setTimeout(() => fitView({ padding: 0.8 }), 100)
+              setTimeout(() => void fitView({ padding: 0.8 }), 100)
               result = { ok: true }
             },
             failed,
@@ -370,7 +370,7 @@ export default function useSubmodelNavigation({
       } else if (count > 1) {
         addToast("info", `Editing shared definition "${displayName}" affects ${count} instances.`)
       }
-      setTimeout(() => fitView({ padding: 0.8 }), 100)
+      setTimeout(() => void fitView({ padding: 0.8 }), 100)
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
@@ -392,7 +392,7 @@ export default function useSubmodelNavigation({
     viewStackRef.current = nextStack
     setViewStack(nextStack)
     leaveView()
-    setTimeout(() => fitView({ padding: 0.8 }), 100)
+    setTimeout(() => void fitView({ padding: 0.8 }), 100)
   }, [sourceFileRef, fitView, leaveView])
 
   const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
@@ -458,7 +458,7 @@ export default function useSubmodelNavigation({
     setSelectedNode(null)
     setLastSelectedId?.(null)
     setPreviewData(null)
-    setTimeout(() => fitView({ padding: 0.8 }), 100)
+    setTimeout(() => void fitView({ padding: 0.8 }), 100)
   }, [
     sourceFileRef,
     pipelineNameRef,
@@ -528,7 +528,7 @@ export default function useSubmodelNavigation({
               nextPreamble,
             )
             addToast("success", `Submodel "${displayName}" dissolved - save to apply`)
-            setTimeout(() => fitView({ padding: 0.8 }), 100)
+            setTimeout(() => void fitView({ padding: 0.8 }), 100)
           },
           failed,
           stale: notApplied,

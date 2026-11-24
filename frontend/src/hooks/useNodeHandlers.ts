@@ -7,7 +7,7 @@
  */
 import { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react"
-import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
+import type { Node, Edge, FitView, NodeChange, InternalNode } from "@xyflow/react"
 import useDocumentStatusStore, { documentPart } from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
@@ -32,6 +32,7 @@ import type { SubmodelCreateResult } from "./useSubmodelNavigation"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
 import { resultKeysOf } from "../utils/requestGateway"
 import { answer } from "../utils/answers"
+import { apiErrorMessage } from "../api/errors"
 
 type UseNodeHandlersParams = {
   nodeIdCounter: MutableRefObject<number>
@@ -45,7 +46,7 @@ type UseNodeHandlersParams = {
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
-  fitView: (opts?: { padding?: number }) => void
+  fitView: FitView
   getInternalNode?: (id: string) => InternalNode | undefined
   submodels: Record<string, unknown>
   activeSubmodelIdentity?: DrilledOccurrenceIdentity | null
@@ -376,7 +377,15 @@ export default function useNodeHandlers({
     layoutInFlightRef.current = true
     setIsAutoLayouting(true)
     try {
-      const layouted = await getLayoutedElements(n, e, getInternalNode)
+      let layouted: Node[]
+      try {
+        layouted = await getLayoutedElements(n, e, getInternalNode)
+      } catch (err) {
+        // The layout engine did not load, or placed a node nowhere: nothing moves, and the
+        // press is answered.
+        addToast("error", `Auto-layout failed: ${apiErrorMessage(err)}`)
+        return
+      }
       const positionsById = new Map<string, { x: number; y: number }>()
       for (const layoutedNode of layouted) {
         if (
@@ -412,7 +421,7 @@ export default function useNodeHandlers({
           return position ? { ...node, position } : node
         }),
       )
-      setTimeout(() => fitView({ padding: 0.15 }), 50)
+      setTimeout(() => void fitView({ padding: 0.15 }), 50)
       addToast("info", "Auto-layout applied")
     } finally {
       layoutInFlightRef.current = false

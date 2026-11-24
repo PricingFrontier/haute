@@ -750,7 +750,7 @@ export default function ApiInputEditor({
                 {currentPath && (
                   <button
                     data-testid="api-input-infer-btn"
-                    onClick={inferTables}
+                    onClick={() => void inferTables()}
                     disabled={inferring}
                     className="text-[11px] font-semibold px-2 py-0.5 rounded"
                     style={{ color: accentColor, border: `1px solid ${accentColor}` }}

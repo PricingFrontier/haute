@@ -181,8 +181,11 @@ Out of scope:
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
   discarded caught-error context, unsafe hook refs, state updates in effects, and
-  job-polling loops or intervals outside the shared poller, and local copies of
-  the shared error-text, formatting and object-guard helpers as errors; the
+  job-polling loops or intervals outside the shared poller, local copies of
+  the shared error-text, formatting and object-guard helpers, and, in browser
+  source outside tests, a promise that is neither awaited, handled nor dropped
+  with `void`, or a promise-returning function passed where a void callback is
+  expected, as errors; the
   pre-existing file/rule pairs `frontend/eslint.config.js` lists remain visible
   as narrow config exceptions until their owning changes land.
 - Production code that nothing calls fails the build. In the frontend, knip

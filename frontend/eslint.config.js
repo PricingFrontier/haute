@@ -139,6 +139,23 @@ export default defineConfig([
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, TRANSPORT_SELECTORS),
   },
   {
+    // A promise is awaited, handled, or dropped on purpose with `void`: a
+    // rejection nobody waits for would otherwise vanish. Only these two rules
+    // need the type-aware parser, so the rest of the rule set stays untyped.
+    files: SOURCE_FILES,
+    ignores: TEST_FILES,
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+    },
+  },
+  {
     // The helpers' own homes.
     files: ['src/utils/isoDate.ts', 'src/api/types.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, TRANSPORT_SELECTORS),

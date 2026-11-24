@@ -522,7 +522,7 @@ function FlowEditorOverlays({
       )}
       {restoreTarget && (
         <Suspense fallback={null}>
-          <RestoreConfirmModal onConfirm={onRestoreConfirmed} onClose={closeRestore} />
+          <RestoreConfirmModal onConfirm={(saveFirst) => void onRestoreConfirmed(saveFirst)} onClose={closeRestore} />
         </Suspense>
       )}
       {submodelDialog && (
@@ -1571,8 +1571,9 @@ function FlowEditor() {
 
   // Save-gate: resolve Git readiness before deciding whether to save now or
   // queue the action behind branch/divergence setup. Save is the project's
-  // save, the same from either toolbar and from Ctrl/Cmd+S.
-  const requestSave = useCallback(async () => {
+  // save, the same from either toolbar and from Ctrl/Cmd+S. Each is a press: nothing waits
+  // for it, and the save and the readiness read report their own failures.
+  const requestSave = useCallback(() => {
     const decide = (st: GitWorkingBranchResponse | null) => {
       // A repository git refuses to work in (a folder it does not trust, settings it cannot
       // read) still takes the save on disk; its capture warning says why history does not.
@@ -1592,7 +1593,7 @@ function FlowEditor() {
     }
     const known = useGitStore.getState().status
     if (known) decide(known)
-    else await answer([documentPart()], useGitStore.getState().loadStatus(), { ok: decide })
+    else void answer([documentPart()], useGitStore.getState().loadStatus(), { ok: decide })
   }, [addToast, saveProject])
 
   // Commit uses the same readiness gate, but a ready repository first flushes
@@ -1629,10 +1630,10 @@ function FlowEditor() {
     })
   }, [addToast, flushSaveThenMilestone])
 
-  const requestCommit = useCallback(async () => {
+  const requestCommit = useCallback(() => {
     const known = useGitStore.getState().status
     if (known) decideCommit(known)
-    else await answer([documentPart()], useGitStore.getState().loadStatus(), { ok: decideCommit })
+    else void answer([documentPart()], useGitStore.getState().loadStatus(), { ok: decideCommit })
   }, [decideCommit])
 
   const handleGitModalConfirmed = useCallback(() => {
@@ -1783,7 +1784,7 @@ function FlowEditor() {
       addToast("info", "Select exactly one node to create an instance of it")
       return
     }
-    handleCreateInstance(currentSelectedIds[0])
+    void handleCreateInstance(currentSelectedIds[0])
   }, [editingReadOnly, handleCreateInstance, addToast])
 
   const handleZoomIn = useCallback(() => {

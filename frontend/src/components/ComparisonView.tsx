@@ -143,7 +143,7 @@ function ReadonlyCanvas({
 
   // Re-centre the graph when the pane is reshaped (orientation flip).
   useEffect(() => {
-    const id = requestAnimationFrame(() => fitView({ padding: 0.2 }))
+    const id = requestAnimationFrame(() => void fitView({ padding: 0.2 }))
     return () => cancelAnimationFrame(id)
   }, [refitKey, fitView])
 
@@ -160,7 +160,7 @@ function ReadonlyCanvas({
     const ro = new ResizeObserver((entries) => {
       const box = entries[0]?.contentRect
       if (box && box.width > 0 && box.height > 0) {
-        fitView({ padding: 0.2 })
+        void fitView({ padding: 0.2 })
         ro.disconnect()
       }
     })

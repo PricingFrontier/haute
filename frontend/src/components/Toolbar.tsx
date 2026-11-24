@@ -37,7 +37,8 @@ interface ToolbarProps {
   canCreateInstance: boolean
   onCreateInstance: () => void
   onCentre: () => void
-  onAutoLayout: () => void
+  /** Lays the graph out; it reports its own failure, and nothing waits for it. */
+  onAutoLayout: () => Promise<void>
   isAutoLayouting: boolean
   onSave: () => void
   onSaveCommit: () => void
@@ -108,7 +109,7 @@ function Toolbar({
           <ToolbarButton
             compact
             data-testid="toolbar-layout"
-            onClick={onAutoLayout}
+            onClick={() => void onAutoLayout()}
             disabled={editingDisabled || nodeCount === 0 || isAutoLayouting}
             aria-busy={isAutoLayouting}
             /* The visible label stays "Layout" in both states — swapping it to

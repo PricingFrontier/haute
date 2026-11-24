@@ -580,7 +580,9 @@ export default function ModellingConfig({
       }, { signal })
     },
   }), [activeSource, documentKey, resultKey, requestTarget, structuralVersion, trainingHash])
-  const onTrain = useCallback(async () => {
+  // Training and Cancel are presses: nothing waits for them, and each answer's failure is
+  // written to the job or a toast.
+  const onTrain = useCallback(() => {
     if (hasTrainingConfigurationIssues) return
     const document = executionPart()
     // A document that cannot run trains nothing.
@@ -596,7 +598,7 @@ export default function ModellingConfig({
     const lineage = trainingLineage(target.graph)
     const configHash = trainingHash
     const attempt = { configHash, source: activeSource, structuralVersion }
-    await answer([document], () => trainModel({
+    void answer([document], () => trainModel({
       graph: target.graph,
       target: target.node,
       source: useSettingsStore.getState().activeSource,
@@ -615,7 +617,7 @@ export default function ModellingConfig({
       },
     }, { inFlight: setSubmitting })
   }, [activeSource, allNodes, failTrainStart, hasTrainingConfigurationIssues, nodeId, requestTarget, startTrainJob, structuralVersion, trainingHash])
-  const onCancel = useCallback(async () => {
+  const onCancel = useCallback(() => {
     const key = resultKey
     const job = useNodeResultsStore.getState().trainJobs[key]
     if (!job || cancelling) return
@@ -623,7 +625,7 @@ export default function ModellingConfig({
     // The reply belongs to the job it cancelled and the document: once polling has
     // retired the job, or the document changed, it is dropped.
     const belongsTo = [executionPart(), watch(useNodeResultsStore, (state) => state.trainJobs[key]?.jobId)] as const
-    await answer(belongsTo, () => cancelTrain(job.jobId), {
+    void answer(belongsTo, () => cancelTrain(job.jobId), {
       ok: (status) => {
         if (status.status === "completed" && status.result) completeTrainJob(key, job.jobId, status.result, status)
         else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(key, job.jobId, status.message || "Training stopped", status)
