@@ -1528,7 +1528,8 @@ Out of scope:
   or moved into it, with a cross while it holds none that takes it away; a sheet holding no
   cells is not saved. A cell's settings: Field, a searchable
   `ColumnSelector` of the one-row tables' columns as a sheet shows them, each as
-  `table.column` with its type, a column the schema no longer holds, or no longer of a
+  `table.column` with its label and its type, searched by any of them, a column the schema
+  no longer holds, or no longer of a
   one-row table, shown and marked but never offered; Cell, in a text field committed on
   blur or Enter, the address trimmed and taken in capitals; Label, a select of
   None, Above, Under, Left, Right and Custom, read from where the label is (None while it

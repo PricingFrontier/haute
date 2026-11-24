@@ -468,8 +468,8 @@ a sheet per table.
   field, and **Remove cell** at the foot of the settings takes the row away once you
   confirm. Drag a row by its grip, or use Alt+Up and Alt+Down, to change the order or move
   it to another sheet: past a sheet's first or last row it goes into the sheet before or
-  after. Under a sheet's **Add a cell**, type to search the fields, shown as
-  `table.column`, and pick one to add it in the cell below the sheet's last row, its label
+  after. Under a sheet's **Add a cell**, type to search the fields by
+  `table.column` or label, and pick one to add it in the cell below the sheet's last row, its label
   below that row's label. A sheet with no rows isn't saved. When two things would land in
   one place (two cells, a cell and a label, or a table running over a cell or another
   table), **Clashes** at the foot of the pane says what clashes and where, and the sheet

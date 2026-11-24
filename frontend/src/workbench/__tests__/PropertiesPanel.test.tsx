@@ -1583,6 +1583,7 @@ describe("PropertiesPanel", () => {
     const widget = findWidget(form, "w_out")!.widget as ExportWidget
     const cell = (column: string, sheet: string, address: string) => ({ table: "policy", column, sheet, cell: address, label_cell: "", true_false: null })
     widget.target = { format: "excel_cells", file_name: "slip", cells: [cell("state", "Slip", "B1"), cell("year", "Other", "B1"), cell("year", "SLIP", "B2")], blocks: [] }
+    form.schema.tables.find((held) => held.name === "policy")!.inputs.find((held) => held.name === "state")!.label = "Risk state"
     loadForm(form)
     select("w_out")
     render(<PropertiesPanel />)
@@ -1591,9 +1592,11 @@ describe("PropertiesPanel", () => {
 
     // Slip, as first spelled, first, both its cells together; then Other.
     expect(screen.getAllByRole("group", { name: /^Sheet / }).map((group) => group.getAttribute("aria-label"))).toEqual(["Sheet Slip", "Sheet Other"])
-    expect(rows("Slip")).toEqual(["Cell 1 State", "Cell 2 Year"])
+    expect(rows("Slip")).toEqual(["Cell 1 Risk state", "Cell 2 Year"])
     expect(rows("Other")).toEqual(["Cell 3 Year"])
     expect(placed()).toEqual(["state@Slip!B1", "year@Other!B1", "year@SLIP!B2"])
+    // A field found by its label as well as its name.
+    expect(offered("Add a cell to Other", "risk")).toEqual(["policy.state"])
     fireEvent.click(screen.getByRole("button", { name: "Cell 3 settings" }))
     const address = screen.getByRole("textbox", { name: "Cell 3 address" })
     fireEvent.change(address, { target: { value: "C1" } })

@@ -186,14 +186,14 @@ function CellClashes({ form, target }: { form: FormSpec; target: ExcelCellsExpor
   )
 }
 
-/** The columns a cell can be given (`cellColumns`), each as `table.column` with its type for `ColumnSelector`, and the field each names. */
+/** The columns a cell can be given (`cellColumns`), each as `table.column` with its label and its type for `ColumnSelector`, and the field each names. */
 function cellChoices(tables: readonly SchemaTable[]): { options: ColumnOption[]; fields: ReadonlyMap<string, FieldRef> } {
   const options: ColumnOption[] = []
   const fields = new Map<string, FieldRef>()
   for (const table of tables) {
     for (const column of cellColumns(table)) {
       const name = `${table.name}.${column.name}`
-      options.push({ name, dtype: column.type })
+      options.push({ name, dtype: column.type, label: columnLabel(column) })
       fields.set(name, { table: table.name, column: column.name })
     }
   }

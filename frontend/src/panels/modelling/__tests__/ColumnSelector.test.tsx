@@ -23,6 +23,24 @@ describe("ColumnSelector", () => {
     expect(onChange).toHaveBeenCalledWith("weight")
   })
 
+  it("shows an option's label after its name and finds it by its label", () => {
+    const onChange = vi.fn()
+    const labelled = [
+      { name: "policy.br_period", dtype: "int", label: "Reporting period" },
+      { name: "policy.state", dtype: "str", label: "State" },
+    ]
+    render(<ColumnSelector compact trigger="add" label="Add a cell" value="" placeholder="Add a cell" columns={labelled} onChange={onChange} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add a cell" }))
+    const search = screen.getByRole("combobox", { name: "Search Add a cell" })
+    fireEvent.change(search, { target: { value: "reporting per" } })
+    const [option, ...rest] = screen.getAllByRole("option")
+    expect(rest).toEqual([])
+    expect(option).toHaveTextContent("policy.br_periodReporting periodint")
+    expect(option).toHaveAttribute("title", "policy.br_period: Reporting period")
+    fireEvent.keyDown(search, { key: "Enter" })
+    expect(onChange).toHaveBeenCalledWith("policy.br_period")
+  })
+
   it("keeps a saved unavailable value visible without making it selectable", () => {
     render(<ColumnSelector label="Offset column" value="removed_column" columns={columns} onChange={vi.fn()} optional />)
     expect(screen.getByRole("button", { name: "Offset column" })).toHaveTextContent("removed_column")

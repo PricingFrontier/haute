@@ -2,7 +2,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { createPortal } from "react-dom"
 import { ChevronDown, Plus } from "lucide-react"
 
-export type ColumnOption = { name: string; dtype: string }
+/** A column offered: its name, its type and, where it has one, a label shown after its name and searched as it is. */
+export type ColumnOption = { name: string; dtype: string; label?: string }
 type Props = {
   label: string
   value: string
@@ -67,7 +68,8 @@ export function ColumnSelector({
     const matching = columns.filter(
       (column) =>
         column.name.toLowerCase().includes(needle) ||
-        column.dtype.toLowerCase().includes(needle),
+        column.dtype.toLowerCase().includes(needle) ||
+        (column.label ?? "").toLowerCase().includes(needle),
     )
     return optional && (needle === "" || "none".includes(needle))
       ? [{ name: "", dtype: "" }, ...matching]
@@ -241,6 +243,7 @@ export function ColumnSelector({
             aria-selected={value === column.name}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => select(column.name)}
+            title={column.label ? `${column.name}: ${column.label}` : undefined}
             className={`flex cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 ${text} font-mono`}
             style={{
               background:
@@ -251,6 +254,12 @@ export function ColumnSelector({
             }}
           >
             <span className={compact ? "min-w-0 truncate" : undefined}>{column.name || "None"}</span>
+            {column.label && (
+              // Muted after the name, giving way to it first as the menu narrows.
+              <span className="min-w-0 flex-1 shrink-[2] truncate font-sans" style={{ color: "var(--text-muted)" }}>
+                {column.label}
+              </span>
+            )}
             {column.dtype && (
               <span
                 className={compact ? "shrink-0 text-[10px]" : "text-[11px]"}
