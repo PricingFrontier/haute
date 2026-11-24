@@ -13,9 +13,11 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from haute._local_security import (
+    DISABLE_AUTH_ENV,
     SESSION_TOKEN_COOKIE,
     LocalTrustedHostMiddleware,
     local_session_token,
+    web_origin,
 )
 from haute.server import _serve_index_html
 from tests._project import project_app, use_project
@@ -239,3 +241,70 @@ def test_served_index_contains_no_session_secret(tmp_path: Path) -> None:
 
     assert local_session_token() not in corpus
     assert "__HAUTE_SESSION_TOKEN__" not in corpus
+
+
+#: A POST that takes no body (an unknown job's cancel, answered by its route with 404),
+#: which a page of another site can send without asking.
+_NO_BODY_POST = "/api/modelling/train/cancel/no-such-job"
+
+
+@pytest.fixture()
+def gate_off_client(local_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv(DISABLE_AUTH_ENV, "1")
+    local_client.cookies.clear()
+    return local_client
+
+
+def test_switching_the_session_gate_off_still_refuses_another_origins_write(
+    gate_off_client: TestClient,
+) -> None:
+    response = gate_off_client.post(
+        _NO_BODY_POST, headers={"host": "localhost:8000", "origin": "https://attacker.example"}
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Origin is not trusted for the local Haute session"}
+
+
+@pytest.mark.parametrize("origin", ["http://localhost:8000", None], ids=["loopback", "absent"])
+def test_switching_the_session_gate_off_drops_only_the_cookie(
+    gate_off_client: TestClient, origin: str | None
+) -> None:
+    headers = {"host": "localhost:8000", "cookie": ""}
+    if origin is not None:
+        headers["origin"] = origin
+    assert gate_off_client.post(_NO_BODY_POST, headers=headers).status_code == 404
+
+
+def test_switching_the_session_gate_off_still_refuses_another_origins_socket(
+    gate_off_client: TestClient,
+) -> None:
+    with pytest.raises(_ws_rejection_errors()):
+        with gate_off_client.websocket_connect(
+            "/ws/sync",
+            headers={"host": "localhost:8000", "origin": "https://attacker.example", "cookie": ""},
+        ):
+            pass
+    with gate_off_client.websocket_connect(
+        "/ws/sync",
+        headers={"host": "localhost:8000", "origin": "http://localhost:8000", "cookie": ""},
+    ):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://app.example", ("https", "app.example", 443)),
+        ("https://APP.example:443/", ("https", "app.example", 443)),
+        ("http://127.0.0.1:8000", ("http", "127.0.0.1", 8000)),
+        ("null", None),
+        ("https://app.example/editor", None),
+        ("https://user@app.example", None),
+        ("app.example", None),
+        (None, None),
+    ],
+)
+def test_web_origin_names_one_origin_however_it_is_spelled(
+    value: str | None, expected: tuple[str, str, int] | None
+) -> None:
+    assert web_origin(value) == expected

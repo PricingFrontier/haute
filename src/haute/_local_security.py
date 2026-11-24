@@ -147,7 +147,18 @@ def _origin_authority(value: str | None) -> tuple[str, str, int | None] | None:
     return parsed.scheme, host, port
 
 
-def _http_scheme(scope_scheme: str) -> str:
+def web_origin(value: str | None) -> tuple[str, str, int] | None:
+    """The ``(scheme, host, port)`` an ``http``/``https`` origin names, the default port
+    filled in, or ``None`` for anything else: an opaque ``null``, a path, a query,
+    credentials. Two spellings of one origin give the same answer."""
+    origin = _origin_authority(value)
+    if origin is None:
+        return None
+    scheme, host, port = origin
+    return scheme, host, _effective_port(scheme, port)
+
+
+def http_scheme(scope_scheme: str) -> str:
     if scope_scheme in {"https", "wss"}:
         return "https"
     return "http"
@@ -169,7 +180,7 @@ def _origin_state(headers: Headers, *, scope_scheme: str) -> OriginState:
         return "untrusted"
     origin_scheme, origin_host, origin_port = origin
     request_host, request_port = request_authority
-    request_scheme = _http_scheme(scope_scheme)
+    request_scheme = http_scheme(scope_scheme)
     if origin_scheme != request_scheme:
         return "untrusted"
     if not _is_loopback_host(origin_host) or not _is_loopback_host(request_host):
@@ -278,10 +289,19 @@ class LocalSessionMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        if local_session_auth_disabled() or not request.url.path.startswith("/api/"):
+        if not request.url.path.startswith("/api/"):
             return await call_next(request)
 
         origin_state = _origin_state(request.headers, scope_scheme=request.url.scheme)
+        if local_session_auth_disabled():
+            # The switch stops only the cookie check: a page of another origin is
+            # refused whoever signs the request in.
+            if origin_state == "untrusted":
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Origin is not trusted for the local Haute session"},
+                )
+            return await call_next(request)
         is_bootstrap = (
             request.url.path == SESSION_BOOTSTRAP_PATH and request.method.upper() == "POST"
         )
@@ -324,9 +344,15 @@ class LocalSessionMiddleware(BaseHTTPMiddleware):
 
 def websocket_rejection_reason(headers: Headers, *, scope_scheme: str = "ws") -> str | None:
     """Return a pre-accept WebSocket rejection reason, never a supplied secret."""
+    origin_state = _origin_state(headers, scope_scheme=scope_scheme)
     if local_session_auth_disabled():
-        return None
-    if _origin_state(headers, scope_scheme=scope_scheme) != "trusted":
+        # Only the cookie check is off: another origin's page never opens the socket.
+        return (
+            "Origin is not trusted for the local Haute session"
+            if origin_state == "untrusted"
+            else None
+        )
+    if origin_state != "trusted":
         return "Origin is not trusted for the local Haute session"
     if not _request_token_matches(headers):
         return "Missing or invalid Haute session token"

@@ -7,68 +7,20 @@ specification](../sandbox-security/high-level.md) and [the hosted Databricks
 App specification](../hosted-databricks-app/high-level.md) describe: the
 requests the server accepts from a browser, the files it creates outside the
 project, and the pickles it agrees to load. The packages below come from the
-9 November 2026 codebase review. `SBS-01` and `SBS-03` are risks read from
-the source whose reach depends on the host and was not confirmed; each entry
-says what would have to be true. `SBS-02` was reproduced against `HEAD` on
-that day.
+9 November 2026 codebase review. `SBS-03` is a risk read from the source
+whose reach depends on the host and was not confirmed; its entry says what
+would have to be true. `SBS-02` was reproduced against `HEAD` on that day.
 
 ## Priorities
 
-**Start with:** `SBS-01`
+**Start with:** `SBS-02`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SBS-01 | Planned | P2 | The hosted editor refuses a write, and a sync socket, that another site's page opened. |
 | SBS-02 | Planned | P2 | A pickle written under NumPy 1 loads, and a refused pickle tells the analyst what they can do. |
 | SBS-03 | Planned | P3 | Haute's files under the shared temporary folder belong to one user and are created private. |
 
 ## Planned improvements
-
-### SBS-01 — The hosted editor checks where a request came from
-**Why:** A risk read from the source; whether a browser can reach it depends
-on the platform proxy and was not confirmed. The hosted entry point turns the
-local session gate off for the whole process, because the platform's proxy
-signs users in. The gate's Origin tests go with it: the session middleware
-returns before any Origin check for every `/api/` request, and the sync
-websocket accepts a handshake from any Origin. The proxy boundary strips the
-forwarded headers and rewrites Host; it never looks at Origin. The hosted
-underwriter app does check: it refuses a write whose `Sec-Fetch-Site` is not
-the app's own origin, and the security specification says of it that "a page
-of another site has its writes refused by the app's origin check". The
-hosted editor is where project code runs with the app's identity, and it has
-no counterpart. If the proxy's sign-in cookie accompanies a cross-origin
-request (a cookie set `SameSite=None`, or a page on the same registrable
-site as the app, such as another app on the hosting domain), a page of
-another origin can open the sync socket and receive the pipeline documents
-sent over it, and can call the thirteen `POST` routes that take no JSON body
-(job cancels, the git storage retry and upstream pull, a test-quote run) as
-the signed-in user. Routes with a JSON body are not exposed this way: the
-installed FastAPI reads JSON only under a JSON content type, which makes a
-browser ask permission first.
-
-**Plan:** In the proxy boundary, before the headers are stripped, compare
-`Origin` and `Sec-Fetch-Site` with the app's own URL for every method that
-changes state and for websocket handshakes, and refuse a mismatch. A request
-with neither header (a non-browser client the proxy let through) passes, as
-it does in the underwriter app. This holds whatever the platform's cookies
-do, so it does not wait on confirming them.
-
-**Acceptance:** Behind the boundary with the hosted environment set, a
-`POST` carrying another site's `Origin` is answered 403 and reaches no route;
-a websocket handshake from another Origin is closed before accept; the app's
-own page still saves and syncs. The underwriter app's and the editor's
-cross-site rules are stated side by side in the security specification.
-
-**Dependencies:** None. Recording what the platform's sign-in cookie allows
-is useful evidence for the priority, not a precondition.
-
-**Evidence:** `src/haute/hosted.py::create_app` sets the disable switch;
-`src/haute/hosted.py::PlatformProxyBoundary`;
-`src/haute/_local_security.py::LocalSessionMiddleware` returns early when
-`local_session_auth_disabled` holds;
-`src/haute/_local_security.py::websocket_rejection_reason`;
-`src/haute/server.py::ws_sync`; `src/haute/_workbench_app.py::_cross_site`
-is the rule the underwriter app applies.
 
 ### SBS-02 — A NumPy 1 pickle loads, and a refusal is written for the analyst
 **Why:** Reproduced. The restricted unpickler allows NumPy's array
