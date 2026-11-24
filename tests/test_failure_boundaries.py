@@ -32,6 +32,10 @@ ALLOWED_ERROR_RESPONSES: dict[tuple[str, str], str] = {
         "refuses a request without the session before it is let in, outside the request's "
         "failure middleware by design (specs/server-api, request middleware chain)"
     ),
+    ("src/haute/hosted.py", "PlatformProxyBoundary._refuse"): (
+        "refuses another site's page before the hosted server is reached, outside the "
+        "request's failure middleware as the session gate is (specs/hosted-databricks-app)"
+    ),
     ("src/haute/routes/json_cache.py", "_api_input_schema_error_response"): (
         "the JSON cache keeps its type-discriminated 422 body, {detail, type} "
         "(specs/server-api, Error handling)"
