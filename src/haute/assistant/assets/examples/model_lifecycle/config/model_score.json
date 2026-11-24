@@ -1,7 +1,7 @@
 {
   "source_type": "run",
   "run_id": "replace-with-training-run-id",
-  "artifact_path": "model",
+  "artifact_path": "synthetic_severity.cbm",
   "task": "regression",
   "output_column": "prediction"
 }

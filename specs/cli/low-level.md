@@ -591,6 +591,13 @@ Key files and what they cover:
   `PYTHONIOENCODING` chose kept with a mark it lacks shown as `?`, and a stream a caller put
   in the process's place left alone; uses a shared `project_dir` fixture that builds a real
   minimal pipeline.
+- `test_cli_examples.py` — `lint`, `run` and `deploy --dry-run` run whole through `CliRunner`,
+  nothing patched, on every shipped example as an analyst copies it: each exits as the
+  example expects, raises nothing to the command line and says no unrecognised failure, and a
+  refusal is one error line (`reference_join`'s deployment; `model_lifecycle`'s untrained run
+  a strict expected failure owned by `MLR-04`); and one example's request file of a value of
+  another type, cut short, empty or with a byte-order mark answered alike by the run and the
+  dry run, in the IO layer's words, the run adding the input's remedy.
 - `test_project_finding.py` — every command's need (`HauteCommand.need`) against the
   specification's table, and every command on the table of projects: one reading or one
   refusal in the same words per need; a command without a row fails it.

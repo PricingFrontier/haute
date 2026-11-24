@@ -45,6 +45,10 @@ _EXPECTED_DEBT_IDS = {
     # pipeline that another roadmap package owns, strict so its delivery turns it
     # green: MLR-04.
     "2e1728e0067476c5",
+    # tests/test_cli_examples.py: model_lifecycle's run and dry run, whose Model Scoring
+    # names a run nobody trained, end as an unrecognised failure where the node's
+    # configuration error naming the run is meant; strict, so MLR-04 turns it green.
+    "ad567900a5b0deb3",
     # The chunked GLM suite (MOD-M01) fits real RustyStats models in both fit modes;
     # rustystats is an optional dependency, so the module importorskips it like the
     # other GLM suites. See tests/test_glm_chunked_fit.py.

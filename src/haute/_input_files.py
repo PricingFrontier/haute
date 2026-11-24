@@ -409,6 +409,27 @@ def load_json_file(path: str | Path) -> Any:
         raise json_syntax_error(path, offset, exc.msg) from None
 
 
+def json_file_refusal(path: str | Path) -> InputFileError | None:
+    """The refusal of the JSON file *path* when its bytes are not JSON, else ``None``.
+
+    The bytes are read as the request shredder reads them: through a leading byte-order
+    mark, by orjson, so a file cut short, holding nothing or not UTF-8 is refused in the
+    words, line and column every edge gives it. A reader whose own parser failed asks
+    this before saying its parser's words, which name no file or place.
+    """
+    raw = Path(path).read_bytes()
+    start = bom_length(raw)
+    body = raw[start:]
+    if not body.strip():
+        return empty_json_error(path)
+    try:
+        orjson.loads(body)
+    except orjson.JSONDecodeError as exc:
+        offset, words = decode_error_offset(body, exc)
+        return file_json_error(path, start + offset, words)
+    return None
+
+
 def refuse_json_lines_with_a_mark(path: str | Path) -> None:
     """Refuse a Data Input's JSON Lines file that starts with a byte-order mark, in words.
 

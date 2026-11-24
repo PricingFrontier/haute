@@ -17,6 +17,7 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._input_files import (
+    json_file_refusal,
     load_json_file,
     not_utf8_file_error,
     open_input_bytes,
@@ -598,7 +599,16 @@ def read_source(
                 path=path_string,
                 profile=normalised_profile.value,
             )
-        lf = pl.read_json(path_string).lazy()
+        try:
+            frame = pl.read_json(path_string)
+        except pl.exceptions.ComputeError:
+            # Polars names no file or place: bytes that are not JSON are refused as every
+            # edge refuses them; JSON Polars cannot read as a table keeps Polars' words.
+            refusal = json_file_refusal(path_string)
+            if refusal is not None:
+                raise refusal from None
+            raise
+        lf = frame.lazy()
         _validate_declared_schema(lf, source_schema_overrides, path=path_string)
         return _select_columns(lf, projection_columns)
 

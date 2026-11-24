@@ -146,6 +146,36 @@ class TestReadSourceJSON:
 
         read_json.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("raw", "said"),
+        [
+            (b'[{"quote_id": "q1",\n  "fixture_value": 10', "is not valid JSON: unexpected end"),
+            (b"", "is empty, so it is not JSON."),
+            (b"\xef\xbb\xbf  \n", "is empty, so it is not JSON."),
+        ],
+        ids=["cut-short", "empty", "only-a-mark"],
+    )
+    def test_bytes_that_are_not_json_are_refused_in_the_io_layer_s_words(
+        self, tmp_path: Path, raw: bytes, said: str
+    ) -> None:
+        """Polars' own words ("Syntax at character 39", "Eof at character 0") name no file."""
+        path = tmp_path / "quote.json"
+        path.write_bytes(raw)
+
+        with pytest.raises(InputFileError, match="quote.json ") as refused:
+            read_source(str(path))
+
+        assert said in str(refused.value)
+        if raw.startswith(b"[{"):
+            assert (refused.value.line, refused.value.column) == (2, 22)
+
+    def test_json_polars_cannot_read_as_a_table_keeps_polars_words(self, tmp_path: Path) -> None:
+        path = tmp_path / "odd.json"
+        path.write_text('{"a": [1, {"b": 2}]}', encoding="utf-8")
+
+        with pytest.raises(pl.exceptions.ComputeError, match="error deserializing"):
+            read_source(str(path))
+
     def test_deploy_live_can_read_plain_json(self, tmp_path: Path) -> None:
         path = tmp_path / "data.json"
         pl.DataFrame({"name": ["alice"]}).write_json(str(path))

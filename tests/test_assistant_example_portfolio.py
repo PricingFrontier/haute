@@ -171,8 +171,14 @@ def test_model_training_and_resulting_model_scoring(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """The example's declared model_scoring check: its own target node, its Model Scoring
+    naming the run its training was logged to in place of the placeholder, scores with
+    the trained model."""
     from catboost import CatBoostRegressor
 
+    for name in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     destination, graph = _bundle(tmp_path, "model_lifecycle")
     use_project(destination)
     _prepare_inputs(destination, graph)
@@ -187,16 +193,33 @@ def test_model_training_and_resulting_model_scoring(
     job_id = response.json()["job_id"]
     status = _poll(client, f"/api/modelling/train/status/{job_id}")
     assert status["status"] == "completed", status.get("message")
-    result = status["result"]
-    model_path = Path(result["model_path"])
-    assert model_path.is_file()
+    model_path = Path(status["result"]["model_path"])
+    logged = client.post("/api/modelling/mlflow/log", json={"job_id": job_id})
+    assert logged.status_code == 200, logged.text
 
+    assertions = json.loads((destination / "assertions.json").read_text(encoding="utf-8"))
+    assert "model_scoring" in assertions["checks"]
+    (scoring,) = [node for node in graph.nodes if node.data.nodeType.value == "modelScore"]
+    assert scoring.data.config["run_id"] == "replace-with-training-run-id"
+    scoring.data.config["run_id"] = logged.json()["run_id"]
+    results = execute_graph(graph, target_node_id=assertions["target"], source="live")
+    answered = results[assertions["target"]]
+    assert answered.status == "ok", answered.error
+    rows = answered.preview or []
+    assert rows and set(assertions["required_columns"]) <= set(rows[0])
+
+    # Each row the Model Scoring scores is the prediction the trained model gives it.
+    scored = results[scoring.id].preview or []
     model = CatBoostRegressor()
     model.load_model(str(model_path))
-    predictions = model.predict([[1.0, 0.05], [4.9, 2.0]])
-    assert len(predictions) == 2
-    assert all(math.isfinite(float(value)) for value in predictions)
-    assert float(predictions[1]) > float(predictions[0])
+    features = [[row["exposure"], row["risk_score"]] for row in scored]
+    expected = [float(value) for value in model.predict(features)]
+    assert [row["prediction"] for row in scored] == pytest.approx(expected)
+    # The response's objects are its rows grouped by their fields (specs/json-shredding,
+    # "Level objects"): each prediction once, in the order it was first scored.
+    first_scored = list(dict.fromkeys(row["prediction"] for row in scored))
+    assert [row["prediction"] for row in rows] == pytest.approx(first_scored)
+    assert all(math.isfinite(value) for value in expected)
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
