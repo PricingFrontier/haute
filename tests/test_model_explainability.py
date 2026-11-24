@@ -544,19 +544,26 @@ def test_rustystats_glm_contributions_fail_loudly_when_additivity_breaks() -> No
         )
 
 
-def test_real_rustystats_conversion_model_predict_contributions_contract() -> None:
-    pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
-    from pathlib import Path
+def test_a_saved_conversion_glm_explains_its_prediction_once_loaded(tmp_path: Any) -> None:
+    """A binomial GLM written to ``.rsglm`` and read back explains in logit space."""
+    import rustystats as rs
 
     from haute._mlflow_io import _load_rustystats_model
     from haute._model_explainability import explain_rustystats_glm_prediction
 
-    path = Path("outputs/conversion.rsglm")
-    if not path.is_file():
-        pytest.skip("new-format conversion.rsglm fixture not present")
+    difference = np.linspace(-0.3, 0.3, 40)
+    converted = (np.sin(np.arange(40) * 1.7) > difference * 3).astype(int)
+    trained = rs.glm_dict(
+        response="converted",
+        terms={"difference_to_market": {"type": "linear"}},
+        data=pl.DataFrame({"difference_to_market": difference, "converted": converted}),
+        family="binomial",
+    ).fit()
+    path = tmp_path / "conversion.rsglm"
+    path.write_bytes(trained.to_bytes())
 
     scoring_model = _load_rustystats_model(str(path))
-    row = {"difference_to_market": 0.0}
+    row = {"difference_to_market": 0.1}
     explanation = explain_rustystats_glm_prediction(scoring_model, row)
 
     assert explanation["method"] == "rustystats_glm_contributions"
@@ -564,8 +571,9 @@ def test_real_rustystats_conversion_model_predict_contributions_contract() -> No
     assert explanation["link_function"] == "logit"
     assert explanation["output_space"] == "linear_predictor"
     assert explanation["prediction_space"] == "response"
+    # The model as trained, so a round trip that lost a coefficient fails here.
     assert explanation["prediction_value"] == pytest.approx(
-        float(scoring_model.raw_model.predict(pl.DataFrame(row))[0]),
+        float(trained.predict(pl.DataFrame(row))[0]),
         abs=1e-9,
     )
     assert explanation["base_value"] + sum(

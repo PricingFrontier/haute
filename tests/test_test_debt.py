@@ -36,6 +36,10 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # Exact debt-site fingerprints as of the test-suite review. The fingerprint uses
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
+# A skip whose condition is a file the repository does not hold (a frontend build,
+# what a local training left in outputs/) is not accepted: it runs in no CI job,
+# and on a developer's machine against whatever that file holds. The test makes
+# the file in its temporary folder instead.
 _EXPECTED_DEBT_IDS = {
     # tests/test_run_parity.py (EXE-10): a difference between the ways of running a
     # pipeline that another roadmap package owns, strict so its delivery turns it
@@ -144,13 +148,6 @@ _EXPECTED_DEBT_IDS = {
     # documents that the pin targets default wiring only. See
     # tests/test_trace_cache_byte_awareness.py::TestTraceCacheByteBudgetWiring.
     "73141b06a8fbbace",
-    # API/WS 404-guard review — the SPA-serving regression test only applies when
-    # a frontend build is present (serve_spa is registered under
-    # ``if STATIC_DIR.exists()``), so it skips on backend-only CI where no build
-    # exists. The unconditional 404 assertions carry the actual contract. See
-    # tests/test_routes_error_handling.py::TestApiWsNotFoundReturnsJson
-    # ::test_spa_still_served_for_non_api_routes.
-    "3594921e8a8526c3",
     # PL2-07 — Haute names a headerless Excel sheet's columns; the sheet is written
     # with openpyxl, which dev installs carry through the databricks extra but core
     # haute does not require, as TestExcelLeg in test_data_io_roundtrips.py. See
@@ -217,8 +214,6 @@ _EXPECTED_DEBT_IDS = {
     "aec15b8d084c0f9f",
     "36389904372edffb",
     "40f0104677c0d566",
-    "454198ff8535ff31",
-    "4ba277207894ee6d",
     "848a5576a63f17d0",
     "df789ca110c56d8d",
     "e800d20c2fdb0d00",

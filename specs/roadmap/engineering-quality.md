@@ -15,37 +15,16 @@ the main session ran the gate of `EQ-05` itself and the two tests of
 
 ## Priorities
 
-**Start with:** `EQ-02`
+**Start with:** `EQ-03`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EQ-02 | Planned | P3 | No test decides whether to run by a file the repository does not hold. |
 | EQ-03 | Planned | P3 | The dead branches and unused suppressions the review's lint sweep found are gone. |
 | EQ-04 | Planned | P2 | A test runs the three commands whole on every shipped example, and on wrong inputs, and holds what each prints. |
 | EQ-05 | Planned | P3 | The changed-coverage gate counts a change made on any line of a statement, not only on its first. |
 | EQ-06 | Planned | P3 | The two Windows-only tests that no CI job selects run in the Windows job, and a test keeps the next one from being left out. |
 
 ## Planned improvements
-
-### EQ-02 — A test never skips on a file the repository does not hold
-**Why:** One explainability test reads `outputs/conversion.rsglm` relative
-to the working directory and skips when it is absent. The repository holds
-no such file, so the test never runs in CI, and on a developer's machine it
-runs against whatever model a local training left in `outputs`. Its name
-says it checks the contract of a real RustyStats model's contributions,
-which nothing then checks.
-
-**Plan:** Build the small model the test needs in a fixture, as the
-neighbouring tests do, or delete the test if those already cover the
-contract.
-
-**Acceptance:** The test runs in CI on every platform and reads nothing
-outside its temporary folder, or it is gone and the write-up of the pull
-request names the test that covers the same contract.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/test_model_explainability.py::test_real_rustystats_conversion_model_predict_contributions_contract`.
 
 ### EQ-03 — Dead branches and unused suppressions are removed
 **Why:** A sweep with lint rules the gate does not select found a small

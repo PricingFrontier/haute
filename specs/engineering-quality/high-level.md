@@ -323,6 +323,9 @@ Out of scope:
 - Test debt is visible through one generated, committed health summary rather
   than scattered comments alone. Backend skip/xfail/flaky sites and frontend
   skipped/focused/expected-failure sites remain exact fingerprint ratchets.
+  A skip whose condition is a file the repository does not hold (a frontend
+  build, a model a local training left behind) is not accepted: such a test
+  runs in no CI job, so it makes the file in its temporary folder instead.
   The same summary includes the pinned Playwright retry budget and every
   mutation target's survivor threshold. A stale generated summary fails
   ordinary tests. Because regenerating it scans the full backend and frontend
