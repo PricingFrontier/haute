@@ -83,7 +83,7 @@ def plain_memory_error() -> None:
 
 def die_holding_evidence_lock() -> None:
     counter = child_limit_evidence_counter()
-    counter._value.get_lock().acquire()  # noqa: SLF001 - simulating a death mid-write
+    counter._value.get_lock().acquire()  # simulating a death mid-write
     os._exit(3)
 
 
@@ -131,9 +131,9 @@ def held_frame_is_released() -> bool:
 def hang_holding_cancel_lock() -> None:
     from haute import _dedicated_workers
 
-    bound = _dedicated_workers._child_command  # noqa: SLF001 - simulating a stuck reader
+    bound = _dedicated_workers._child_command  # simulating a stuck reader
     assert bound is not None
-    bound[0]._lock.acquire()  # noqa: SLF001
+    bound[0]._lock.acquire()
     block_forever()
 
 
@@ -536,7 +536,7 @@ def test_a_start_whose_allocation_fails_releases_what_it_opened(
     real_queue = dedicated.create_worker_queue
     opened: list[object] = []
 
-    def second_queue_fails(ctx, maxsize):  # noqa: ANN001 - the helper's shape
+    def second_queue_fails(ctx, maxsize):  # the helper's shape
         if opened:
             raise OSError("no more semaphores")
         made = real_queue(ctx, maxsize)
@@ -563,7 +563,7 @@ def test_a_worker_terminated_while_it_spawns_does_not_survive(
     real_spawn = dedicated.start_process_with_environment
     stopper: list[threading.Thread] = []
 
-    def spawn_while_terminated(process, environment):  # noqa: ANN001 - the helper's shape
+    def spawn_while_terminated(process, environment):  # the helper's shape
         thread = context_thread(created.terminate, args=("cancelled",))
         thread.start()
         stopper.append(thread)

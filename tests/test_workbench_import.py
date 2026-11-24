@@ -252,14 +252,14 @@ class _Api(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_GET(self) -> None:  # noqa: N802 - the handler's name
+    def do_GET(self) -> None:  # the handler's name
         _Api.seen.append({"path": self.path, "authorization": self.headers.get("Authorization")})
         if self.path.startswith("/api/missing"):
             self._answer({"error": "no"}, 404)
             return
         self._answer({"data": {"layers": [{"layer": 1, "Limit": 1000, "XS": None}, {"layer": 2}]}})
 
-    def do_POST(self) -> None:  # noqa: N802 - the handler's name
+    def do_POST(self) -> None:  # the handler's name
         length = int(self.headers.get("Content-Length", "0"))
         _Api.seen.append({"path": self.path, "body": json.loads(self.rfile.read(length))})
         self._answer({"layer": 7, "limit": 70})

@@ -576,7 +576,7 @@ class TestImpactAgainstStandInEndpoints:
         import threading
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802 - the handler's own name
+            def do_POST(self) -> None:  # the handler's own name
                 quotes = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 received.extend(quotes)
                 body = json.dumps(

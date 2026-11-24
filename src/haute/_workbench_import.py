@@ -615,7 +615,7 @@ def _excel_rows(read: ExcelImport, data: bytes, keep: Keep) -> tuple[list[str], 
     _expanded_size(data)
     try:
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    except Exception:  # noqa: BLE001 - any file openpyxl cannot read is no workbook
+    except Exception:  # any file openpyxl cannot read is no workbook
         raise ImportRefusedError("The file is not an Excel workbook (.xlsx).") from None
     try:
         if read.sheet:

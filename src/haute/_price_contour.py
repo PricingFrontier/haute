@@ -235,7 +235,7 @@ def _round_trip_failure(module: ModuleType) -> str | None:
         returned = result.dataframe
     except (KeyboardInterrupt, SystemExit):
         raise
-    except BaseException as exc:  # noqa: BLE001 - a Rust panic is a BaseException
+    except BaseException as exc:  # a Rust panic is a BaseException
         return (
             f"a one-row frame round trip through the native module failed "
             f"({type(exc).__name__}: {exc}); it moves frames through Polars "

@@ -1134,7 +1134,7 @@ class NodeDataService:
                     expected_status="running",
                     elapsed_seconds=time.monotonic() - start_time,
                 )
-        except Exception as exc:  # noqa: BLE001 - a background job records every failure.
+        except Exception as exc:  # a background job records every failure.
             self._fail_job(job_id, exc, token, start_time, label="Profile")
         finally:
             if execution_context is not None:
@@ -1492,7 +1492,7 @@ class NodeDataService:
                     expected_status="running",
                     elapsed_seconds=time.monotonic() - start_time,
                 )
-        except Exception as exc:  # noqa: BLE001 - a background job records every failure.
+        except Exception as exc:  # a background job records every failure.
             # Before the failure is published, for the same reason.
             self._discard_staging(request)
             self._fail_job(

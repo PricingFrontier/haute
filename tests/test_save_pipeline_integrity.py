@@ -513,7 +513,7 @@ class TestGraphToCodeMultiPathTraversal:
                         and "forbidden" not in msg
                         and "escape" not in msg
                     ), f"#12: allowlist wrongly rejected valid paths: {exc.detail!r}"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # Non-HTTP failures (e.g. filesystem issues in the skinny
                 # setup) are acceptable here — we only care that the
                 # allowlist did not block valid paths.

@@ -820,7 +820,7 @@ class TestInvariantSurfacesThroughExecuteTrace:
             ],
         )
 
-        def _always_mismatched(steps):  # noqa: ANN001, ANN202
+        def _always_mismatched(steps):
             raise WaterfallReconciliationError("forced reconciliation failure")
 
         monkeypatch.setattr("haute._trace_waterfall.build_waterfall", _always_mismatched)

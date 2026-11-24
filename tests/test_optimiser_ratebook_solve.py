@@ -438,6 +438,43 @@ class TestSolveRatebookUnit:
                     ratebook_factors_handle=factors_handle,
                 )
 
+    def test_a_factor_handle_failing_its_check_is_not_called_a_data_error(self):
+        """A server-owned handle Haute cannot vouch for is its own fault, not the data's."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_solver import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
+        )
+        factors_df = pl.DataFrame({"quote_id": ["q1"], "region": ["A"]})
+        config = {
+            "objective": "income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"]],
+        }
+
+        with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
+            # The input error is no ValueError: the handle's own refusal reaches the job.
+            with pytest.raises(ValueError, match="Invalid Optimiser ratebook factors artifact"):
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=MagicMock(),
+                    config=config,
+                    ratebook_factors_handle={**factors_handle, "kind": "apply_result"},
+                )
+
     def test_solve_ratebook_success(self):
         """Ratebook solve succeeds with valid factors_df."""
         from haute.routes._job_store import JobStore

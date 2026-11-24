@@ -682,7 +682,7 @@ class TestWriterEdgeCases:
                 barrier.wait(timeout=5)
                 with Writer(target) as w:
                     w.write_text(payload)
-            except BaseException as exc:  # noqa: BLE001 — collect for main thread
+            except BaseException as exc:  # collect for main thread
                 errors.append(exc)
 
         t1 = context_thread(_run, args=(payload_a,))

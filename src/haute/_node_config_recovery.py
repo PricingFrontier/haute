@@ -800,7 +800,7 @@ def _isolate_refused_entries(
         return None
     for position, exc in refused.items():
         entry_path = _pointer(path, position)
-        original = value[position] if isinstance(value, list) else value[position]
+        original = value[position]
         changes.append(
             RecoveryFieldChange(
                 path=entry_path,

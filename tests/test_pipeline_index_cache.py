@@ -517,7 +517,7 @@ class TestConcurrentReadsDoNotRace:
                 index = helpers._ensure_pipeline_index()
                 # Take a snapshot to defend against later mutation.
                 results.append(dict(index))
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         with patch.object(_parser_mod, "parse_pipeline_file", side_effect=_slow_parse):

@@ -14,19 +14,19 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # OPT-V04: strict result rows, input provenance, diagnostics_errors, finite JSON
 # ---------------------------------------------------------------------------
-from typing import Any  # noqa: E402
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-from pydantic import ValidationError  # noqa: E402
+from pydantic import ValidationError
 
 from haute.codegen import graph_to_code
 from haute.errors import ConfigError, NodeConfigError, RequestRefusedError
 from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
-from haute.schemas import (  # noqa: E402
+from haute.schemas import (
     OptimiserFactorTableRow,
     OptimiserFrontierPointSummary,
     OptimiserFrontierResponse,
@@ -36,7 +36,7 @@ from haute.schemas import (  # noqa: E402
     OptimiserSolveResult,
 )
 from tests._failure_assertions import assert_unnamed
-from tests._training_helpers import PREPARATION_JOIN_TIMEOUT_S  # noqa: E402
+from tests._training_helpers import PREPARATION_JOIN_TIMEOUT_S
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -44,7 +44,7 @@ from tests.conftest import (
     make_ready_file_input_config,
 )
 from tests.job_store_support import seed_job
-from tests.optimiser_fixtures import (  # noqa: E402
+from tests.optimiser_fixtures import (
     SOLVE_SCENARIO_GRID,
     library_frontier_frame,
     make_completed_job,

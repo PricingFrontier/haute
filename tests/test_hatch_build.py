@@ -190,7 +190,7 @@ def test_explicit_build_runs_clean_install_and_checks_postbuild_readiness(
     monkeypatch.setenv("HAUTE_BUILD_FRONTEND", "1")
     hook = _hook(module, tmp_path)
 
-    def run_command(cmd: list[str], *, cwd: Path) -> None:  # noqa: ARG001
+    def run_command(cmd: list[str], *, cwd: Path) -> None:
         if cmd[-1] == "build":
             _write_coherent_bundle(module, tmp_path, record_inputs=False)
 
@@ -227,7 +227,7 @@ def test_explicit_build_rejects_inputs_changed_while_vite_runs(
     monkeypatch.setenv("HAUTE_BUILD_FRONTEND", "1")
     hook = _hook(module, tmp_path)
 
-    def run_command(cmd: list[str], *, cwd: Path) -> None:  # noqa: ARG001
+    def run_command(cmd: list[str], *, cwd: Path) -> None:
         if cmd[-1] == "build":
             _write_coherent_bundle(module, tmp_path, record_inputs=False)
             (frontend / "src" / "main.tsx").write_text(

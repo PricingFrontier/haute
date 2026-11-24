@@ -177,7 +177,7 @@ def parquet_stats(path: str | Path) -> dict[str, Any]:
         stats["rows"] = sum(m.num_rows for m in metadata)
         stats["row_groups"] = sum(m.num_row_groups for m in metadata)
         stats["columns"] = metadata[0].num_columns if metadata else 0
-    except Exception as exc:  # noqa: BLE001 - benchmark metadata only.
+    except Exception as exc:  # benchmark metadata only.
         stats["metadata_error"] = str(exc)
     return stats
 

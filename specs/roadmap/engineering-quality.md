@@ -15,40 +15,15 @@ the main session ran the gate of `EQ-05` itself and the two tests of
 
 ## Priorities
 
-**Start with:** `EQ-03`
+**Start with:** `EQ-04`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EQ-03 | Planned | P3 | The dead branches and unused suppressions the review's lint sweep found are gone. |
 | EQ-04 | Planned | P2 | A test runs the three commands whole on every shipped example, and on wrong inputs, and holds what each prints. |
 | EQ-05 | Planned | P3 | The changed-coverage gate counts a change made on any line of a statement, not only on its first. |
 | EQ-06 | Planned | P3 | The two Windows-only tests that no CI job selects run in the Windows job, and a test keeps the next one from being left out. |
 
 ## Planned improvements
-
-### EQ-03 — Dead branches and unused suppressions are removed
-**Why:** A sweep with lint rules the gate does not select found a small
-amount of code that does nothing. A conditional in the node config recovery
-has two identical branches. One background task's handle is not kept, so an
-exception in it would surface only when the task is collected. One optimiser
-assignment exists only to validate a handle and is never read. Eight blocks
-of commented-out code remain, and 80 `noqa` comments name rules the gate
-does not run, so they suppress nothing and say nothing about what is
-checked.
-
-**Plan:** Collapse the identical branches, keep the task's handle and log
-its failure, drop the unused name, delete the commented-out blocks, and
-remove the `noqa` comments for rules that are not selected. Add `RUF100` to
-the gate so an unused suppression fails.
-
-**Acceptance:** `ruff check` with `RUF100` and `ERA001` added reports nothing
-under `src/haute`, and the gate runs `RUF100`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_node_config_recovery.py:744`;
-`src/haute/routes/_supersession.py:236-241`;
-`src/haute/routes/_optimiser_solver.py:1478`; `pyproject.toml`.
 
 ### EQ-04 — The commands are run whole on the shipped examples
 **Why:** Four of the review's findings (`MLR-04`, `DPL-03` and the IO

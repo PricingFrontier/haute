@@ -1247,7 +1247,7 @@ def test_the_check_and_the_pane_read_the_store_beside_ddl_its_owners_run(
                     target.script("ALTER TABLE policy ADD churned INTEGER NULL")
                     target.script("ALTER TABLE policy DROP COLUMN churned")
                     target.script(f"DROP TABLE other.t{made}")
-            except BaseException as exc:  # noqa: BLE001 - said by the test below
+            except BaseException as exc:  # said by the test below
                 churned.append(exc)
 
         owners = threading.Thread(target=churn)

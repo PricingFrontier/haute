@@ -127,7 +127,7 @@ def synthetic_inputs(*, hard: bool) -> dict[str, pl.LazyFrame]:
 
 def run(code: str, inputs: dict[str, pl.LazyFrame]) -> pl.DataFrame:
     namespace: dict[str, object] = {"pl": pl, **inputs}
-    exec(code, namespace, namespace)  # noqa: S102 - fixture code, as the executor runs it
+    exec(code, namespace, namespace)  # fixture code, as the executor runs it
     out = namespace["df"]
     assert isinstance(out, (pl.DataFrame, pl.LazyFrame))
     return out.collect() if isinstance(out, pl.LazyFrame) else out

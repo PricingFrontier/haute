@@ -1125,7 +1125,7 @@ class TestAtomicWrite:
                 with atomic_write(dest) as tmp:
                     pl.DataFrame({"v": [value] * 50_000}).write_parquet(tmp)
                     both_staged.wait()
-            except BaseException as exc:  # noqa: BLE001 - surfaced below
+            except BaseException as exc:  # surfaced below
                 errors.append(exc)
 
         threads = [context_thread(write, args=(value,)) for value in (1, 2)]

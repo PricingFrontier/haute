@@ -461,7 +461,7 @@ class TestWritesAgainstARevision:
         target.write_text("VALUE = 1\n", encoding="utf-8")
         capture = utility_routes.capture_save_in_ledger
 
-        def capture_while_another_editor_saves(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        def capture_while_another_editor_saves(*args, **kwargs):
             _change_outside_haute(target, "VALUE = 9\n")
             return capture(*args, **kwargs)
 

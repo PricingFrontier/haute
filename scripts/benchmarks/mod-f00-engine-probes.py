@@ -175,7 +175,7 @@ def probe_xgboost(frame: pd.DataFrame, workdir: Path) -> None:
             "reordered_categories_same_predictions",
             bool(np.allclose(pred_reordered, reload_pred, rtol=1e-6)),
         )
-    except Exception as exc:  # noqa: BLE001 - recorded evidence
+    except Exception as exc:  # recorded evidence
         record("xgboost", "reordered_categories_error", repr(exc)[:300])
 
     # Unseen category at predict time.
@@ -184,7 +184,7 @@ def probe_xgboost(frame: pd.DataFrame, workdir: Path) -> None:
     try:
         out = reloaded.predict(xgb.DMatrix(unseen, enable_categorical=True))
         record("xgboost", "unseen_category", f"no error; predictions {out[:2].tolist()}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         record("xgboost", "unseen_category", f"error: {repr(exc)[:300]}")
 
     # No-validation fit uses exactly the configured rounds?
@@ -207,7 +207,7 @@ def probe_xgboost(frame: pd.DataFrame, workdir: Path) -> None:
                 num_boost_round=3,
             )
             accepted[objective] = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             accepted[objective] = repr(exc)[:200]
     record("xgboost", "objectives_accepted", accepted)
 
@@ -304,7 +304,7 @@ def probe_lightgbm(frame: pd.DataFrame, workdir: Path) -> None:
             "reordered_categories_same_predictions",
             bool(np.allclose(pred_reordered, reload_raw, rtol=1e-9)),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         record("lightgbm", "reordered_categories_error", repr(exc)[:300])
 
     unseen = valid[FEATURES].head(5).copy()
@@ -312,7 +312,7 @@ def probe_lightgbm(frame: pd.DataFrame, workdir: Path) -> None:
     try:
         out = reloaded.predict(unseen, raw_score=True)
         record("lightgbm", "unseen_category", f"no error; raw {out[:2].tolist()}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         record("lightgbm", "unseen_category", f"error: {repr(exc)[:300]}")
 
     # Native exhaustion without validation: constant features cannot split.
@@ -354,7 +354,7 @@ def probe_lightgbm(frame: pd.DataFrame, workdir: Path) -> None:
                 num_boost_round=3,
             )
             accepted[objective] = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             accepted[objective] = repr(exc)[:200]
     record("lightgbm", "objectives_accepted", accepted)
 
@@ -466,7 +466,7 @@ def _probe_ebm(frame: pd.DataFrame, workdir: Path) -> None:
             np.asarray(stopping.best_iteration_).tolist(),
         )
         record("ebm", "bags_early_stopping_ok", True)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         record("ebm", "bags_early_stopping_error", repr(exc)[:300])
 
     # Offset at predict time.
@@ -523,7 +523,7 @@ def _probe_ebm(frame: pd.DataFrame, workdir: Path) -> None:
     try:
         _sandbox.safe_joblib_load(path)
         record("ebm", "haute_safe_joblib_load_unchanged", "loaded")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         record("ebm", "haute_safe_joblib_load_unchanged", f"blocked: {str(exc)[:160]}")
     ebm_classes = {
         ("interpret.glassbox._ebm._ebm", "ExplainableBoostingRegressor"),
@@ -568,7 +568,7 @@ def _probe_ebm(frame: pd.DataFrame, workdir: Path) -> None:
         try:
             _sandbox.safe_joblib_load(gadget_path)
             record("ebm", "crafted_payload", "LOADED (unsafe)")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             record("ebm", "crafted_payload", f"blocked: {str(exc)[:120]}")
     finally:
         _sandbox._ALLOWED_PICKLE_CLASSES = original_classes
@@ -721,7 +721,7 @@ def main() -> None:
         ):
             try:
                 probe(frame, workdir)
-            except Exception as exc:  # noqa: BLE001 - one failing engine must not hide others
+            except Exception as exc:  # one failing engine must not hide others
                 record(name, "probe_error", repr(exc)[:500])
     out.write_text(
         json.dumps(RESULTS, indent=2, sort_keys=True, default=str) + "\n",

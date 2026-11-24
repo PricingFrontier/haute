@@ -1313,8 +1313,8 @@ class TestEstimateRoute:
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        with store._write_lock:  # noqa: SLF001 - deliberate corrupt-state boundary test
-            store._jobs[job_id]["status"] = "contract-ish"  # noqa: SLF001
+        with store._write_lock:  # deliberate corrupt-state boundary test
+            store._jobs[job_id]["status"] = "contract-ish"
 
         with pytest.raises(ValueError, match="invalid status"):
             OptimiserSolveService(store).frontier_auto_range_status(job_id)

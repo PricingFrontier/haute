@@ -1866,7 +1866,7 @@ class NodeSnapshotStore(SourceCacheStore):
             if check._owed:
                 try:
                     self._enforce_budget_after_capture()
-                except Exception as budget_exc:  # noqa: BLE001 - the walk's own error wins
+                except Exception as budget_exc:  # the walk's own error wins
                     exc.add_note(f"The automatic-capture budget check also failed: {budget_exc}")
             raise
         finally:

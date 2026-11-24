@@ -36,7 +36,7 @@ def utf8_output() -> None:
             stream.reconfigure(encoding="utf-8")
 
 
-class OutputClosed(BaseException):  # noqa: N818 - a signal of the reader, as KeyboardInterrupt is
+class OutputClosed(BaseException):  # a signal of the reader, as KeyboardInterrupt is
     """The reader of the process's standard output or error stopped reading: a pipe into
     ``head`` that took its lines, a pager quit early.
 

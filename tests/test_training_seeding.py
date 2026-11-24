@@ -312,7 +312,7 @@ def _train(
     monkeypatch.setattr(TrainService, "_launch_background", lambda *args, **kwargs: None)
     try:
         service._prepare_and_launch_training(job_id, body, "train", config, token)
-    except Exception:  # noqa: BLE001 - the job records every failure; the test reads it
+    except Exception:  # the job records every failure; the test reads it
         pass
     run.job = dict(store.require_job(job_id))
     if requests and Path(requests[0].parquet_path).exists():

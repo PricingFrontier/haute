@@ -64,7 +64,7 @@ CAT_FEATURES = ["c"]
 TARGET = "y"
 
 DATABRICKS_MLFLOW_HOST = "https://adb.example.invalid"
-DATABRICKS_MLFLOW_TOKEN = "not-a-real-token"  # noqa: S105 — placeholder, never a credential
+DATABRICKS_MLFLOW_TOKEN = "not-a-real-token"  # placeholder, never a credential
 
 MODEL_ARTIFACT = "freq.cbm"
 OPTIMISER_ARTIFACT = "optimiser_result.json"
@@ -783,7 +783,7 @@ def _run_generated_pipeline(project_root: Path, server_store: Path) -> pl.DataFr
     output = project_root / "pipeline_output.parquet"
     if output.exists():
         output.unlink()
-    completed = subprocess.run(  # noqa: S603 — fixed argv, test-owned script
+    completed = subprocess.run(  # fixed argv, test-owned script
         [sys.executable, str(runner)],
         cwd=str(project_root),
         env=os.environ.copy(),

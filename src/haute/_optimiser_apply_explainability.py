@@ -330,7 +330,7 @@ def _explain_ratebook(
     config: dict[str, Any],
     artifact: dict[str, Any],
     parent_frame: pl.LazyFrame,
-    input_row: dict[str, Any],  # noqa: ARG001 - retained for public signature parity.
+    input_row: dict[str, Any],  # retained for public signature parity.
     output_row: dict[str, Any],
 ) -> dict[str, Any]:
     try:

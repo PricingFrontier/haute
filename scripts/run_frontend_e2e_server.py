@@ -804,7 +804,7 @@ def _readiness_status() -> tuple[bool, dict[str, str]]:
 
 
 class _ReadinessHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path not in {"/", "/ready"}:
             self.send_error(404)
             return

@@ -500,7 +500,7 @@ class TestGLMExportParity:
     def _script_job(self, script: str):
         """Execute the generated script (without __main__) and return the job."""
         namespace = {"__name__": "haute_export_test"}
-        exec(compile(script, "<generated>", "exec"), namespace)  # noqa: S102
+        exec(compile(script, "<generated>", "exec"), namespace)
         return namespace["job"]
 
     def test_top_level_glm_config_lands_in_script_params(self):

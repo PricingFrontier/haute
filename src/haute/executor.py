@@ -271,7 +271,7 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     try:
         with project_code_module(ns):
             # Single dict = shared globals.
-            exec(compile_project_code(preamble, filename=PREAMBLE_FILENAME), ns)  # noqa: S102
+            exec(compile_project_code(preamble, filename=PREAMBLE_FILENAME), ns)
     except Exception as exc:
         # Report the innermost line of the project's own code: a utility module's,
         # else the preamble's. A library frame is neither, wherever it lives.

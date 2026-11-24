@@ -232,7 +232,7 @@ def _live_row(source: str, tmp_path: Path) -> dict:
     module = tmp_path / "live.py"
     module.write_text(source, encoding="utf-8")
     namespace: dict[str, object] = {"__file__": str(module), "__name__": "live"}
-    exec(compile(source, str(module), "exec"), namespace)  # noqa: S102 - the pipeline file under test
+    exec(compile(source, str(module), "exec"), namespace)  # the pipeline file under test
     frame = namespace["source"]()
     (row,) = namespace["scaled"](frame).collect().to_dicts()
     return row

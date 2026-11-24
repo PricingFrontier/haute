@@ -636,7 +636,7 @@ EXTERNAL_FILE_TYPES: tuple[str, ...] = ("pickle", "json", "joblib")
 @functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)
 def _load_cached(
     path: str,
-    digest: str,  # noqa: ARG001 - part of cache key, not used in body.
+    digest: str,  # part of cache key, not used in body.
     file_type: str,
 ) -> object:
     """Memoised loader keyed on ``(path, digest, file_type)``."""

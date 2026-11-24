@@ -1159,7 +1159,7 @@ class TestOutputTargetEvidence:
             }
         )
 
-        def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        def poisoned_collect(self, *args, **kwargs):
             raise AssertionError("target evidence must never collect data")
 
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)

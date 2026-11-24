@@ -524,7 +524,7 @@ def _formula_expression(formula: ExplorePivotFormula) -> pl.Expr:
             formula, f"cannot run: {exc}", "Remove that call from the formula."
         ) from exc
     try:
-        expression = eval(compile(tree, "<pivot formula>", "eval"), safe_globals(pl=pl), {})  # noqa: S307
+        expression = eval(compile(tree, "<pivot formula>", "eval"), safe_globals(pl=pl), {})
     except Exception as exc:
         raise _formula_error(
             formula,

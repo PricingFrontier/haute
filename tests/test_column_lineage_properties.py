@@ -65,7 +65,7 @@ class Program:
 
 def _run(code: str, **frames: pl.DataFrame) -> pl.DataFrame:
     scope: dict[str, Any] = {"pl": pl, **frames}
-    exec(code, scope)  # noqa: S102 - generated test programs only.
+    exec(code, scope)  # generated test programs only.
     result = scope["df"]
     assert isinstance(result, pl.DataFrame)
     return result

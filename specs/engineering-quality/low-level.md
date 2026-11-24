@@ -558,6 +558,9 @@
   `.providers-pytest-temp`, `.pytest-tmp*`). The former are lint-target
   boundaries; the latter may contain intentionally unreadable test fixtures and
   are never source inputs.
+- Ruff selects `RUF100`, so a `noqa` that suppresses nothing (a rule that is
+  not selected, or no longer fires) fails the lint gate. It is unfixable, since
+  Ruff's fix would delete a reason written after the code with it.
 - The workflow coverage ledger must name every `specs/` component directory in
   at least one workflow, every node type exactly once, and every supplemental
   document from `specs/corpus.toml` in at least one workflow's `documents`;

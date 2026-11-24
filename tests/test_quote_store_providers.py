@@ -826,7 +826,7 @@ def _script_run(server: Target, script: str) -> Iterator[tuple[Any, BaseExceptio
                 # The driver raises a statement's error once its result is reached.
                 while cursor.nextset():
                     pass
-        except Exception as exc:  # noqa: BLE001 - the driver's own error is the evidence
+        except Exception as exc:  # the driver's own error is the evidence
             raised = exc
         yield raw, raised
     finally:

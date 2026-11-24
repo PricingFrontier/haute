@@ -580,7 +580,7 @@ def worker_failure_payload(exc: BaseException) -> dict[str, Any] | None:
     try:
         payload = failure_payload(exc)
         pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception:  # noqa: BLE001 - the worker's own failure is what is being reported
+    except Exception:  # the worker's own failure is what is being reported
         return None
     return payload
 

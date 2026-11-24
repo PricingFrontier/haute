@@ -943,7 +943,7 @@ class TestTermKeySubsets:
         last_entry = source.index("}", source.index('"expression"', start))
         end = source.index("}", last_entry + 1) + 1
         namespace: dict[str, object] = {}
-        exec(source[start:end], namespace)  # noqa: S102 - reading a literal from the installed wheel
+        exec(source[start:end], namespace)  # reading a literal from the installed wheel
         valid_keys = namespace["VALID_KEYS"]
         assert set(TERM_KEYS) <= set(valid_keys)
         for term_type, keys in TERM_KEYS.items():
