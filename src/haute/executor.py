@@ -17,7 +17,6 @@ import gc
 import hashlib
 import os
 import stat as stat_module
-import tempfile
 import threading
 import time
 import uuid
@@ -91,6 +90,7 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
+from haute._temp_folder import haute_temp_root
 from haute._temporal_text import exact_rows
 from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
@@ -1951,7 +1951,7 @@ def data_output_destination_lock(final_path: str | Path) -> FileLock:
     the project mutation lock is, so no output folder holds lock files.
     """
     key = hashlib.sha256(os.path.normcase(os.path.abspath(final_path)).encode()).hexdigest()
-    return file_lock_for(Path(tempfile.gettempdir()) / "haute-output-locks" / f"{key}.lock")
+    return file_lock_for(haute_temp_root() / "output-locks" / f"{key}.lock")
 
 
 def data_output_file_destination(

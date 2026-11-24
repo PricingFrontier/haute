@@ -410,6 +410,11 @@ _EXPECTED_DEBT_IDS = {
     # Haute's default xgboost-cpu install lack; the device-free GPU contract
     # (config, refusal, fallback detection, VRAM, route, gpu-setup) runs everywhere.
     "3f2e4ca1be0a6123",
+    # SBS-03 — Haute's temporary folder is checked for its owner and mode on POSIX
+    # only: Windows' temporary folder is the user's own and has neither, so its one
+    # test (the folder's name, no owner checked) runs everywhere. See
+    # tests/test_temp_folder.py::posix_only.
+    "1f309cd3885ce515",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

@@ -416,6 +416,7 @@ strict = [
     "test_support_code_names.py",
     "test_target_task_gate.py",
     "test_tboost_family.py",
+    "test_temp_folder.py",
     "test_test_debt.py",
     "test_test_isolation.py",
     "test_timeout_helper_contracts.py",

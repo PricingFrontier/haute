@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import tempfile
-from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
 from haute._artifact_paths import safe_path
 from haute._file_lock import FileLock
 from haute._project_context import current_project
+from haute._temp_folder import haute_temp_root
 
 
 class ProjectMutationLock(asyncio.Lock):
@@ -30,7 +29,7 @@ class ProjectMutationLock(asyncio.Lock):
             identity = hashlib.sha256(
                 os.path.normcase(str(current_project().root)).encode()
             ).hexdigest()
-            path = safe_path(Path(tempfile.gettempdir()), f"haute-project-locks/{identity}.lock")
+            path = safe_path(haute_temp_root(), f"project-locks/{identity}.lock")
             # A lock of its own, not the process's shared one for this path:
             # two project locks on the event loop's one thread must exclude
             # each other rather than re-enter.

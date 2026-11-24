@@ -66,6 +66,7 @@ from haute._project_context import (
 )
 from haute._project_settings import ProjectSettingsError
 from haute._sandbox import contained_path
+from haute._temp_folder import haute_temp_root
 from haute._workbench_config import read_workbench_config
 from haute.errors import ConfigError, NotFoundError, PathOutsideProjectError
 from haute.routes._background_jobs import stop_background_jobs
@@ -507,6 +508,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from haute.deploy._config import _load_env
 
     configure_logging()
+    # Haute's temporary folder must be the user's own before anything is put in it: a
+    # folder another user made first stops the server here.
+    haute_temp_root()
     configure_process_high_qos()
     _load_env(current_project().root)
     configure_execution_telemetry()

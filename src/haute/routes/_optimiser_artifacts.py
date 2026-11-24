@@ -19,7 +19,6 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import tempfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -31,6 +30,7 @@ from haute._artifact_housekeeping import (
 from haute._logging import get_logger
 from haute._polars_utils import bounded_sink, read_parquet_metadata
 from haute._sandbox import is_contained
+from haute._temp_folder import haute_temp_root
 from haute._types import SolveResultLike
 from haute.errors import GoneError, ServiceFailedError
 from haute.routes._job_store import register_artifact_cleaner
@@ -45,23 +45,23 @@ _APPLY_RESULT_HANDLE_KIND = "optimiser_apply_result"
 _RATEBOOK_FACTORS_HANDLE_KEY = "ratebook_factors"
 _RATEBOOK_FACTORS_HANDLE_KIND = "optimiser_ratebook_factors"
 _ARTIFACT_HANDLE_VERSION = 1
-_APPLY_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_apply"
+_APPLY_ARTIFACT_ROOT_NAME = "artifacts/v1/optimiser_apply"
 _APPLY_ARTIFACT_DIR_PREFIX = "apply_"
 _APPLY_RESULT_FILENAME = "result.parquet"
-_RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_ratebook_factors"
+_RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME = "artifacts/v1/optimiser_ratebook_factors"
 _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX = "factors_"
 _RATEBOOK_FACTORS_FILENAME = "factors.parquet"
 _APPLY_ARTIFACT_OWNER = "optimiser_apply"
 _RATEBOOK_FACTORS_ARTIFACT_OWNER = "optimiser_ratebook_factors"
 _QUOTE_ANALYSIS_HANDLE_KEY = "quote_analysis"
 _QUOTE_ANALYSIS_HANDLE_KIND = "optimiser_quote_analysis"
-_QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_quote_analysis"
+_QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME = "artifacts/v1/optimiser_quote_analysis"
 _QUOTE_ANALYSIS_ARTIFACT_DIR_PREFIX = "analysis_"
 _QUOTE_ANALYSIS_FILENAME = "quote_analysis.parquet"
 _QUOTE_ANALYSIS_ARTIFACT_OWNER = "optimiser_quote_analysis"
 FRONTIER_HISTORY_HANDLE_KEY = "frontier_point_history"
 _FRONTIER_HISTORY_HANDLE_KIND = "optimiser_frontier_history"
-_FRONTIER_HISTORY_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_frontier_history"
+_FRONTIER_HISTORY_ARTIFACT_ROOT_NAME = "artifacts/v1/optimiser_frontier_history"
 _FRONTIER_HISTORY_ARTIFACT_DIR_PREFIX = "history_"
 _FRONTIER_HISTORY_FILENAME = "point_history.parquet"
 _FRONTIER_HISTORY_ARTIFACT_OWNER = "optimiser_frontier_history"
@@ -69,7 +69,7 @@ _FRONTIER_HISTORY_ARTIFACT_OWNER = "optimiser_frontier_history"
 # auto-range reducer's parts and the MLflow log's staging folder. Marked like
 # the artifacts, so a server crash mid-setup leaves nothing the next start
 # does not reap.
-_SCRATCH_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_scratch"
+_SCRATCH_ARTIFACT_ROOT_NAME = "artifacts/v1/optimiser_scratch"
 _SCRATCH_ARTIFACT_OWNER = "optimiser_scratch"
 _SOLVER_INPUT_DIR_PREFIX = "input_"
 _SOLVER_INPUT_FILENAME = "solver_input.parquet"
@@ -78,23 +78,23 @@ _DEFAULT_ARTIFACT_STALE_SECONDS = 86_400
 
 
 def _apply_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _APPLY_ARTIFACT_ROOT_NAME).resolve()
+    return (haute_temp_root() / _APPLY_ARTIFACT_ROOT_NAME).resolve()
 
 
 def _ratebook_factors_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME).resolve()
+    return (haute_temp_root() / _RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME).resolve()
 
 
 def _quote_analysis_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME).resolve()
+    return (haute_temp_root() / _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME).resolve()
 
 
 def _frontier_history_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _FRONTIER_HISTORY_ARTIFACT_ROOT_NAME).resolve()
+    return (haute_temp_root() / _FRONTIER_HISTORY_ARTIFACT_ROOT_NAME).resolve()
 
 
 def _scratch_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _SCRATCH_ARTIFACT_ROOT_NAME).resolve()
+    return (haute_temp_root() / _SCRATCH_ARTIFACT_ROOT_NAME).resolve()
 
 
 def new_scratch_directory(prefix: str) -> Path:

@@ -32,7 +32,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -51,6 +50,7 @@ from haute._config_io import is_windows_reserved_filename
 from haute._file_lock import FileLock
 from haute._hashing import content_hash_bytes
 from haute._json_files import ANY, JsonPath, at, render_json_bytes
+from haute._temp_folder import haute_temp_root
 from haute._workbench_config import WorkbenchConfig
 
 if TYPE_CHECKING:
@@ -628,9 +628,7 @@ def form_folder_lock(project_root: Path) -> FileLock:
     with _FOLDER_LOCKS_GUARD:
         lock = _FOLDER_LOCKS.get(identity)
         if lock is None:
-            lock = FileLock(
-                safe_path(Path(tempfile.gettempdir()), f"haute-form-locks/{identity}.lock")
-            )
+            lock = FileLock(safe_path(haute_temp_root(), f"form-locks/{identity}.lock"))
             _FOLDER_LOCKS[identity] = lock
         return lock
 
