@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -189,6 +190,62 @@ def test_an_incident_outside_a_project_says_why_it_could_not_be_written(
         f"Its details could not be written (Haute keeps its temporary files in {another_users_root}"
     )
     assert "a failure outside a project" in said
+
+
+@posix_only
+def test_an_incident_outside_a_project_says_why_the_root_could_not_be_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outside_a_project: None
+) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "no-such-folder"))
+    try:
+        raise RuntimeError("a failure outside a project")
+    except RuntimeError as failure:
+        said = _write_incident("0123abcd", failure, command="run")
+    assert said.startswith("Its details could not be written ([Errno")
+    assert "a failure outside a project" in said
+
+
+@posix_only
+def test_an_incident_in_a_project_says_why_its_writer_lock_could_not_be_taken(
+    another_users_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    use_project(project)
+    # This process has not yet written atomically, so it takes its writer's lock now.
+    monkeypatch.setattr(_file_ops, "_writer", None)
+    try:
+        raise RuntimeError("a failure in a project")
+    except RuntimeError as failure:
+        said = _write_incident("0123abcd", failure, command="run")
+    target = project / ".haute" / "incidents" / "0123abcd.txt"
+    assert said.startswith(
+        f"Its details could not be written to {target} (Haute keeps its temporary files in "
+        f"{another_users_root}"
+    )
+    assert "a failure in a project" in said
+
+
+@posix_only
+@pytest.mark.parametrize("replaced", ["open to others", "removed"])
+def test_a_form_lock_made_before_checks_the_root_again(
+    temporary: Path, tmp_path: Path, replaced: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with form_folder_lock(project):
+        pass
+    root = temporary / f"haute-{os.getuid()}"
+    shutil.rmtree(root)
+    if replaced == "open to others":
+        root.mkdir()
+        root.chmod(0o755)
+        with pytest.raises(TemporaryFolderError, match="other users can open"):
+            form_folder_lock(project)
+    else:
+        with form_folder_lock(project):
+            pass
+        assert _mode(root) == 0o700
 
 
 def test_windows_keeps_its_name_and_checks_no_owner(

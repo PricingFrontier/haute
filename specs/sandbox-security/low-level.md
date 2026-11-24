@@ -403,6 +403,12 @@ the app's own origin check refuses another site's writes. Its tests are in
    `project-locks/<hash>.lock`, `form-locks/<hash>.lock`, `output-locks/<hash>.lock`,
    `writers/<owner>.lock` and `incidents/<id>.txt` (a command outside a project).
    Anything beneath the root is reachable only by its owner, whatever its own mode.
+   Each use calls it again, so a root removed or replaced after a first use is checked
+   (or made private again) before the next: the form folder lock keeps one `FileLock`
+   per lock file in the process, but finds that file through `haute_temp_root` at every
+   call. A command's incident record treats a refused root, met choosing its folder
+   outside a project or taking the process's writer lock for its write, as it treats an
+   `OSError`: the record is printed with the reason.
 5. The server's lifespan calls it first, so a refused root stops startup, and `haute
    serve` calls it before it starts the server, so the command ends with the message.
 
@@ -581,7 +587,11 @@ the app's own origin check refuses another site's writes. Its tests are in
   make beneath it (an artifact directory, each lock, an incident) are owned by the
   user and the root is `0700`; a root that is another user's (`os.getuid` stood in), a
   link, a file or open to others is refused naming the folder, and so stops the
-  server's startup and `haute serve`; the Windows name and no ownership check there;
+  server's startup and `haute serve`; a form lock taken before its root was removed
+  makes it private again, and one taken before its root was replaced by a folder open
+  to others is refused; an incident record says why it could not be written when the
+  root cannot be made outside a project and when the writer lock is refused inside
+  one; the Windows name and no ownership check there;
   and the scan that fails a `tempfile.gettempdir` call in `src/haute` outside
   `_temp_folder.py`.
 - `tests/test_path_resolution.py`, `tests/test_path_resolution_properties.py`,
