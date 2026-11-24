@@ -1879,9 +1879,10 @@ Out of scope:
 - **Text Boxes.** A Text Box is a box an underwriter types free text into, such as their
   comments on the risk, over as many lines as they like. It holds one column, a Text input
   of a one-row table, chosen in its panel, and is drawn as that column's label, with its
-  required mark and help as a Collection's field has them, over a box of the sheets' input
-  look filling the rest of the component, which wraps what is typed and scrolls past its
-  height. What is typed is the column's value, committed as the box is left, as a
+  required mark and help as a Collection's field has them, over a box filling the rest of
+  the component, in the sheets' colours as a Collection's box is (the input cells' fill, the
+  borders' colour and the font's), which wraps what is typed and scrolls past its height.
+  A draft is kept to its column: given another column while typing, the box starts afresh. What is typed is the column's value, committed as the box is left, as a
   Collection's box commits it: saved, priced and stored as any input's, so a comment goes
   to the quote store as Text (`NVARCHAR(max)` on SQL Server), however long, and breaks the
   column's rules (required, its options) as a box's value does, marked the same way. The

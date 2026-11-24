@@ -22,7 +22,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addExportCell, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExcelLayout, setExportFormat, setIndexKind, toggleField, updateSchemaColumn, updateWidget, withSampleCell, type WidgetPatch } from "../../utils/workbenchForm"
+import { addExportCell, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExcelLayout, setExportFormat, setIndexKind, setTextBoxField, toggleField, updateSchemaColumn, updateWidget, withSampleCell, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import { everyField, spacersShown } from "../sheet/fieldCells"
@@ -139,6 +139,34 @@ describe("WidgetBody", () => {
     fireEvent.change(building, { target: { value: "Kept nowhere" } })
     fireEvent.blur(building)
     expect(currentForm().sample.policy).toEqual([{ notes: "First line\nSecond line" }])
+  })
+
+  it("never commits a Text Box's draft to another column it is given while typing, both columns empty", () => {
+    const form = sheetForm()
+    form.schema.tables[0].inputs.push(column("notes"), column("remarks"))
+    addTo(form, { ...createWidget("textBox", { x: 16, y: 200, w: 480, h: 120 }, form), id: "w_notes", fields: [{ table: "policy", column: "notes" }] })
+    loadForm(form)
+    const { rerender } = renderBody("w_notes")
+    fireEvent.change(screen.getByRole("textbox", { name: "Notes" }), { target: { value: "Typed for notes" } })
+
+    act(() => useWorkbenchFormStore.getState().change((spec) => setTextBoxField(spec, "w_notes", { table: "policy", column: "remarks" })))
+    rerender(body("w_notes"))
+    const remarks = screen.getByRole("textbox", { name: "Remarks" })
+    expect(remarks).toHaveValue("")
+    fireEvent.blur(remarks)
+    expect(currentForm().sample).toEqual({})
+  })
+
+  it("draws a Text Box in the sheets' colours: its fill the input cells', its border the frame's, its text the font's", () => {
+    const form = sheetForm()
+    form.schema.tables[0].inputs.push(column("notes"))
+    addTo(form, { ...createWidget("textBox", { x: 16, y: 200, w: 480, h: 120 }, form), id: "w_notes", fields: [{ table: "policy", column: "notes" }] })
+    loadForm({ ...form, theme: { ...BLANK_THEME, border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626" } })
+    renderBody("w_notes")
+
+    const box = screen.getByRole("textbox", { name: "Notes" })
+    expect(box).toHaveStyle({ background: "#DC2626", color: "#2563EB" })
+    expect(box.style.border).toBe("1px solid rgb(217, 119, 6)")
   })
 
   it("types the sample into a Table's grid row by row, keeping the rows it starts with, inserting and deleting rows in every table it shows", () => {

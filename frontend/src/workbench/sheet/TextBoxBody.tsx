@@ -9,14 +9,13 @@ import { columnKey } from "../../utils/sheetVisibility"
 import { takesText, type ShownField } from "../../utils/workbenchForm"
 import { useSheetValues } from "../useSheetValues"
 import { FieldLabel } from "./Cell"
-import { fieldLabel, typeHere } from "./fieldCells"
+import { PROBLEM_STYLE, fieldLabel, typeHere } from "./fieldCells"
 import { type SheetColours } from "./sheetColours"
 
-/** A box breaking its column's rules, as a cell is marked. */
-const PROBLEM_BORDER = "1px solid var(--danger)"
-
 /**
- * Its column's label, its required mark and its help, over a box of the sheets' input look
+ * Its column's label, its required mark and its help, over a box in the sheets' colours (its
+ * fill the input cells', its border the frame's, its text the font's, each the editor's own
+ * while the theme sets none), marked as a cell is while its value breaks its column's rules,
  * taking its column's text in the one-row table's row, read only while the values are or
  * the app sets the column, and while its column takes no text; while building with no column,
  * the prompt to choose one, and in Preview nothing.
@@ -44,7 +43,9 @@ export function TextBoxBody({ fields, colours, previewing }: { fields: readonly 
         <FieldLabel found={found} />
       </span>
       <div className="pointer-events-auto flex min-h-0 flex-1" onPointerDown={typeHere}>
+        {/* Keyed by its column, so a draft typed for one column is never committed to another. */}
         <CommittedTextArea
+          key={columnKey(table.name, column.name)}
           aria-label={label}
           {...(column.required ? { "aria-required": true as const } : {})}
           {...(problem === null ? {} : { "aria-invalid": true as const, title: problem })}
@@ -53,7 +54,13 @@ export function TextBoxBody({ fields, colours, previewing }: { fields: readonly 
           placeholder={column.placeholder || undefined}
           disabled={readOnly || locked.has(columnKey(table.name, column.name)) || !takesText(table, column)}
           className="min-h-0 w-full flex-1 resize-none rounded-md px-2.5 py-1.5 text-xs"
-          style={{ ...INPUT_STYLE, ...(problem === null ? {} : { border: PROBLEM_BORDER }) }}
+          style={{
+            ...INPUT_STYLE,
+            border: `1px solid ${colours.frame}`,
+            ...(colours.input === null ? {} : { background: colours.input }),
+            ...(colours.font === null ? {} : { color: colours.font }),
+            ...(problem === null ? {} : PROBLEM_STYLE),
+          }}
         />
       </div>
     </div>
