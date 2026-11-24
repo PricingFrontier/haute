@@ -1391,10 +1391,13 @@ describe("PropertiesPanel", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Excel" }))
     fireEvent.change(screen.getByRole("combobox", { name: "Layout" }), { target: { value: "cells" } })
     expect(exported()).toMatchObject({ tables: [], target: { format: "excel_cells", file_name: "{quote_reference}-{quote_option}", cells: [] } })
-    // The Format still shows Excel; a workbook of cells has no headers, values or tables.
-    expect(exported()).toMatchObject({ target: { blocks: [] } })
+    // The Format still shows Excel; a workbook of cells has no headers or tables, and Values, Formatted to start.
+    expect(exported()).toMatchObject({ target: { blocks: [], values: "formatted" } })
     expect(screen.getByRole("radio", { name: "Excel" })).toHaveAttribute("aria-checked", "true")
-    for (const gone of ["Headers", "Values"]) expect(screen.queryByRole("combobox", { name: gone })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Headers" })).not.toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "Values" })).toHaveValue("formatted")
+    fireEvent.change(screen.getByRole("combobox", { name: "Values" }), { target: { value: "raw" } })
+    expect(exported().target).toMatchObject({ format: "excel_cells", values: "raw" })
     expect(screen.queryByRole("checkbox", { name: "policy" })).not.toBeInTheDocument()
     expect(screen.queryByRole("group", { name: /^Sheet / })).not.toBeInTheDocument()
 
@@ -1584,7 +1587,7 @@ describe("PropertiesPanel", () => {
     addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
     const widget = findWidget(form, "w_out")!.widget as ExportWidget
     const cell = (column: string, sheet: string, address: string) => ({ table: "policy", column, sheet, cell: address, label_cell: "", true_false: null })
-    widget.target = { format: "excel_cells", file_name: "slip", cells: [cell("state", "Slip", "B1"), cell("year", "Other", "B1"), cell("year", "SLIP", "B2")], blocks: [] }
+    widget.target = { format: "excel_cells", file_name: "slip", values: "formatted", cells: [cell("state", "Slip", "B1"), cell("year", "Other", "B1"), cell("year", "SLIP", "B2")], blocks: [] }
     form.schema.tables.find((held) => held.name === "policy")!.inputs.find((held) => held.name === "state")!.label = "Risk state"
     loadForm(form)
     select("w_out")
@@ -1613,6 +1616,7 @@ describe("PropertiesPanel", () => {
     const block = (sheet: string, address: string): ExportBlock => ({ table: "equipment", sheet, cell: address, header: "labels", columns: ["value"], true_false: null })
     widget.target = {
       format: "excel_cells",
+      values: "formatted",
       file_name: "slip",
       cells: [{ table: "policy", column: "state", sheet: "Slip", cell: "B1", label_cell: "", true_false: null }],
       blocks: [block("Sheet1", "A1"), block("Slip", "D1")],
@@ -1656,6 +1660,7 @@ describe("PropertiesPanel", () => {
     const widget = findWidget(form, "w_out")!.widget as ExportWidget
     widget.target = {
       format: "excel_cells",
+      values: "formatted",
       file_name: "slip",
       cells: [
         { table: "policy", column: "state", sheet: "First", cell: "B1", label_cell: "", true_false: null },

@@ -119,12 +119,8 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
             />
           </LabelledRow>
           {target.format === "csv" && <SelectRow label="Delimiter" value={target.delimiter} choices={EXPORT_DELIMITERS} onChange={(delimiter) => set({ delimiter })} />}
-          {target.format !== "excel_cells" && (
-            <>
-              <SelectRow label="Headers" value={target.headers} choices={HEADERS} onChange={(headers) => set({ headers })} />
-              <SelectRow label="Values" value={target.values} choices={VALUES} onChange={(values) => set({ values })} />
-            </>
-          )}
+          {target.format !== "excel_cells" && <SelectRow label="Headers" value={target.headers} choices={HEADERS} onChange={(headers) => set({ headers })} />}
+          <SelectRow label="Values" value={target.values} choices={VALUES} onChange={(values) => set({ values })} />
       </Section>
       {target.format === "excel_cells" ? (
         <>

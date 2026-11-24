@@ -5409,11 +5409,21 @@
           "const": "excel_cells",
           "title": "Format",
           "type": "string"
+        },
+        "values": {
+          "default": "formatted",
+          "enum": [
+            "raw",
+            "formatted"
+          ],
+          "title": "Values",
+          "type": "string"
         }
       },
       "required": [
         "format",
         "file_name",
+        "values",
         "cells",
         "blocks"
       ],

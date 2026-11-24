@@ -965,6 +965,7 @@ describe("SchemaEditor", () => {
     const used = form(POLICY, LAYERS)
     const cells: ExcelCellsExport = {
       format: "excel_cells",
+      values: "formatted",
       file_name: "slip",
       cells: [{ table: "policy_details", column: "state", sheet: "Slip", cell: "B3", label_cell: "", true_false: null }],
       blocks: [{ table: "layers", columns: ["limit"], sheet: "Slip", cell: "A12", header: "labels", true_false: null }],

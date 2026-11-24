@@ -1502,18 +1502,19 @@ Out of scope:
   cross that takes the name away. An Export's then
   holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
   the file name and starting the other's settings afresh; a file's File name, a CSV's
-  Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
-  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: the
-  workbook's sheets, as the workbook makes them, those its cells name in the order first
-  named, then those only its tables are written to, then those added and holding nothing
-  yet (a name matched whatever its case, as Excel matches it, shown as first spelled), each
-  a group that is opened and closed, open to start: its header, a toggle, its name in a
-  text field committed on blur or Enter (a new name, refused while blank, while Excel would
-  refuse it or while another sheet, one a table alone is written to included, holds it,
-  renaming the sheet of each of its cells and of each table written to it, in one change,
-  whether or not it holds cells, the focus staying in the name while it was there), how
-  many cells it holds and, while any table is written to it, how many tables, and a
-  warning mark while one of its cells or tables clashes; under it, while
+  Delimiter (Comma, Semicolon or Tab), but for Cells Headers (Names or Labels), and
+  Values (Raw or Formatted, a workbook of cells Formatted until Raw is chosen); or a
+  database's Connection. Then, of Cells, Cells: the workbook's sheets, as the
+  workbook makes them, those its cells name in the order first named, then those only its
+  tables are written to, then those added and holding nothing yet (a name matched whatever
+  its case, as Excel matches it, shown as first spelled), each a group that is opened and
+  closed, open to start: its header, a toggle, its name in a text field committed on blur
+  or Enter (a new name, refused while blank, while Excel would refuse it or while another
+  sheet, one a table alone is written to included, holds it, renaming the sheet of each of
+  its cells and of each table written to it, in one change, whether or not it holds cells,
+  the focus staying in the name while it was there), how many cells it holds and, while
+  any table is written to it, how many tables, and a warning mark while one of its cells or
+  tables clashes; under it, while
   open, a row for each of its cells in order, as a schema column's row is drawn: a grip it
   is dragged by, and Alt+Up and Alt+Down moving it, the order the cells of every sheet in
   turn, a cell moved past its sheet's first or last going to the sheet before or after,
@@ -1918,7 +1919,10 @@ Out of scope:
   sample, the rows the sheets hold anything typed in, in their order, or, for a table with
   a row for each value, every value's row in the values' order, each output that of the
   priced row of the same index; a table of outputs alone its priced rows in their order. A many-row table with no rows writes its header alone. A block whose rows would
-  run past row 1,048,576 is refused, naming it. A number cell
+  run past row 1,048,576 is refused, naming it. While its Values are Raw, a number is
+  written as it is in Excel's General format, with no currency sign, grouping or fixed
+  places (10000, a percent as its fraction, 0.175), for a system that reads the workbook;
+  a date is still shown `yyyy-mm-dd`. While they are Formatted, a number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped
   unless the column says not), the value itself written unrounded; where the sheets trim

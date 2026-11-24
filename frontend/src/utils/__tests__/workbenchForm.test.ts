@@ -2912,7 +2912,8 @@ describe("Imports and Exports", () => {
       let spec = updateExportTarget(setExportFormat(toggleExportTable(buttons(), "w_out", "layers"), "w_out", "excel"), "w_out", { file_name: "{insured}", headers: "labels" })
 
       spec = setExcelLayout(spec, "w_out", "cells")
-      expect(exported(spec)).toMatchObject({ tables: [], target: { format: "excel_cells", file_name: "{insured}", cells: [], blocks: [] } })
+      // Formatted to start, whatever the other layout's values.
+      expect(exported(spec)).toMatchObject({ tables: [], target: { format: "excel_cells", file_name: "{insured}", values: "formatted", cells: [], blocks: [] } })
       expect(excelLayout(exported(spec).target as ExcelCellsExport)).toBe("cells")
       expect(setExcelLayout(spec, "w_out", "cells")).toBe(spec)
       // The Format still shows Excel, and choosing it changes nothing.
@@ -2929,6 +2930,14 @@ describe("Imports and Exports", () => {
 
       expect(exported(setExportFormat(spec, "w_out", "csv")).target).toEqual({ file_name: "{insured}", headers: "names", values: "raw", format: "csv", delimiter: "comma" })
       expect(() => updateExportTarget(spec, "w_out", { headers: "labels" })).toThrow("An Export to excel_cells has no headers")
+    })
+
+    it("writes a workbook of cells' numbers raw once its values are, the form as given while nothing changes", () => {
+      const spec = cells()
+      expect((exported(spec).target as ExcelCellsExport).values).toBe("formatted")
+      expect(updateExportTarget(spec, "w_out", { values: "formatted" })).toBe(spec)
+      const raw = updateExportTarget(spec, "w_out", { values: "raw" })
+      expect(exported(raw).target).toMatchObject({ format: "excel_cells", values: "raw", cells: cellsOf(spec) })
     })
 
     it("adds a cell under the last on its sheet, its label under the last's label, the first on Sheet1 at A1 with no label", () => {

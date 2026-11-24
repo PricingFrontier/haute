@@ -743,6 +743,9 @@ class ExcelCellsExport(_Strict):
 
     format: Literal["excel_cells"]
     file_name: str
+    #: ``formatted`` writes a number in its column's format, as the sheets show it; ``raw``
+    #: as it is, in Excel's General format, for a system that reads the workbook.
+    values: ExportValues = "formatted"
     #: In the order chosen; a column may be written into more than one cell.
     cells: list[ExportCell]
     #: In the order chosen; a table may be written as more than one block.

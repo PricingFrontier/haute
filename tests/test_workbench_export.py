@@ -285,6 +285,32 @@ def test_a_workbook_of_cells_holds_each_value_typed_on_its_sheets_in_the_order_f
     assert book.properties.creator == "Haute"
 
 
+def test_a_raw_workbook_of_cells_writes_each_number_as_it_is_in_general() -> None:
+    form = with_blocks(
+        block("items", ["value", "item_premium"], "Items", "A1"),
+        cells=(
+            cell("quote_details.inception_date", "Slip", "B4"),
+            cell("policy.limit", "Slip", "B5"),
+            cell("pricing.premium", "Summary", "C2"),
+            cell("pricing.rate", "Summary", "C3"),
+        ),
+    )
+    target_of(form)["values"] = "raw"
+
+    _, data = export(form, ITEMS_PRICED)
+
+    book = load_workbook(io.BytesIO(data))
+    slip, summary, items = book["Slip"], book["Summary"], book["Items"]
+    # A number as it is, with no currency sign, grouping or places: 1000000, 0.055.
+    assert (slip["B5"].value, slip["B5"].number_format) == (1_000_000.0, "General")
+    assert (summary["C2"].value, summary["C2"].number_format) == (1234.5, "General")
+    assert (summary["C3"].value, summary["C3"].number_format) == (0.055, "General")
+    # A block's numbers too; a date is still shown as a date.
+    first_row = [(held.value, held.number_format) for held in items[2]]
+    assert first_row == [(100.0, "General"), (10.0, "General")]
+    assert slip["B4"].number_format == "yyyy-mm-dd"
+
+
 @pytest.mark.parametrize("text", ['=HYPERLINK("http://x")', "#N/A", "-2", "+1", "@SUM(A1)"])
 def test_text_is_written_as_text_whatever_it_starts_with(text: str) -> None:
     form = with_cells(cell("policy.note", "Slip", "A1"))

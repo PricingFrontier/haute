@@ -1830,7 +1830,7 @@ export const IMPORT_SOURCES: { readonly [F in ImportFormat]: Readonly<Extract<Im
 export const EXPORT_TARGETS: { readonly [F in ExportFormat]: Readonly<Extract<ExportWidget["target"], { format: F }>> } = {
   csv: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "csv", delimiter: "comma" },
   excel: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "excel" },
-  excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, cells: [], blocks: [] },
+  excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, values: "formatted", cells: [], blocks: [] },
 }
 
 /** The sheet a workbook's first cell is written to, as Excel names a new workbook's first sheet. */
@@ -2027,7 +2027,8 @@ export const excelLayout = (target: ExcelExport | ExcelCellsExport): ExcelLayout
 
 /**
  * An Export's Excel workbook laid out the other way, its file name kept and the other
- * layout's settings started afresh; a workbook of cells exports no tables, so they go.
+ * layout's settings started afresh, a workbook of cells' values formatted; a workbook of
+ * cells exports no tables, so they go.
  */
 export function setExcelLayout(spec: FormSpec, id: string, layout: ExcelLayout): FormSpec {
   const { target } = exportOf(spec, id)
@@ -2046,7 +2047,7 @@ export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" 
 const TARGET_KEYS: Record<ExportFormat, readonly string[]> = {
   csv: ["file_name", "headers", "values", "delimiter"],
   excel: ["file_name", "headers", "values"],
-  excel_cells: ["file_name"],
+  excel_cells: ["file_name", "values"],
 }
 
 /** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter. */

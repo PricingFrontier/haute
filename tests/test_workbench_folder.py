@@ -2012,6 +2012,25 @@ def test_an_export_of_cells_keeps_true_false_text_and_leaves_it_out_while_it_has
     assert form_files(document.spec, form_folder(project)) == files
 
 
+def test_an_export_of_cells_keeps_raw_values_and_leaves_formatted_out(project: Path) -> None:
+    form = _cells_form()
+    # Formatted, as every Export of cells written before Values was: no key in its file.
+    files = write_form(project, form)
+    assert "values" not in json.loads(files["components/export.json"])["target"]
+    assert (
+        read_form_document(config(project)).spec.pages[0].sections[0].widgets
+        == spec_of(form).pages[0].sections[0].widgets
+    )
+
+    widget_of(form, EXPORTER)["target"]["values"] = "raw"
+    files = write_form(project, form)
+
+    assert json.loads(files["components/export.json"])["target"]["values"] == "raw"
+    document = read_form_document(config(project))
+    assert document.spec == spec_of(form)
+    assert form_files(document.spec, form_folder(project)) == files
+
+
 def test_an_export_of_cells_keeps_a_column_the_schema_does_not_hold_and_names_it(
     project: Path,
 ) -> None:

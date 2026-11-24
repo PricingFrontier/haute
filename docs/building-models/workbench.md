@@ -475,8 +475,9 @@ a sheet per table.
   table), **Clashes** at the foot of the pane says what clashes and where, and the sheet
   it's on is marked. A field can go in more than one cell, but a cell holds one field or
   one label. Sheets are made in the order shown. Each cell holds the
-  field's value as the sheets hold it: numbers stay numbers in the field's number format,
-  dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
+  field's value as the sheets hold it: numbers stay numbers, in the field's number format
+  while **Values** is **Formatted**, or plain while it is **Raw** (10000 rather than
+  US$10,000, for a system that reads the workbook), dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
   `=`. Under a True/false field, **True/False** chooses what its tick writes instead:
   **X / blank**, **blank / X** (an X when the box is not ticked, for a "not provided" box),
   **Yes / No**, or **Custom**, a **True** and a **False** text of your own. A box that is

@@ -6167,6 +6167,7 @@ export interface ExcelCellsExport {
   cells: ExportCell[];
   file_name: string;
   format: 'excel_cells';
+  values: 'raw' | 'formatted';
 }
 /**
  * A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of

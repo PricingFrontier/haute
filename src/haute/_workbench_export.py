@@ -409,11 +409,14 @@ def _write(
     value: Any,
     field: str,
     true_false: TrueFalseText | None = None,
+    *,
+    formatted: bool = True,
 ) -> None:
     """*value*, of *column*'s type, into the openpyxl *cell*: text held as text, so neither a
     leading ``=`` nor an error value is read; a whole number Excel cannot hold exactly (past
     2**53, as its numbers are doubles) written as its digits, as text, so none is lost; a
-    date shown ``yyyy-mm-dd``; a number in its column's format; a True/false value given
+    date shown ``yyyy-mm-dd``; a number in its column's format while *formatted*, else in
+    Excel's General format, as it is; a True/false value given
     *true_false* that text (:func:`_write_true_false`), even when it is none; none else
     leaving the cell empty."""
     # Imported here: only an export loads openpyxl.
@@ -442,7 +445,7 @@ def _write(
     cell.value = value
     if column.type == "date":
         cell.number_format = "yyyy-mm-dd"
-    elif column.type in ("int", "float"):
+    elif column.type in ("int", "float") and formatted:
         cell.number_format = number_format(column, value)
 
 
@@ -474,9 +477,11 @@ def cells_workbook(
     """The workbook of *target*'s cells, each holding ``value_of`` it and its label cell its
     column's label, and its blocks, each its header, but for ``none``, along its top-left
     cell's row and under it ``rows_of`` it, a value for each of its columns, its sheets in
-    the order their names are first given; *target* has no :func:`cells_problems`. A block
-    whose rows run past the sheet's last row is refused, naming it. *release*, the release
-    that priced the quote, is the workbook's :data:`RELEASE_PROPERTY`."""
+    the order their names are first given; *target* has no :func:`cells_problems`. Its
+    numbers are in their columns' formats while its ``values`` are ``formatted``, and as they
+    are, in General, while ``raw``. A block whose rows run past the sheet's last row is
+    refused, naming it. *release*, the release that priced the quote, is the workbook's
+    :data:`RELEASE_PROPERTY`."""
     # Imported here: only an export loads openpyxl.
     from openpyxl import Workbook
     from openpyxl.packaging.custom import StringProperty
@@ -485,6 +490,8 @@ def cells_workbook(
     workbook.properties.creator = "Haute"
     if release is not None:
         workbook.custom_doc_props.append(StringProperty(name=RELEASE_PROPERTY, value=release))
+    # Raw writes each number as it is, Formatted in its column's format.
+    formatted = target.values == "formatted"
     sheets: dict[str, Any] = {}
 
     def sheet_of(name: str) -> Any:
@@ -509,6 +516,7 @@ def cells_workbook(
             value_of(cell),
             field,
             cell.true_false,
+            formatted=formatted,
         )
         if cell.label_cell.strip() == "":
             continue
@@ -540,7 +548,14 @@ def cells_workbook(
         for values in rows:
             for offset, (column, value) in enumerate(zip(columns, values, strict=True)):
                 at = sheet.cell(row=row, column=first + offset)
-                _write(at, column, value, f"{table.name}.{column.name}", block.true_false)
+                _write(
+                    at,
+                    column,
+                    value,
+                    f"{table.name}.{column.name}",
+                    block.true_false,
+                    formatted=formatted,
+                )
             row += 1
     buffer = io.BytesIO()
     workbook.save(buffer)
