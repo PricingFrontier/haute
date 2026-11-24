@@ -1520,10 +1520,12 @@ Out of scope:
   button opening its settings under it, one cell's at a time, the open cell staying open
   as it or another moves, is added or is taken away, and none open after a change from
   outside the list (an undo's); and, under its cells, Add a cell to the sheet, a
-  `ColumnSelector` of the columns a cell can be given drawn as an add button, a column chosen
+  `ColumnSelector` of the columns a cell can be given drawn as a quiet "+ Add a cell" text
+  action, a column chosen
   adding a cell of it under the sheet's last cell, in the cell under that cell's, its label
   in the cell under that cell's label while that cell has one, or in `A1` with no label in
-  a sheet with none. Under the sheets Add a sheet, a sheet named `SheetN` (the first such
+  a sheet with none. Under the sheets Add a sheet, a dashed add button as wide as the pane,
+  a sheet named `SheetN` (the first such
   name no sheet holds) shown last, open and holding no cells until a cell is added to it
   or moved into it, with a cross while it holds none that takes it away; a sheet holding no
   cells is not saved. A cell's settings: Field, a searchable

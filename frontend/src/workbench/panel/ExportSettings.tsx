@@ -1,12 +1,12 @@
 /** An Export's panel (specs/workbench). */
-import { ChevronDown, ChevronRight, GripVertical, SlidersHorizontal, Trash2, TriangleAlert, X } from "lucide-react"
+import { ChevronDown, ChevronRight, GripVertical, Plus, SlidersHorizontal, Trash2, TriangleAlert, X } from "lucide-react"
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import type { CsvExport, ExcelCellsExport, ExportBlock, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable, TrueFalseText } from "../../api/types"
-import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow } from "../../components/form"
+import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove } from "../../hooks/useRefocusAfterMove"
 import { useRowKeys } from "../../panels/editors/shared/useRowKeys"
-import { ColumnSelector, type ColumnOption } from "../../panels/modelling/ColumnSelector"
+import { ADD_BUTTON_CLASS, ADD_BUTTON_STYLE, ColumnSelector, type ColumnOption } from "../../panels/modelling/ColumnSelector"
 import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -404,9 +404,10 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
           </SheetGroup>
         )
       })}
-      <QuietAction onClick={addSheet} className="justify-self-start self-start">
+      <button type="button" onClick={addSheet} className={ADD_BUTTON_CLASS} style={ADD_BUTTON_STYLE}>
+        <Plus size={12} className="shrink-0" aria-hidden="true" />
         Add a sheet
-      </QuietAction>
+      </button>
     </Section>
   )
 }
@@ -500,7 +501,7 @@ function SheetGroup({
               {children}
             </div>
           )}
-          <ColumnSelector label={`Add a cell to ${sheet}`} value="" columns={options} compact trigger="add" placeholder="Add a cell" onChange={onAdd} />
+          <ColumnSelector label={`Add a cell to ${sheet}`} value="" columns={options} compact trigger="quiet" placeholder="Add a cell" onChange={onAdd} />
         </div>
       )}
     </div>

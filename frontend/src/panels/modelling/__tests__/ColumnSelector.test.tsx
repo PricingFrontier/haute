@@ -87,6 +87,19 @@ describe("a compact ColumnSelector's trigger looks", () => {
     expect(onChange).toHaveBeenCalledWith("region")
   })
 
+  it("draws a quiet text action reading its placeholder, whose menu adds the column chosen", () => {
+    const onChange = vi.fn()
+    render(<ColumnSelector compact trigger="quiet" label="Add a cell" value="" placeholder="Add a cell" columns={columns} onChange={onChange} />)
+    const trigger = screen.getByRole("button", { name: "Add a cell" })
+    expect(trigger).toHaveTextContent("Add a cell")
+    expect(trigger).toHaveClass("quiet-action")
+    expect(trigger).not.toHaveClass("add-row-btn")
+
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getAllByRole("option").find((option) => option.firstElementChild?.textContent === "weight")!)
+    expect(onChange).toHaveBeenCalledWith("weight")
+  })
+
   it("opens under its trigger, or over it near the window's foot where it would not fit below", () => {
     // jsdom lays nothing out: the menu is 250px tall, the window 768px.
     const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(250)

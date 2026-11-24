@@ -1398,13 +1398,15 @@ describe("PropertiesPanel", () => {
     expect(screen.queryByRole("checkbox", { name: "policy" })).not.toBeInTheDocument()
     expect(screen.queryByRole("group", { name: /^Sheet / })).not.toBeInTheDocument()
 
-    // Add a sheet: Sheet1, its name focused, holding no cells, which is saved as nothing.
+    // Add a sheet, the dashed add button: Sheet1, its name focused, holding no cells, which is saved as nothing.
+    expect(screen.getByRole("button", { name: "Add a sheet" })).toHaveClass("add-row-btn")
     fireEvent.click(screen.getByRole("button", { name: "Add a sheet" }))
     expect(screen.getByRole("textbox", { name: "Sheet Sheet1 name" })).toHaveFocus()
     expect(sheet("Sheet1")).toHaveTextContent("0 cells")
     expect(cells()).toEqual([])
 
-    // Its Add a cell searches the one-row tables' columns, each as table.column.
+    // Its Add a cell, a quiet + Add a cell, searches the one-row tables' columns, each as table.column.
+    expect(screen.getByRole("button", { name: "Add a cell to Sheet1" })).toHaveClass("quiet-action")
     expect(offered("Add a cell to Sheet1")).toEqual(["policy.state", "policy.year"])
     expect(offered("Add a cell to Sheet1", "yea")).toEqual(["policy.year"])
     pick("Add a cell to Sheet1", "policy.state")
