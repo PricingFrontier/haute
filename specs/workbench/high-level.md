@@ -1503,13 +1503,17 @@ Out of scope:
   holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
   the file name and starting the other's settings afresh; a file's File name, a CSV's
   Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
-  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: the workbook's sheets, in the
-  order the cells first name them (a name matched whatever its case, as Excel matches it,
-  shown as first spelled), each a group that is opened and closed, open to start: its
-  header, a toggle, its name in a text field committed on blur or Enter (a new name, refused
-  while blank, while Excel would refuse it or while another sheet holds it, renaming the
-  sheet of each of its cells and of each table written to it, in one change), how many cells
-  it holds, and a warning mark while one of its cells or tables clashes; under it, while
+  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: the
+  workbook's sheets, as the workbook makes them, those its cells name in the order first
+  named, then those only its tables are written to, then those added and holding nothing
+  yet (a name matched whatever its case, as Excel matches it, shown as first spelled), each
+  a group that is opened and closed, open to start: its header, a toggle, its name in a
+  text field committed on blur or Enter (a new name, refused while blank, while Excel would
+  refuse it or while another sheet, one a table alone is written to included, holds it,
+  renaming the sheet of each of its cells and of each table written to it, in one change,
+  whether or not it holds cells, the focus staying in the name while it was there), how
+  many cells it holds and, while any table is written to it, how many tables, and a
+  warning mark while one of its cells or tables clashes; under it, while
   open, a row for each of its cells in order, as a schema column's row is drawn: a grip it
   is dragged by, and Alt+Up and Alt+Down moving it, the order the cells of every sheet in
   turn, a cell moved past its sheet's first or last going to the sheet before or after,
@@ -1524,11 +1528,12 @@ Out of scope:
   action, a column chosen
   adding a cell of it under the sheet's last cell, in the cell under that cell's, its label
   in the cell under that cell's label while that cell has one, or in `A1` with no label in
-  a sheet with none. Under the sheets Add a sheet, a dashed add button as wide as the pane,
-  a sheet named `SheetN` (the first such
+  a sheet with none. A sheet keeps what its rows hold (a cell's open Custom) while the
+  sheets around it change. Under the sheets Add a sheet, a dashed add button as wide as the
+  pane, a sheet named `SheetN` (the first such
   name no sheet holds) shown last, open and holding no cells until a cell is added to it
-  or moved into it, with a cross while it holds none that takes it away; a sheet holding no
-  cells is not saved. A cell's settings: Field, a searchable
+  or moved into it, with a cross while it holds no cells and no table is written to it,
+  that takes it away and forgets it was closed; a sheet holding no cells is not saved. A cell's settings: Field, a searchable
   `ColumnSelector` of the one-row tables' columns as a sheet shows them, each as
   `table.column` with its label and its type, searched by any of them, a column the schema
   no longer holds, or no longer of a
@@ -1544,7 +1549,8 @@ Out of scope:
   the label left where it is when the new address has no such cell; and, while its column
   is True/false or it holds True/False text, True/False: a select of
   TRUE / FALSE (Excel's own), X / blank, blank / X, Yes / No and Custom, Custom showing a
-  True and a False text field committed on blur or Enter, a cell given a column that is not
+  True and a False text field committed on blur or Enter, Custom chosen from TRUE / FALSE
+  writing the blank True and False its fields show, a cell given a column that is not
   True/false losing its text; and at their foot Remove cell, in the danger colour, asking
   "Remove cell n, its label?" with where it stops writing (its sheet and address, and its
   label's address while it has one), Remove in the danger colour, and taking the cell away

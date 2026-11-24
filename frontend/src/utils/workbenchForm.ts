@@ -2807,11 +2807,14 @@ function blockTrueFalseProblems(spec: FormSpec, block: ExportBlock): string[] {
 export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[] {
   const problems = fileNameProblems(spec, target.file_name)
   if (target.cells.length === 0 && target.blocks.length === 0) problems.push("writes no cells or tables")
-  // The addresses taken, in the order taken, each by its sheet in lower case.
-  const taken = new Map<string, { sheet: string; address: string }>()
-  const take = (sheet: string, address: string) => taken.set(`${sheet.toLowerCase()}!${address}`, { sheet: sheet.toLowerCase(), address })
+  const { written, blocks: placed } = cellsPlaces(target)
+  /** Whether something wrote `address` on `sheet` before `writer`. */
+  const taken = (sheet: string, address: string, writer: CellWriter) => {
+    const first = written.get(`${sheet.toLowerCase()}!${address}`)?.by[0]
+    return first !== undefined && (first.cell !== writer.cell || first.label !== writer.label)
+  }
   const sheets = new Map<string, string>()
-  for (const cell of target.cells) {
+  target.cells.forEach((cell, index) => {
     const found = cellColumn(spec, cell)
     const field = `${cell.table}.${cell.column}`
     if (found === null) problems.push(`writes ${field}, which is no longer in the schema`)
@@ -2819,40 +2822,75 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
     if (found !== null && cell.true_false !== null && found.column.type !== "bool") problems.push(`writes ${field} with True/False text, but it is not a True/false column`)
     problems.push(...sheetProblems(cell.sheet, sheets))
     if (cellAddress(cell.cell) === null) problems.push(`writes to "${cell.cell}" on "${cell.sheet}", which is not a cell like B3`)
-    else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.cell}`)) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
-    else take(cell.sheet, cell.cell)
-    if (cell.label_cell.trim() === "") continue
+    else if (taken(cell.sheet, cell.cell, { cell: index, label: false })) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
+    if (cell.label_cell.trim() === "") return
     if (cellAddress(cell.label_cell) === null) problems.push(`writes the label of ${field} to "${cell.label_cell}" on "${cell.sheet}", which is not a cell like B3`)
-    else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.label_cell}`)) problems.push(`writes more than once to ${cell.label_cell} on "${cell.sheet}"`)
-    else take(cell.sheet, cell.label_cell)
-  }
-  // The blocks placed, each by its sheet in lower case, its first and last column.
-  const placed: { sheet: string; first: number; last: number; block: ExportBlock }[] = []
-  for (const block of target.blocks) {
+    else if (taken(cell.sheet, cell.label_cell, { cell: index, label: true })) problems.push(`writes more than once to ${cell.label_cell} on "${cell.sheet}"`)
+  })
+  target.blocks.forEach((block, index) => {
     problems.push(...blockColumnProblems(spec, block), ...blockTrueFalseProblems(spec, block), ...sheetProblems(block.sheet, sheets))
     const address = cellAddress(block.cell)
     if (address === null) {
       problems.push(`writes the table ${block.table} to "${block.cell}" on "${block.sheet}", which is not a cell like B3`)
-      continue
+      return
     }
-    const { column: first, row: top } = address
-    const last = first + block.columns.length - 1
-    if (last > LAST_CELL_COLUMN) {
+    if (address.column + block.columns.length - 1 > LAST_CELL_COLUMN) {
       problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" past XFD, the last column`)
-      continue
+      return
     }
-    if (block.columns.length === 0) continue
-    const sheet = block.sheet.toLowerCase()
-    const under = [...taken.values()].find((written) => {
-      const spot = written.sheet === sheet ? cellAddress(written.address) : null
-      return spot !== null && first <= spot.column && spot.column <= last && spot.row >= top
-    })
-    const over = placed.find((other) => other.sheet === sheet && other.first <= last && first <= other.last)
+    const at = placed.get(index)
+    if (at === undefined) return
+    const under = at.under[0]
+    const over = at.over[0] === undefined ? undefined : target.blocks[at.over[0]]
     if (under !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over ${under.address}, which is written already`)
-    else if (over !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over the table ${over.block.table} from ${over.block.cell}`)
-    placed.push({ sheet, first, last, block })
-  }
+    else if (over !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over the table ${over.table} from ${over.cell}`)
+  })
   return [...new Set(problems)]
+}
+
+/** What writes an address of a workbook of cells: a cell's value, or its label. */
+type CellWriter = { cell: number; label: boolean }
+/** An address of a sheet a workbook of cells writes: the sheet as first named, and what writes it, in order. */
+type WrittenPlace = { sheet: string; address: string; by: CellWriter[] }
+/** A block placed on its sheet, in lower case: its columns' span, and what it runs over, the addresses written and the earlier blocks placed (by place), in order. */
+type PlacedBlock = { sheet: string; first: number; last: number; under: WrittenPlace[]; over: number[] }
+
+/**
+ * Where a workbook of cells writes, the one reading `cellsProblems` and `cellClashes` both
+ * take, so the two find the same clashes: each address its cells and labels write (a cell's
+ * value before its label), by its sheet whatever its case, and each block placed (by its
+ * place) with the addresses it runs over and the earlier blocks it overlaps, a block running
+ * down from its address over its columns. An address that is not a cell takes no place, nor
+ * a block at one, with no columns, or past XFD.
+ */
+function cellsPlaces(target: ExcelCellsExport): { written: Map<string, WrittenPlace>; blocks: Map<number, PlacedBlock> } {
+  const written = new Map<string, WrittenPlace>()
+  const write = (sheet: string, address: string, by: CellWriter) => {
+    const key = `${sheet.toLowerCase()}!${address}`
+    const held = written.get(key)
+    if (held === undefined) written.set(key, { sheet, address, by: [by] })
+    else held.by.push(by)
+  }
+  target.cells.forEach((cell, index) => {
+    if (cellAddress(cell.cell) !== null) write(cell.sheet, cell.cell, { cell: index, label: false })
+    if (cell.label_cell.trim() !== "" && cellAddress(cell.label_cell) !== null) write(cell.sheet, cell.label_cell, { cell: index, label: true })
+  })
+  const blocks = new Map<number, PlacedBlock>()
+  target.blocks.forEach((block, index) => {
+    const start = cellAddress(block.cell)
+    if (start === null || block.columns.length === 0) return
+    const first = start.column
+    const last = first + block.columns.length - 1
+    if (last > LAST_CELL_COLUMN) return
+    const sheet = block.sheet.toLowerCase()
+    const under = [...written.values()].filter((held) => {
+      const spot = held.sheet.toLowerCase() === sheet ? cellAddress(held.address) : null
+      return spot !== null && first <= spot.column && spot.column <= last && spot.row >= start.row
+    })
+    const over = [...blocks].filter(([, other]) => other.sheet === sheet && other.first <= last && first <= other.last).map(([at]) => at)
+    blocks.set(index, { sheet, first, last, under, over })
+  })
+  return { written, blocks }
 }
 
 /** Names in a list: "a", "a and b", "a, b and c". */
@@ -2862,52 +2900,30 @@ const listed = (names: readonly string[]): string => (names.length < 2 ? names.j
  * Each place a workbook of cells writes two things to, said with what clashes: an address of
  * a sheet written by more than one cell or label, a block running over an address written
  * already, or a block over an earlier block on its sheet (a block runs down from its address
- * over its columns, its rows not known until it is written), as `cellsProblems` finds them.
+ * over its columns, its rows not known until it is written), from the reading `cellsProblems`
+ * takes (`cellsPlaces`).
  * A cell is named by its number and its field's label, a block by its number, its table and
  * where it starts; a sheet is matched whatever its case, as Excel matches it. Each is given
  * with its sheet, in lower case.
  */
 export function cellClashes(spec: FormSpec, target: ExcelCellsExport): { sheet: string; text: string }[] {
-  const cellName = (cell: ExportCell, index: number) => {
-    const found = fieldColumn(spec, cell)
+  const cellName = (index: number) => {
+    const found = fieldColumn(spec, target.cells[index])
     return `cell ${index + 1} (${found === null ? "Missing column" : found.column.label || readableName(found.column.name)})`
   }
-  // Each address written, by its sheet in lower case: the sheet as first named, and what writes it, in order.
-  const written = new Map<string, { sheet: string; address: string; by: string[] }>()
-  const write = (sheet: string, address: string, by: string) => {
-    const key = `${sheet.toLowerCase()}!${address}`
-    const held = written.get(key)
-    if (held === undefined) written.set(key, { sheet, address, by: [by] })
-    else held.by.push(by)
+  const writerName = (writer: CellWriter) => (writer.label ? `the label of ${cellName(writer.cell)}` : cellName(writer.cell))
+  const where = (index: number) => {
+    const block = target.blocks[index]
+    return `${index + 1} (${block.table}) from ${block.sheet}!${block.cell}`
   }
-  target.cells.forEach((cell, index) => {
-    if (cellAddress(cell.cell) !== null) write(cell.sheet, cell.cell, cellName(cell, index))
-    if (cell.label_cell.trim() !== "" && cellAddress(cell.label_cell) !== null) write(cell.sheet, cell.label_cell, `the label of ${cellName(cell, index)}`)
-  })
+  const { written, blocks } = cellsPlaces(target)
   const clashes = [...written.values()]
     .filter((held) => held.by.length > 1)
-    .map((held) => ({ sheet: held.sheet.toLowerCase(), text: `${held.sheet}!${held.address} is written by ${listed(held.by)}` }))
-  const placed: { sheet: string; first: number; last: number; name: string }[] = []
-  target.blocks.forEach((block, index) => {
-    const start = cellAddress(block.cell)
-    if (start === null || block.columns.length === 0) return
-    const first = start.column
-    const last = first + block.columns.length - 1
-    if (last > LAST_CELL_COLUMN) return
-    const sheet = block.sheet.toLowerCase()
-    const where = `${index + 1} (${block.table}) from ${block.sheet}!${block.cell}`
-    const name = `table ${where}`
-    for (const held of written.values()) {
-      const spot = held.sheet.toLowerCase() === sheet ? cellAddress(held.address) : null
-      if (spot !== null && first <= spot.column && spot.column <= last && spot.row >= start.row) {
-        clashes.push({ sheet, text: `Table ${where} runs over ${held.sheet}!${held.address}, written by ${listed(held.by)}` })
-      }
-    }
-    for (const other of placed) {
-      if (other.sheet === sheet && other.first <= last && first <= other.last) clashes.push({ sheet, text: `Table ${where} runs over ${other.name}` })
-    }
-    placed.push({ sheet, first, last, name })
-  })
+    .map((held) => ({ sheet: held.sheet.toLowerCase(), text: `${held.sheet}!${held.address} is written by ${listed(held.by.map(writerName))}` }))
+  for (const [index, placed] of blocks) {
+    for (const held of placed.under) clashes.push({ sheet: placed.sheet, text: `Table ${where(index)} runs over ${held.sheet}!${held.address}, written by ${listed(held.by.map(writerName))}` })
+    for (const other of placed.over) clashes.push({ sheet: placed.sheet, text: `Table ${where(index)} runs over table ${where(other)}` })
+  }
   return clashes
 }
 

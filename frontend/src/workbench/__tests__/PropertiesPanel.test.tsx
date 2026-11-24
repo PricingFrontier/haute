@@ -16,7 +16,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { createWidget, findSection, findWidget, removeSchemaColumn, removeSchemaTable, setExportCellColumn, updateWidget } from "../../utils/workbenchForm"
 import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
-import type { ExcelCellsExport, ExportWidget, FieldRef, FormSpec, HttpImport, ImportWidget, Section } from "../../api/types"
+import type { ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSpec, HttpImport, ImportWidget, Section } from "../../api/types"
 import { COMPONENT_COLOR } from "../widgetKinds"
 import { addTo, chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sectionedForm, sheetForm, table, widgetsOf } from "./fixtures"
 
@@ -1606,6 +1606,93 @@ describe("PropertiesPanel", () => {
     expect(placed()).toEqual(["state@Slip!B1", "year@Slip!B2", "year@Other!C1"])
   })
 
+  it("counts the sheets only a workbook's tables are written to among its sheets: refused as a name, passed over for a new one, kept with their tables, and renamed with them", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    const widget = findWidget(form, "w_out")!.widget as ExportWidget
+    const block = (sheet: string, address: string): ExportBlock => ({ table: "equipment", sheet, cell: address, header: "labels", columns: ["value"], true_false: null })
+    widget.target = {
+      format: "excel_cells",
+      file_name: "slip",
+      cells: [{ table: "policy", column: "state", sheet: "Slip", cell: "B1", label_cell: "", true_false: null }],
+      blocks: [block("Sheet1", "A1"), block("Slip", "D1")],
+    }
+    loadForm(form)
+    select("w_out")
+    render(<PropertiesPanel />)
+    const target = () => (findWidget(currentForm(), "w_out")!.widget as ExportWidget).target as ExcelCellsExport
+    const groups = () => screen.getAllByRole("group", { name: /^Sheet / }).map((group) => group.getAttribute("aria-label"))
+    const commit = (name: string, value: string) => {
+      const field = screen.getByRole("textbox", { name })
+      fireEvent.change(field, { target: { value } })
+      fireEvent.blur(field)
+    }
+
+    // Slip, its cells' sheet, then Sheet1, which only a table is written to: no cross while it holds one.
+    expect(groups()).toEqual(["Sheet Slip", "Sheet Sheet1"])
+    expect(screen.getByRole("group", { name: "Sheet Sheet1" })).toHaveTextContent("0 cells · 1 table")
+    expect(screen.getByRole("group", { name: "Sheet Slip" })).toHaveTextContent("1 cell · 1 table")
+    expect(screen.queryByRole("button", { name: "Remove sheet Sheet1" })).not.toBeInTheDocument()
+
+    // A new sheet passes over Sheet1, and Sheet1's name is refused to another.
+    fireEvent.click(screen.getByRole("button", { name: "Add a sheet" }))
+    expect(groups()).toEqual(["Sheet Slip", "Sheet Sheet1", "Sheet Sheet2"])
+    commit("Sheet Sheet2 name", "sheet1")
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain("Another sheet is named sheet1")
+    expect(target().blocks.map((held) => held.sheet)).toEqual(["Sheet1", "Slip"])
+
+    // Slip's last cell moved on, Slip stays for its table, and renamed takes its table with it.
+    fireEvent.keyDown(screen.getByRole("listitem", { name: "Cell 1 State" }), { key: "ArrowDown", altKey: true })
+    expect(target().cells.map((cell) => cell.sheet)).toEqual(["Sheet1"])
+    expect(screen.getByRole("group", { name: "Sheet Slip" })).toHaveTextContent("0 cells · 1 table")
+    commit("Sheet Slip name", "Cover")
+    expect(target().blocks.map((held) => held.sheet)).toEqual(["Sheet1", "Cover"])
+    expect(screen.getByRole("group", { name: "Sheet Cover" })).toBeInTheDocument()
+  })
+
+  it("keeps a cell's Custom label as the sheets around it change, and forgets a removed sheet was closed", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    const widget = findWidget(form, "w_out")!.widget as ExportWidget
+    widget.target = {
+      format: "excel_cells",
+      file_name: "slip",
+      cells: [
+        { table: "policy", column: "state", sheet: "First", cell: "B1", label_cell: "", true_false: null },
+        { table: "policy", column: "year", sheet: "Second", cell: "B2", label_cell: "A2", true_false: null },
+      ],
+      blocks: [],
+    }
+    loadForm(form)
+    select("w_out")
+    render(<PropertiesPanel />)
+    const cells = () => ((findWidget(currentForm(), "w_out")!.widget as ExportWidget).target as ExcelCellsExport).cells
+    const label = (number: number) => screen.getByRole("combobox", { name: `Cell ${number} label` })
+
+    // Second's cell given Custom, its label left of it; First's one cell moved into Second, First emptied.
+    fireEvent.click(screen.getByRole("button", { name: "Cell 2 settings" }))
+    expect(label(2)).toHaveValue("left")
+    fireEvent.change(label(2), { target: { value: "custom" } })
+    fireEvent.keyDown(screen.getByRole("listitem", { name: "Cell 1 State" }), { key: "ArrowDown", altKey: true })
+    expect(cells().map((cell) => `${cell.column}@${cell.sheet}`)).toEqual(["state@Second", "year@Second"])
+    expect(screen.getAllByRole("group", { name: /^Sheet / }).map((group) => group.getAttribute("aria-label"))).toEqual(["Sheet Second", "Sheet First"])
+    // The untouched cell is still Custom: a new address leaves its label where it is.
+    expect(label(2)).toHaveValue("custom")
+    const address = screen.getByRole("textbox", { name: "Cell 2 address" })
+    fireEvent.change(address, { target: { value: "C3" } })
+    fireEvent.blur(address)
+    expect(cells()[1]).toMatchObject({ cell: "C3", label_cell: "A2" })
+
+    // First, emptied, closed and taken away, comes back open when a sheet of its name is added again.
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sheet First" }))
+    fireEvent.click(screen.getByRole("button", { name: "Remove sheet First" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add a sheet" }))
+    const renamed = screen.getByRole("textbox", { name: "Sheet Sheet1 name" })
+    fireEvent.change(renamed, { target: { value: "First" } })
+    fireEvent.blur(renamed)
+    expect(screen.getByRole("button", { name: "Collapse sheet First" })).toHaveAttribute("aria-expanded", "true")
+  })
+
   it("lays an Export's tables out as blocks, each with its sheet, its top-left cell, its header and its columns in an order of its own", () => {
     const form = sheetForm()
     addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
@@ -1716,6 +1803,11 @@ describe("PropertiesPanel", () => {
     expect(screen.getByTestId("export-cell-2-summary")).toHaveTextContent(/^A2 · Covered \/ Not covered$/)
     fireEvent.change(preset(), { target: { value: "excel" } })
     expect(target().cells[1].true_false).toBeNull()
+    // Custom from TRUE / FALSE writes the blank texts its fields show.
+    fireEvent.change(preset(), { target: { value: "custom" } })
+    expect(target().cells[1].true_false).toEqual({ true: "", false: "" })
+    expect(screen.getByRole("textbox", { name: "Cell 2 True text" })).toHaveValue("")
+    expect(preset()).toHaveValue("custom")
 
     // A field that is not a tick takes the text away, and its True/False with it.
     fireEvent.change(preset(), { target: { value: "yes_no" } })

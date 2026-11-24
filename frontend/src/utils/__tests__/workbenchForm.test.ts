@@ -16,6 +16,7 @@ import {
   placeExportCell,
   renameExportSheet,
   cellClashes,
+  cellsProblems,
   addPage,
   addSchemaColumn,
   addSchemaTable,
@@ -3040,6 +3041,23 @@ describe("Imports and Exports", () => {
       ])
       // A cell above a table's address is clear of it.
       expect(clashes([at(insured, "Slip", "C1")], [block("Slip", "C2", ["limit"])])).toEqual([])
+
+      // The footer and the export's problems read one pass: each finds a clash where the other does.
+      const overlap = /more than once| over (the table |[A-Z]+[0-9]+, which)/
+      const cases: [ExcelCellsExport["cells"], ExportBlock[]][] = [
+        [[at(insured, "Slip", "B1", "A1"), at(total, "Slip", "B2", "A2")], []],
+        [[at(insured, "Slip", "B1"), at(total, "slip", "B1")], []],
+        [[at(insured, "Slip", "B1", "B2"), at(total, "Slip", "B2")], []],
+        [[at(insured, "Slip", "b 1"), at(total, "Slip", "b 1")], []],
+        [[at(insured, "Slip", "C9")], [block("Slip", "B3", ["limit", "layer_premium"])]],
+        [[at(insured, "Slip", "C1")], [block("Slip", "C2", ["limit"])]],
+        [[], [block("Slip", "B3", ["limit"]), block("SLIP", "B40", ["limit"])]],
+        [[], [block("Slip", "B3", ["limit"]), block("Other", "B3", ["limit"])]],
+      ]
+      for (const [list, blocks] of cases) {
+        const problems = cellsProblems(spec, { ...(exported(spec).target as ExcelCellsExport), cells: list, blocks })
+        expect(found(list, blocks).length > 0).toBe(problems.some((problem) => overlap.test(problem)))
+      }
     })
 
     it("finds the cell above, under, left or right of an address, none past the sheet's edge, and where a cell's label is", () => {

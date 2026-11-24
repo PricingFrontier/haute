@@ -240,13 +240,19 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
   const { options, fields } = cellChoices(tables)
   const cells = cellsBySheet(target.cells)
   const named = cellSheets(target.cells)
-  const sheets = [...named, ...added.filter((name) => !named.some((sheet) => sameSheet(sheet, name)))]
+  // The workbook's sheets: its cells', then those only its tables are written to, as the
+  // server makes them, then those added and holding nothing yet, each once whatever its case.
+  const sheets = [...named, ...target.blocks.map((block) => block.sheet), ...added].filter(
+    (sheet, at, all) => all.findIndex((other) => sameSheet(other, sheet)) === at,
+  )
   const clashed = new Set(cellClashes(form, { ...target, cells }).map((clash) => clash.sheet))
   const rowKeys = useRowKeys(cells)
   const [open, setOpen] = useState<number | null>(null)
   const [fresh, setFresh] = useState<string | null>(null)
-  // A cell moved by Alt+arrows takes the focus again in its new place.
+  // A cell moved by Alt+arrows takes the focus again in its new place, as a sheet's name
+  // does after a rename, which draws its group anew under its new name.
   const refocus = useRefocusAfterMove<HTMLDivElement>()
+  const nameFocus = useRefocusAfterMove<HTMLInputElement>()
   /** The list's own write: `edit` made on the cells grouped, and the cells it leaves said to `useRowKeys` as `say` takes them. */
   const write = (edit: (spec: FormSpec) => FormSpec, say: (next: ExportCell[]) => void) =>
     change((spec) => {
@@ -333,7 +339,8 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
       (next) => rowKeys.expect(next, { kind: "rows", from: was }),
     )
   }
-  const rename = (sheet: string, typed: string) => {
+  /** A sheet given a new name, on its cells and its tables, its added and closed state following; the focus kept in its name while it was there. */
+  const rename = (sheet: string, typed: string, focused: boolean) => {
     const name = typed.trim()
     if (name === sheet) return
     const problem = name === "" ? "is blank" : sheetNameProblem(name)
@@ -341,7 +348,13 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
     if (sheets.some((other) => !sameSheet(other, sheet) && sameSheet(other, name))) return addToast("error", `Another sheet is named ${name}`)
     if (added.some((held) => sameSheet(held, sheet))) setExportSheets(widget.id, added.map((held) => (sameSheet(held, sheet) ? name : held)))
     if (isClosed(sheet)) setExportCollapsed(widget.id, closed.map((held) => (held === sheet.toLowerCase() ? name.toLowerCase() : held)))
-    if (named.some((held) => sameSheet(held, sheet))) write((spec) => renameExportSheet(spec, widget.id, sheet, name), (next) => rowKeys.edit(next))
+    if (focused) nameFocus.moved(name.toLowerCase())
+    write((spec) => renameExportSheet(spec, widget.id, sheet, name), (next) => rowKeys.edit(next))
+  }
+  /** An empty sheet taken away, with what the view held of it. */
+  const removeSheet = (sheet: string) => {
+    setExportSheets(widget.id, added.filter((name) => !sameSheet(name, sheet)))
+    if (isClosed(sheet)) toggle(sheet)
   }
   const addSheet = () => {
     let number = 1
@@ -351,21 +364,23 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
   }
   return (
     <Section title="Cells" aside={`${target.cells.length} written`}>
-      {sheets.map((sheet, place) => {
+      {sheets.map((sheet) => {
         const shut = isClosed(sheet)
         const held = cells.map((cell, index) => ({ cell, index })).filter(({ cell }) => sameSheet(cell.sheet, sheet))
         return (
-          // Keyed by its place, so a sheet renamed keeps its header, and the focus with it.
+          // Keyed by its name, so a sheet and what its rows hold stay together as the sheets around it change.
           <SheetGroup
-            key={place}
+            key={sheet.toLowerCase()}
             sheet={sheet}
             count={held.length}
+            tables={target.blocks.filter((block) => sameSheet(block.sheet, sheet)).length}
+            nameRef={nameFocus.register(sheet.toLowerCase())}
             shut={shut}
             clashes={clashed.has(sheet.toLowerCase())}
             autoFocus={fresh === sheet}
             onToggle={() => toggle(sheet)}
-            onRename={(name) => rename(sheet, name)}
-            onRemove={() => setExportSheets(widget.id, added.filter((name) => !sameSheet(name, sheet)))}
+            onRename={(name, focused) => rename(sheet, name, focused)}
+            onRemove={() => removeSheet(sheet)}
             taking={dragged !== null}
             onDrop={() => dropOn(sheet)}
             options={options}
@@ -415,12 +430,15 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
 /**
  * A sheet of a workbook of cells: its header, a toggle, its name (committed through the
  * caller, which refuses one Excel would not take or another sheet holds), how many cells it
- * holds, a mark while one of them clashes and, while it holds none, a cross; a cell's row
+ * holds and, while it has any, tables, a mark while one of them clashes and, while it holds
+ * neither, a cross; a cell's row
  * dragged onto the header (`taking`) going last in it. While open, its cells' rows and Add a cell to it.
  */
 function SheetGroup({
   sheet,
   count,
+  tables,
+  nameRef,
   shut,
   clashes,
   autoFocus,
@@ -435,11 +453,15 @@ function SheetGroup({
 }: {
   sheet: string
   count: number
+  /** How many tables are written to it. */
+  tables: number
+  nameRef: (element: HTMLInputElement | null) => void
   shut: boolean
   clashes: boolean
   autoFocus: boolean
   onToggle: () => void
-  onRename: (name: string) => void
+  /** A name committed, and whether the focus was in the name as it was. */
+  onRename: (name: string, focused: boolean) => void
   onRemove: () => void
   /** A cell's row is being dragged, which the header takes. */
   taking: boolean
@@ -449,6 +471,7 @@ function SheetGroup({
   children: ReactNode
 }) {
   const [over, setOver] = useState(false)
+  const name = useRef<HTMLInputElement | null>(null)
   return (
     <div role="group" aria-label={`Sheet ${sheet}`} className="flex flex-col gap-1">
       <div
@@ -477,22 +500,27 @@ function SheetGroup({
           style={{ color: "var(--text-muted)" }}
         />
         <CommittedTextField
+          ref={(element) => {
+            name.current = element
+            nameRef(element)
+          }}
           aria-label={`Sheet ${sheet} name`}
           value={sheet}
-          onCommit={onRename}
+          onCommit={(typed) => onRename(typed, document.activeElement === name.current)}
           autoFocus={autoFocus}
           className={`${COMPACT_FIELD_CLASS} min-w-0 flex-1 font-medium`}
           style={INPUT_STYLE}
         />
         <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
           {count === 1 ? "1 cell" : `${count} cells`}
+          {tables > 0 && (tables === 1 ? " · 1 table" : ` · ${tables} tables`)}
         </span>
         {clashes && (
           <span role="img" aria-label={`Clashes on ${sheet}`} title="Clashes on this sheet" className="flex shrink-0" style={{ color: "var(--warning)" }}>
             <TriangleAlert size={12} aria-hidden="true" />
           </span>
         )}
-        {count === 0 && <IconButton icon={X} onClick={onRemove} aria-label={`Remove sheet ${sheet}`} title="Remove sheet" className="icon-danger-btn" />}
+        {count === 0 && tables === 0 && <IconButton icon={X} onClick={onRemove} aria-label={`Remove sheet ${sheet}`} title="Remove sheet" className="icon-danger-btn" />}
       </div>
       {!shut && (
         <div className="flex flex-col gap-1 pl-3">
@@ -726,6 +754,8 @@ function TrueFalseSetting({ name, text, onChange, className = "" }: { name: stri
           setCustom(value === CUSTOM)
           const chosen = TRUE_FALSE_PRESETS.find((held) => held.value === value)
           if (chosen !== undefined) onChange(chosen.text)
+          // Custom from TRUE / FALSE: the blank texts its fields show, written as they show.
+          else if (value === CUSTOM && text === null) onChange({ true: "", false: "" })
         }}
       />
       {shown === CUSTOM && (
