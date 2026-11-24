@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from haute._project_layout import FILES_FOLDER
+
 GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     ".env",
     ".haute/",
@@ -25,7 +27,7 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     "mlruns/",
     # The root's local files/ (its data/ and outputs/), anchored so the versioned
     # pipeline folder's files/ is never ignored with it.
-    "/files/",
+    f"/{FILES_FOLDER}/",
     "/.cache/",
     # Deploy build folders and bytecode, which can sit inside the pipeline folder.
     ".haute_build/",
