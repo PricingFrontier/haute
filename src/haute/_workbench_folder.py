@@ -32,7 +32,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -51,6 +50,7 @@ from haute._config_io import is_windows_reserved_filename
 from haute._file_lock import FileLock
 from haute._hashing import content_hash_bytes
 from haute._json_files import ANY, JsonPath, at, render_json_bytes
+from haute._temp_folder import haute_temp_root
 from haute._workbench_config import WorkbenchConfig
 
 if TYPE_CHECKING:
@@ -615,23 +615,23 @@ def read_params_unlocked(config: WorkbenchConfig) -> dict[str, bytes]:
     return found
 
 
-#: One lock per project in this process, so a thread that holds it re-enters it rather than
-#: waiting on a second handle to the same file.
-_FOLDER_LOCKS: dict[str, FileLock] = {}
+#: One lock per lock file in this process, so a thread that holds it re-enters it rather
+#: than waiting on a second handle to the same file.
+_FOLDER_LOCKS: dict[Path, FileLock] = {}
 _FOLDER_LOCKS_GUARD = threading.Lock()
 
 
 def form_folder_lock(project_root: Path) -> FileLock:
     """The form folder's lock: a lock of the project's own, held by every save while it
-    writes and by every read, in every process."""
+    writes and by every read, in every process. Haute's temporary folder is checked at
+    every call, a lock this process already made included."""
     identity = hashlib.sha256(os.path.normcase(str(project_root.resolve())).encode()).hexdigest()
+    path = safe_path(haute_temp_root(), f"form-locks/{identity}.lock")
     with _FOLDER_LOCKS_GUARD:
-        lock = _FOLDER_LOCKS.get(identity)
+        lock = _FOLDER_LOCKS.get(path)
         if lock is None:
-            lock = FileLock(
-                safe_path(Path(tempfile.gettempdir()), f"haute-form-locks/{identity}.lock")
-            )
-            _FOLDER_LOCKS[identity] = lock
+            lock = FileLock(path)
+            _FOLDER_LOCKS[path] = lock
         return lock
 
 

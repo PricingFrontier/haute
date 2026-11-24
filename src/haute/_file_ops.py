@@ -44,7 +44,6 @@ import re
 import shutil
 import stat
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -54,6 +53,7 @@ from pathlib import Path
 from types import TracebackType
 
 from haute._file_lock import FileLock, remove_unheld_lock_file
+from haute._temp_folder import haute_temp_root
 
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0)
@@ -293,7 +293,7 @@ _STAGING_NAME = re.compile(r"(?P<stem>.+)\.(?:(?P<owner>[0-9a-f]{8})[0-9a-f]{4}|
 #: it exits, so a stage whose owner's lock can be taken was left by a writer that is gone.
 def _writer_locks() -> Path:
     """The folder of the writers' locks, read at each use, as the temporary folder is."""
-    return Path(tempfile.gettempdir()) / "haute-writers"
+    return haute_temp_root() / "writers"
 
 
 _writer: tuple[int, str, FileLock] | None = None

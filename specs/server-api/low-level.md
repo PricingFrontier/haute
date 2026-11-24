@@ -1833,6 +1833,6 @@ each computed fresh from the authoritative artifacts under the shared save and
 project mutation locks. Any `.haute/recovery/` contents left by earlier
 releases are ignored without migration; git history is the durability and undo
 layer. The cross-process project mutation lock remains shared by every project
-writer, and its rendezvous uses a resolved-project-path hash in the user's
-temporary directory, so read-only previews and rejected mutations do not create
+writer, and its rendezvous is `project-locks/<hash>.lock`, a resolved-project-path hash, under
+Haute's temporary folder (`src/haute/_temp_folder.py::haute_temp_root`), so read-only previews and rejected mutations do not create
 project files.

@@ -8,6 +8,7 @@
 | `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation, which `user_code_line` reads back for error reporting. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
+| `src/haute/_temp_folder.py` | Haute's own folder under the system temporary folder: `haute_temp_root` (made, checked and answered at each use, the temporary folder read each time as `tempfile.gettempdir` reads it) and `TemporaryFolderError`. Every file Haute keeps in the temporary folder under a fixed name is under it; `tempfile.gettempdir` is called nowhere else in `src/haute`. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
 | `src/haute/_env.py` | Fail-fast positive numeric environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by request-timeout, concurrency, source-cache limits, optimiser chunk/partition, solver-timeout, training-history, assistant-loop, execution-admission, and preview/trace cache-budget accessors. Callers choose lazy call-time or deliberate process-wide import-time resolution. Component-owned parsers remain only where positive-numeric semantics do not apply. |
 
@@ -47,15 +48,20 @@
   `(module, qualname)` pairs for scaffolding *functions* (NumPy 2 `_core`
   reconstruction helpers, `copyreg` helpers, `_codecs.encode`, pandas block/index
   reconstruction helpers, builtin container/scalar constructors). Returned verbatim
-  when matched; the pre-NumPy-2 `numpy.core` pickle layout is not retained.
+  when matched.
+- **`_NUMPY_1_SPELLINGS: dict[tuple[str, str], tuple[str, str]]`** — derived from the
+  two tiers, never listed by hand: for each entry whose module is `numpy._core.<rest>`,
+  its NumPy 1 spelling `("numpy.core.<rest>", qualname)` maps to the entry. A pickle
+  written under NumPy 1 (`numpy.core.multiarray._reconstruct` and `.scalar`,
+  `numpy.core.numeric._frombuffer`) is read through it.
 - **`_ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]]`** — exact
   `(module, qualname)` pairs for model/data *classes* (numpy `dtype`/`ndarray`,
   pandas `DataFrame`/`Series`/`Index`/`RangeIndex`/`BlockManager`/
   `SingleBlockManager`, polars `DataFrame`/`Series`, sklearn/catboost/InterpretML
   estimator classes, `joblib.numpy_pickle.NumpyArrayWrapper`). Resolved
   and then checked with `isinstance(obj, type)` before being trusted.
-- **`_RestrictedUnpickler(pickle.Unpickler)`** — overrides `find_class` to call
-  `_resolve_allowed_global`.
+- **`_RestrictedUnpickler(pickle.Unpickler)`** — constructed with the file it reads
+  (`source`); overrides `find_class` to call `_resolve_allowed_global` with it.
 - **`_validation_cache: LRUCache[str, bool]`** — bounded at
   `_VALIDATION_CACHE_MAX_SIZE = 1024`, keyed on the code string, backed by
   the shared `haute._lru_cache.LRUCache` primitive (also used by the caching
@@ -76,6 +82,13 @@
   path, `POST /api/session/bootstrap`, only to an explicit matching Origin; every
   other `/api/*` request requires the session cookie plus a trusted Origin
   or an already-valid credential for absent-Origin non-browser calls.
+- **`web_origin(value)`** (`_local_security.py`) — the `(scheme, host, effective port)`
+  an `http`/`https` origin names (through `_origin_authority`, so a path, a query,
+  credentials or an opaque `null` give `None`), the default port filled in; two
+  spellings of one origin compare equal. The hosted boundary compares request Origins
+  with the app's URL through it.
+- **`TemporaryFolderError(HauteError)`** (`_temp_folder.py`) — `haute_temp_root`'s
+  refusal of a folder that is not the user's own, naming it and what to do.
 - **`GITIGNORE_GUARD_ENTRIES: tuple[str, ...]`** (`_gitignore_guard.py`) — the
   ordered, fixed set of paths every project's `.gitignore` must contain:
   `.env`, `.haute/`, `impact_report.md`, `test_quotes_report.md`, `.haute_cache/`, `mlruns/`, `/data/`,
@@ -169,21 +182,29 @@ reaches node code exactly as the preamble made it.
    promotion; any other failure importing it propagates.
    `_RestrictedUnpickler.find_class(module, name)` calls
    `_resolve_allowed_global(super().find_class, module, name)`.
-4. `_resolve_allowed_global(resolver, module, name)`: if `(module, name)` is in
+4. `_resolve_allowed_global(resolver, module, name, *, source)`: a NumPy 1 spelling
+   in `_NUMPY_1_SPELLINGS` is replaced by its entry first, so it resolves at the
+   NumPy 2 path and never through NumPy's deprecated `numpy.core` stand-in. Then if
+   `(module, name)` is in
    `_ALLOWED_PICKLE_GLOBALS`, resolve it through `_resolve_installed` and return
    it as-is. Else if `(module, name)` is in `_ALLOWED_PICKLE_CLASSES`, resolve it
    the same way and return it only if `isinstance(obj, type)`; otherwise raise
-   `_blocked_pickle_error(...)` with an "expected an allowlisted class" reason.
-   Else raise `_blocked_pickle_error(..., "not in the allowlist")`.
+   `_blocked_pickle_error(source, ...)` saying that name is not a class in this
+   environment. Else raise `_blocked_pickle_error(source, ...)` saying Haute does not
+   load that name from a pickle or joblib file. Both say to write the file again from
+   an environment with current library versions, the second also to keep data as
+   Parquet.
    `_resolve_installed` calls `resolver(module, name)`; a `ModuleNotFoundError`
-   whose `.name` is the entry's own top-level package (LightGBM and XGBoost are
-   allowlisted but not installed everywhere) becomes
-   `_blocked_pickle_error(..., "allowlisted, but `<package>` is not installed in
-   this environment")`, and a `ModuleNotFoundError` deeper in the tree — a
-   broken install — propagates unchanged.
+   whose `.name` is the entry's own top-level package (an allowed package that is not
+   installed everywhere, such as CatBoost) becomes `_blocked_pickle_error(source, ...)`
+   saying `` `<package>` is not installed in this environment `` and to install it, and
+   a `ModuleNotFoundError` deeper in the tree — a broken install — propagates unchanged.
+   `_blocked_pickle_error(source, detail)` is `Cannot load <source>: <detail>`; *source*
+   is the file's resolved path.
 5. `restricted_joblib_load` (which `safe_joblib_load` calls once the path is
    contained) defines a private `NumpyUnpickler` subclass whose
-   `find_class` routes through `_resolve_allowed_global`, then uses joblib's
+   `find_class` routes through `_resolve_allowed_global` with the file's resolved path
+   as *source*, then uses joblib's
    file-object validation/decompression context and instantiates that subclass
    directly, driving its `load()` inside the same
    `_estimator_version_mismatch_is_an_error()` promotion as `safe_unpickle`. It
@@ -297,17 +318,25 @@ paths.
    Host not present in the validated loopback `allowed_hosts` configuration does
    the same. Entries without a port allow any port on that exact host; entries
    with a port require it exactly. There is no wildcard/remote allow mode.
-2. `LocalSessionMiddleware.dispatch`: short-circuits if auth is explicitly disabled
-   or the path is not `/api/*`. `POST /api/session/bootstrap` and `OPTIONS` require
+2. `LocalSessionMiddleware.dispatch`: passes a path that is not `/api/*`. With auth
+   explicitly disabled it refuses (403) only an `untrusted` Origin and passes the rest
+   without the cookie check. Otherwise `POST /api/session/bootstrap` and `OPTIONS` require
    `_origin_state(...) == "trusted"`; bootstrap then reaches the route that writes
    the token only as an HttpOnly, SameSite=Strict cookie. Other requests reject an
    untrusted Origin, then require `_request_token_matches` (constant-time match
    against the HttpOnly session cookie). A missing Origin is
    accepted only after that credential check succeeds.
 3. `websocket_rejection_reason(headers, scope_scheme=...)` runs before
-   `websocket.accept()`: auth-disabled short-circuit, explicit exact matching
-   Origin, then the session cookie. Browser WebSockets receive the HttpOnly cookie
-   automatically; URL query parameters are never read.
+   `websocket.accept()`: with auth disabled, a reason only for an `untrusted` Origin;
+   otherwise an explicit exact matching Origin, then the session cookie. Browser
+   WebSockets receive the HttpOnly cookie automatically; URL query parameters are never
+   read.
+4. Behind the hosted entry point the platform proxy boundary
+   (`src/haute/hosted.py::PlatformProxyBoundary`, [hosted-databricks-app](../hosted-databricks-app/low-level.md))
+   runs outside both: it refuses another site's state-changing request and sync-socket
+   handshake against the app's URL, and presents the app's own page's Origin as the
+   loopback origin of the Host it writes, so steps 2 and 3 see the loopback shape they
+   were written for.
 
 The underwriter app (`_workbench_app.create_app`) given a `local_principal` adds
 `LocalTrustedHostMiddleware(allowed_hosts=DEFAULT_TRUSTED_HOSTS)` after its sign-in
@@ -354,6 +383,34 @@ the app's own origin check refuses another site's writes. Its tests are in
    rechecks containment before replace. Resolved secrets and live provider/cache
    objects are excluded from the user namespace, persisted metadata, and surfaced
    errors.
+
+**Haute's temporary folder (`_temp_folder.haute_temp_root`)**
+1. The root is `Path(tempfile.gettempdir()) / name`, the temporary folder read at each
+   call (a test's redirect of it is followed), with *name* `haute-<os.getuid()>` on
+   POSIX and `haute` on Windows.
+2. On POSIX: `os.mkdir(root, 0o700)`, then `os.chmod(root, 0o700)` when this call made
+   it (a umask cannot leave it otherwise); an existing root is not an error. Then
+   `os.lstat(root)`, never following a link, must show a directory (`S_ISDIR`) owned by
+   `os.getuid()` whose mode grants nothing to group or others
+   (`st_mode & 0o077 == 0`), else `TemporaryFolderError`, naming the folder: a link or
+   file there ("remove it"), another user's folder ("it belongs to user <uid>; remove
+   it or set TMPDIR to a folder of your own"), or one open to others
+   ("run `chmod 700 <root>`"). Haute never repairs a folder it did not just make.
+3. On Windows the root is made with `mkdir(exist_ok=True)`; the user's temporary folder
+   and its access list are the user's own, so no owner or mode is checked.
+4. Callers join their own fixed names beneath the returned root and make them as they
+   did: `artifacts/v1/<family>` (training and optimiser artifact roots),
+   `project-locks/<hash>.lock`, `form-locks/<hash>.lock`, `output-locks/<hash>.lock`,
+   `writers/<owner>.lock` and `incidents/<id>.txt` (a command outside a project).
+   Anything beneath the root is reachable only by its owner, whatever its own mode.
+   Each use calls it again, so a root removed or replaced after a first use is checked
+   (or made private again) before the next: the form folder lock keeps one `FileLock`
+   per lock file in the process, but finds that file through `haute_temp_root` at every
+   call. A command's incident record treats a refused root, met choosing its folder
+   outside a project or taking the process's writer lock for its write, as it treats an
+   `OSError`: the record is printed with the reason.
+5. The server's lifespan calls it first, so a refused root stops startup, and `haute
+   serve` calls it before it starts the server, so the command ends with the message.
 
 **`.gitignore` guard writer (`ensure_gitignore_guards`)**
 1. If `project_dir/.gitignore` doesn't exist, write all `GITIGNORE_GUARD_ENTRIES`
@@ -413,11 +470,16 @@ the app's own origin check refuses another site's writes. Its tests are in
   `__cause__`). Propagates uncaught through `_exec_user_code` except for the
   syntax-error case, which is unwrapped back to a plain `SyntaxError` before
   re-raising.
-- `pickle.UnpicklingError` — raised by `_blocked_pickle_error` (a small factory
-  producing a uniform message naming the rejected symbol and the two allowlist
-  constants to extend) for every rejected pickle/joblib global. Not caught inside
+- `pickle.UnpicklingError` — raised by `_blocked_pickle_error` for every rejected
+  pickle/joblib global, its message `Cannot load <file>: ...` naming the file, the
+  rejected `module.qualname` and what the analyst can do (Control flow, Restricted
+  pickle/joblib load, step 4), never Haute's source files. Not caught inside
   this component; propagates to the caller (`_io.load_external_object` and its
   callers).
+- `TemporaryFolderError` (extends `HauteError`) — raised by `haute_temp_root` for a
+  root that is not a private folder of the user's own. Propagates: the server's
+  lifespan fails startup with it, a CLI command ends with its message, and a command's
+  incident record outside a project says it could not be written and why.
 - `PathOutsideProjectError` / `InvalidPathError` (`errors.py`) — raised by
   `contained_path` (and so `validate_project_path`); answered by
   the failure answers (`haute._failure_answers`) as 403 / 400 with the bare message. A caller with its
@@ -472,7 +534,11 @@ the app's own origin check refuses another site's writes. Its tests are in
   `TestBoundedValidationCache` pins the bounded cache. A "Gap analysis" section
   (`TestJoblibFindClassWeakerThanPickle`, `TestPickleAllowlistDotAnchoring`,
   `TestJoblibMonkeyPatchThreadSafety`) and the pickle classes pin the restricted
-  unpickler.
+  unpickler. `TestNumpy1Pickles` loads an array, a float scalar and a dtype pickled by
+  NumPy 1.26 (protocols 2 and 5, the bytes recorded in the test) through `safe_unpickle`
+  with NumPy's deprecation warning made an error, and refuses a `numpy.core` name whose
+  `numpy._core` form is not allowed; `TestBlockedPickleMessage` pins the refusal's words:
+  the file and the rejected name, the remedy, and no Haute source file or allowlist.
 - `tests/test_sandbox.py` — targets the *accept* arms of
   `_RestrictedUnpickler.find_class`/the restricted joblib subclass specifically (the exhaustive
   suite above concentrates on the *reject* arms): exact 2-tuple accepts for both
@@ -509,7 +575,25 @@ the app's own origin check refuses another site's writes. Its tests are in
   exact bootstrap Origin/Host matching, HttpOnly/no-store cookie creation,
   absent/mismatched/forwarded rejection, cookie-authenticated API/WebSocket
   success, absent-Origin WebSocket and query-token rejection, and a secret-corpus
-  assertion over the served SPA and rejection surfaces.
+  assertion over the served SPA and rejection surfaces. With the session gate
+  switched off, a foreign Origin is still refused on a `POST` and a WebSocket
+  handshake, while a loopback Origin and an absent one pass without a cookie, and
+  `web_origin` equates an origin with and without its default port and refuses an
+  opaque or pathed one.
+- `tests/test_hosted.py` holds the hosted editor's cross-site rule (Trust boundary,
+  Pages of other sites): its `TestCrossSiteRefusal` cases are in the
+  [hosted-databricks-app](../hosted-databricks-app/low-level.md) Testing section.
+- `tests/test_temp_folder.py` — on POSIX, the root and the folders and files its users
+  make beneath it (an artifact directory, each lock, an incident) are owned by the
+  user and the root is `0700`; a root that is another user's (`os.getuid` stood in), a
+  link, a file or open to others is refused naming the folder, and so stops the
+  server's startup and `haute serve`; a form lock taken before its root was removed
+  makes it private again, and one taken before its root was replaced by a folder open
+  to others is refused; an incident record says why it could not be written when the
+  root cannot be made outside a project and when the writer lock is refused inside
+  one; the Windows name and no ownership check there;
+  and the scan that fails a `tempfile.gettempdir` call in `src/haute` outside
+  `_temp_folder.py`.
 - `tests/test_path_resolution.py`, `tests/test_path_resolution_properties.py`,
   `tests/test_execute_lazy_paths.py`, and the nested-input regressions cover
   direct eager/lazy containment, HTTP source confinement across pipeline,

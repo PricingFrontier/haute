@@ -127,7 +127,8 @@ SameSite=Strict cookie plus `{ok:true}` under no-store headers. Other `/api/*` r
 that cookie; an absent Origin is allowed only with a valid existing cookie.
 `OPTIONS` still requires a trusted Origin but bypasses the token check. WebSocket
 handshakes always require an explicit matching Origin plus cookie credential and close
-with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only session auth.
+with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only the session cookie: an Origin that is sent must
+still be trusted.
 An inbound `x-request-id` is retained only when it is a 1–64 character ASCII token matching
 `[A-Za-z0-9][A-Za-z0-9._:-]*`; missing or invalid values are replaced with a generated ID.
 Rejected values are logged only by bounded reason and numeric length, never by their bytes.
