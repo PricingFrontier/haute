@@ -102,7 +102,9 @@ expected, on the validation rows, or on every out-of-fold row once every model d
   dispersion is set once per node, so the whiskers do not move with the chosen model. A level is
   marked only where the chosen model's expected is clearly outside the range.
 - A number factor is cut into bands once per node, of equal exposure, so every run is charted on the
-  same bands.
+  same bands. One with up to 20 values gets one bar per value. Bands are closed on the right, as in
+  Banding and t-boost. Today's code cuts on row count, per run; the fixes are in
+  `factor-axis-2026-11-23.md`, section 7.
 - **A factor the model left out charts too.** At training time each run also bins actual and its
   prediction by every column it did not use, on the same rows and bands as the other factor charts.
   It needs no kept predictions (Ralph's choice, 20 November). The chart says the factor is not in

@@ -75,6 +75,7 @@ from haute.schemas import (
     StagePathApplyRequest,
     StagePathInspectionPayload,
     StagePathReadRequest,
+    StageReadRequest,
     StageStatePayload,
     TrainEstimateRequest,
     TrainEstimateResponse,
@@ -124,10 +125,15 @@ def _stage_payload(value: dict[str, Any], body: TrainRequest) -> StageStatePaylo
 
 
 @router.post("/stages/read", response_model=StageStatePayload)
-def read_stages(body: TrainRequest) -> StageStatePayload:
+def read_stages(body: StageReadRequest) -> StageStatePayload:
     """Restore durable stage results and any live or interrupted job marker."""
     scope = _stage_scope(body)
-    value = scope.store.recover(scope.key, compact=body.diagnostics == "compact")
+    if body.diagnostics in ("current", "panels"):
+        value = scope.store.recover(
+            scope.key, current="full" if body.diagnostics == "current" else "panels"
+        )
+    else:
+        value = scope.store.recover(scope.key, compact=body.diagnostics == "compact")
     if value["current"] is not None:
         try:
             _stage_scope(body, validate=True)
@@ -140,7 +146,8 @@ def read_stages(body: TrainRequest) -> StageStatePayload:
 def remove_stages(body: TrainRequest) -> StageStatePayload:
     """Release a confirmed model removal's durable stage artifacts."""
     scope = _stage_scope(body)
-    scope.store.recover(scope.key)
+    # Recovered only to mark dead jobs interrupted: the state itself is discarded.
+    scope.store.recover(scope.key, compact=True)
     scope.store.remove(scope.key)
     return _stage_payload(scope.store.snapshot(scope.key), body)
 
@@ -151,7 +158,7 @@ def update_stage_checkpoint(body: StageCheckpointRequest) -> StageStatePayload:
     graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
     scope = StageJobScope.from_request(body.model_copy(update={"graph": graph}))
     config = _find_modelling_node(graph, body.node_id).data.config
-    scope.store.recover(scope.key)
+    scope.store.recover(scope.key, compact=True)
     value = scope.store.checkpoint(
         scope.key,
         action=body.action,

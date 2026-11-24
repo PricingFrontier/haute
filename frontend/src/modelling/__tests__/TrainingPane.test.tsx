@@ -45,20 +45,6 @@ it("keeps an unchanged point actionable until its phase is explicitly skipped", 
   expect(screen.queryByRole("button", { name: "Keep unchanged" })).not.toBeInTheDocument()
 })
 
-it("shows a changed stage's saved operation, with pruning's recorded path settings", () => {
-  const p = props()
-  const path = { steps: 16, main_effects: true, min_rows: 20 }
-  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition",
-    reference_fit: "development", configuration: {}, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
-    stages: { full: {}, pruned: { stage: "pruned", parent: "full", operation: { stage: "pruned", parent: "full",
-      settings: { fraction: .995, tolerance: .001, max_tables: 7 }, path } } },
-    pruning_path: null, path_unavailable_reason: null, recommendation: null } })
-  render(<TrainingPane {...p} currentResult={current} pending={["pruned"]} />)
-  fireEvent.click(screen.getByText("Saved settings"))
-  const saved = JSON.parse(screen.getByText(/max_tables/).textContent ?? "{}")
-  expect(saved).toEqual({ fraction: .995, tolerance: .001, max_tables: 7, path })
-})
-
 describe("Training pane", () => {
   it("keeps independent actions visible when cards are collapsed and checks their parent", () => {
     const p = props()
@@ -122,7 +108,9 @@ describe("Training pane", () => {
     render(<TrainingPane {...props()} pending={["pruned"]} />)
     expect(screen.getByRole("button", { name: "Build pruning" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Build banding" })).toBeDisabled()
-    expect(screen.getByText(/settings changed. Run that stage/)).toBeVisible()
+    // Why is the disabled button's tooltip, not text in the pane.
+    expect(screen.getByRole("button", { name: "Build banding" })).toHaveAttribute("title", "Build and apply Pruned first, or disable Banding in Parameters.")
+    expect(screen.getByRole("button", { name: "Build pruning" })).not.toHaveAttribute("title")
   })
 
 })
@@ -207,7 +195,7 @@ it("explains a required evaluation choice when moving from validation to develop
   render(<TrainingPane {...p} currentResult={makeTrainResult({ diagnostics_set: "validation" })}
     evaluationMode="Development" evaluationKey="no-validation" postfitBlocked />)
   expect(screen.getByText("Choose evaluation")).toBeVisible()
-  expect(screen.getByText(/To enable Train GBM/)).toBeVisible()
+  expect(screen.getByRole("button", { name: "Train GBM" })).toHaveAttribute("title", "Choose validation in Data Split, or tick Use development rows.")
   expect(screen.getByRole("button", { name: "Train GBM" })).toBeDisabled()
   fireEvent.click(screen.getByRole("checkbox", { name: "Use development rows for exploration" }))
   expect(screen.getByRole("button", { name: "Train GBM" })).toBeEnabled()
@@ -255,12 +243,17 @@ it("keeps rebuild actions available when another stage has a ready candidate", (
   expect(p.onRun.mock.calls.map(([stage]) => stage)).toEqual(["full", "pruned", "banded", "finalise"])
 })
 
-it("shows genuine training blockers below all stage controls", () => {
+it("shows titles and buttons only, a blocker as the disabled action's tooltip", () => {
   render(<TrainingPane {...props()} stages={[]} blocked blockingReasons={["Choose a target in Model setup."]} />)
-  const reasons = screen.getByTestId("training-blockers")
-  expect(reasons).toHaveTextContent("Choose a target in Model setup.")
-  expect(reasons).toHaveTextContent("Pruning: build and apply Full GBM first.")
-  expect(screen.getByRole("button", { name: "Finalise applied model" }).compareDocumentPosition(reasons) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(screen.queryByTestId("training-blockers")).not.toBeInTheDocument()
+  expect(screen.queryByText("Choose a target in Model setup.")).not.toBeInTheDocument()
+  for (const name of ["Train GBM", "Build pruning", "Finalise applied model"]) {
+    expect(screen.getByRole("button", { name })).toHaveAttribute("title", "Choose a target in Model setup.")
+  }
+  // No links to other panes.
+  for (const gone of ["Model setup", "Review split", "Inspect paths"]) {
+    expect(screen.queryByRole("button", { name: gone })).not.toBeInTheDocument()
+  }
 })
 
 it("does not let an invalid banding draft disable the GBM or pruning", () => {
@@ -272,5 +265,6 @@ it("does not let an invalid banding draft disable the GBM or pruning", () => {
   expect(screen.getByRole("button", { name: "Train GBM" })).toBeEnabled()
   expect(screen.getByRole("button", { name: "Build pruning" })).toBeEnabled()
   expect(screen.getByRole("button", { name: "Build banding" })).toBeDisabled()
-  expect(screen.getByTestId("training-blockers")).toHaveTextContent("Band tolerance")
+  expect(screen.getByRole("button", { name: "Build banding" })).toHaveAttribute("title", "Correct Band tolerance in Parameters.")
+  expect(screen.getByRole("button", { name: "Train GBM" })).not.toHaveAttribute("title")
 })

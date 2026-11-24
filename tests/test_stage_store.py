@@ -132,6 +132,50 @@ def test_compact_stage_read_preserves_decisions_without_loading_dense_results(
     assert not files(store, key, "objects") and not files(store, key, "revisions")
 
 
+@pytest.mark.parametrize("current", ["panels", "full"])
+def test_a_narrow_read_hydrates_only_the_current_record(tmp_path, monkeypatch, current):
+    store = StageStore(tmp_path)
+    key = store.key("pipeline.py", "node", "model")
+    tables = {"tables": [{"term": "x", "features": ["x"], "order": 1, "scores": [1.0], "axes": []}]}
+    tables["factored"] = []
+    response = {
+        "tboost_tables": tables,
+        "shap_curves": [{"feature": "x"}],
+        "pdp_data": [{"feature": "x"}],
+        "double_lift": [{"decile": 1}],
+        "staged": {"stages": {"full": {"tboost_tables": tables}}},
+    }
+    result = {"response": response, "graph_digest": "c" * 64}
+    full = publish(store, key, tmp_path, result=result)["current"]["revision"]
+    publish(store, key, tmp_path, job="prune", operation="pruned", parent=full, result=result)
+    table = store._objects(key).read_revision(full).result["response"]["tboost_tables"]
+    table_digest = store._objects(key).read_revision(full).objects[table["$object"]].sha256
+    read = objects_module.StageObjects.read_bytes
+
+    def refuse_tables(self, ref):
+        assert ref.sha256 != table_digest, "A panels read decoded the dense tables"
+        return read(self, ref)
+
+    with monkeypatch.context() as patch:
+        if current == "panels":
+            patch.setattr(objects_module.StageObjects, "read_bytes", refuse_tables)
+        state = store.recover(key, current=current)
+    read_current = state["current"]["result"]["response"]
+    if current == "full":
+        assert read_current == response
+    else:
+        # The compact view with the result panels' diagnostics, and no tables.
+        assert read_current["diagnostics_view"] == "panels"
+        assert read_current["tboost_tables"] is None
+        assert read_current["shap_curves"] == response["shap_curves"]
+        assert read_current["pdp_data"] == response["pdp_data"]
+        assert read_current["double_lift"] == response["double_lift"]
+    # Every other record stays compact, whichever way the current one is read.
+    preview = state["preview"]["result"]["response"]
+    assert preview["diagnostics_view"] == "compact"
+    assert preview["tboost_tables"] is None and preview["shap_curves"] == []
+
+
 def test_preview_apply_and_discard_survive_restart(tmp_path):
     store = StageStore(tmp_path)
     key = store.key("pipeline.py", "node", "model")

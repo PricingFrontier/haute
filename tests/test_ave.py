@@ -129,15 +129,106 @@ class TestAveConstantFeature:
 
 class TestAveFewRows:
     def test_auto_reduces_bins(self):
-        """With few rows, effective bins should be reduced."""
-        n = 6
+        """With few rows, a number with many values gets fewer bands: a third of its rows."""
+        n = 24
         df = pl.DataFrame({"x": list(range(n))})
         y_true = np.arange(n, dtype=float)
         y_pred = y_true * 1.1
 
-        result = compute_ave_per_feature(df, ["x"], [], y_true, y_pred, n_bins=10)
-        # With 6 rows, effective_bins = min(10, max(2, 6//3)) = min(10, 2) = 2
-        assert len(result[0]["bins"]) <= 3
+        (result,) = compute_ave_per_feature(df, ["x"], [], y_true, y_pred, n_bins=10)
+        assert result["grouping"] == "equal exposure"
+        assert [b["label"] for b in result["bins"]] == [
+            "0–2",
+            "3–5",
+            "6–8",
+            "9–11",
+            "12–14",
+            "15–17",
+            "18–20",
+            "21–23",
+        ]
+
+
+class TestAveGrouping:
+    """How the x-axis is grouped: by value, by equal exposure, and in each level's order."""
+
+    def test_a_number_with_few_values_charts_one_bin_per_value(self):
+        # NCD years with 45% of rows at 9: quantile cuts would merge 8 and 9 into one bin.
+        ncd = [0, 1, 2, 3, 4, 5, 6, 7, 8] * 5 + [9] * 37
+        df = pl.DataFrame({"ncd": ncd, "flag": [0, 1] * 41})
+        y = np.ones(len(ncd))
+        ncd_result, flag_result = compute_ave_per_feature(df, ["ncd", "flag"], [], y, y, n_bins=10)
+        assert ncd_result["grouping"] == flag_result["grouping"] == "each value"
+        assert [b["label"] for b in ncd_result["bins"]] == [str(v) for v in range(10)]
+        assert [b["label"] for b in flag_result["bins"]] == ["0", "1"]
+        assert ncd_result["bins"][-1]["exposure"] == 37
+
+    def test_bands_hold_equal_exposure_are_closed_on_the_right_and_never_split_a_tie(self):
+        # 30 values; value 0 carries half the exposure, so the first band is that value
+        # alone, and the other half splits into three bands of about equal exposure.
+        values = np.arange(30.0)
+        exposure = np.where(values == 0, 29.0, 1.0)
+        df = pl.DataFrame({"x": values})
+        y = np.ones(30)
+        (result,) = compute_ave_per_feature(df, ["x"], [], y, y, exposure=exposure, n_bins=4)
+        assert result["grouping"] == "equal exposure"
+        bins = {b["label"]: b["exposure"] for b in result["bins"]}
+        # Of 58, the shares 14.5 and 29 are both reached at 0, so they collapse into one
+        # band; 43.5 is reached at 15 (29 + 15), which closes the next band.
+        assert bins == {"0": 29.0, "1–15": 15.0, "16–29": 14.0}
+
+    def test_large_numbers_are_labelled_without_an_exponent(self):
+        df = pl.DataFrame({"value": np.linspace(100_000, 130_000, 60)})
+        y = np.ones(60)
+        (result,) = compute_ave_per_feature(df, ["value"], [], y, y, n_bins=2)
+        assert [b["label"] for b in result["bins"]] == ["100000–114700", "115300–130000"]
+
+    def test_categories_keep_an_enum_order_a_numbered_order_or_a_natural_order(self):
+        enum = pl.Enum(["low", "mid", "high"])
+        df = pl.DataFrame(
+            {
+                "band": pl.Series(["high", "low", "mid", "high"], dtype=enum),
+                "group": ["10", "2", "1", "2"],
+                "brand": ["B10", "b2", "B1", "A"],
+            }
+        )
+        y = np.ones(4)
+        band, group, brand = compute_ave_per_feature(
+            df, ["band", "group", "brand"], ["band", "group", "brand"], y, y
+        )
+        assert (band["grouping"], [b["label"] for b in band["bins"]]) == (
+            "in order",
+            ["low", "mid", "high"],
+        )
+        assert (group["grouping"], [b["label"] for b in group["bins"]]) == (
+            "in order",
+            ["1", "2", "10"],
+        )
+        assert (brand["grouping"], [b["label"] for b in brand["bins"]]) == (
+            "A–Z",
+            ["A", "B1", "b2", "B10"],
+        )
+
+    def test_many_numbered_levels_are_joined_into_bands(self):
+        df = pl.DataFrame({"vehicle_group": [str(v) for v in range(1, 101)]})
+        y = np.ones(100)
+        (result,) = compute_ave_per_feature(
+            df, ["vehicle_group"], ["vehicle_group"], y, y, n_bins=4
+        )
+        assert result["grouping"] == "equal exposure"
+        assert [b["label"] for b in result["bins"]] == ["1–25", "26–50", "51–75", "76–100"]
+
+    def test_missing_is_last_never_ranked_and_never_meets_a_level_of_that_name(self):
+        df = pl.DataFrame({"c": [None, None, None, "Missing", "__MISSING__", "a", "b", "c"]})
+        y = np.ones(8)
+        (result,) = compute_ave_per_feature(df, ["c"], ["c"], y, y, max_categories=2)
+        assert result["grouping"] == "by exposure"
+        assert [(b["label"], b["exposure"]) for b in result["bins"]] == [
+            ("Missing", 1.0),
+            ("__MISSING__", 1.0),
+            ("Other (3 levels)", 3.0),
+            ("Missing", 3.0),
+        ]
 
 
 class TestAveManyCategories:
@@ -158,8 +249,9 @@ class TestAveManyCategories:
             max_categories=15,
         )
         labels = [b["label"] for b in result[0]["bins"]]
-        assert len(labels) <= 16  # 15 + "Other"
-        assert "Other" in labels
+        assert len(labels) == 16  # 15 + "Other"
+        assert labels[-1] == "Other (15 levels)"
+        assert result[0]["grouping"] == "by exposure"
 
 
 class TestAveMaxFeatures:
@@ -301,15 +393,15 @@ def _bin_values(feature):
 
 
 def _bin(exposure, avg_actual, avg_predicted):
-    """An expected bin, to the six decimal places the averages are rounded to."""
-    return pytest.approx((exposure, avg_actual, avg_predicted), abs=1e-6)
+    """An expected bin, to the six significant figures a bin is rounded to."""
+    return pytest.approx((exposure, avg_actual, avg_predicted), rel=1e-5, abs=1e-12)
 
 
 class TestAveWithExposure:
     """With an exposure, a bin's averages are per unit of it and its strip is the mass."""
 
     # Six rows of claim counts and expected claims (the rate times the exposure). ``x``
-    # bins as rows 0-2 and 3-5; ``c`` groups them as a = 0, 1, 3 and b = 2, 4, 5.
+    # has a bin per row (it has six values); ``c`` groups them as a = 0, 1, 3 and b = 2, 4, 5.
     FRAME = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "c": ["a", "a", "b", "a", "b", "b"]})
     CLAIMS = np.array([1.0, 1.0, 2.0, 0.0, 1.0, 0.0])
     EXPECTED = np.array([0.2, 0.1, 0.5, 0.1, 0.05, 0.3])
@@ -325,11 +417,14 @@ class TestAveWithExposure:
             exposure=self.EXPOSURE,
             n_bins=2,
         )
-        # Rows 0-2 hold 4 claims and 0.8 expected over 1.75 of exposure; a per-row
-        # mean would report 4/3 and 3 rows.
+        # Each row's claims and expected claims over its own exposure.
         assert _bin_values(numeric) == {
-            "1–3": _bin(1.75, 4 / 1.75, 0.8 / 1.75),
-            "4–6": _bin(1.25, 0.8, 0.36),
+            "1": _bin(0.5, 2.0, 0.4),
+            "2": _bin(0.25, 4.0, 0.4),
+            "3": _bin(1.0, 2.0, 0.5),
+            "4": _bin(0.5, 0.0, 0.2),
+            "5": _bin(0.25, 4.0, 0.2),
+            "6": _bin(0.5, 0.0, 0.6),
         }
         assert _bin_values(categorical) == {
             "b": _bin(1.75, 3 / 1.75, 0.85 / 1.75),
@@ -351,8 +446,12 @@ class TestAveWithExposure:
         # Mass is weight times exposure: 0.5, 0.5, 3, 2, 0.5, 1. Weighted claims are
         # 1, 2, 6, 0, 2, 0 and weighted expected claims 0.2, 0.2, 1.5, 0.4, 0.1, 0.6.
         assert _bin_values(numeric) == {
-            "1–3": _bin(4.0, 2.25, 0.475),
-            "4–6": _bin(3.5, 2 / 3.5, 1.1 / 3.5),
+            "1": _bin(0.5, 2.0, 0.4),
+            "2": _bin(0.5, 4.0, 0.4),
+            "3": _bin(3.0, 2.0, 0.5),
+            "4": _bin(2.0, 0.0, 0.2),
+            "5": _bin(0.5, 4.0, 0.2),
+            "6": _bin(1.0, 0.0, 0.6),
         }
         assert _bin_values(categorical) == {
             "b": _bin(4.5, 8 / 4.5, 2.2 / 4.5),
@@ -360,6 +459,7 @@ class TestAveWithExposure:
         }
 
     def test_the_missing_bin_and_other_lump_are_rates_and_levels_rank_by_mass(self):
+        """Levels rank by mass; Missing is not ranked and comes last."""
         frame = pl.DataFrame(
             {
                 "x": [1.0, 2.0, 3.0, 4.0, None, None, 5.0],
@@ -380,14 +480,15 @@ class TestAveWithExposure:
         # The two rows missing ``x`` hold 3 weighted claims and 0.9 weighted expected
         # claims over a mass of 0.75.
         assert _bin_values(numeric)["Missing"] == _bin(0.75, 4.0, 1.2)
-        # By mass the levels rank big 4, Missing 2, many 1, few 0.75. The two kept would
-        # be few and Missing by weight, big and many by exposure, many and few by rows.
+        # By mass the levels rank big 4, many 1, few 0.75. The two kept would be few and
+        # many by weight, big and many by exposure, many and few by rows.
         values = _bin_values(categorical)
-        assert list(values) == ["big", "Missing", "Other"]
+        assert list(values) == ["big", "many", "Other (1 level)", "Missing"]
         assert values == {
             "big": _bin(4.0, 0.5, 0.375),
+            "many": _bin(1.0, 1.25, 0.225),
+            "Other (1 level)": _bin(0.75, 4.0, 1.2),
             "Missing": _bin(2.0, 3.0, 1.0),
-            "Other": _bin(1.75, 4.25 / 1.75, 1.125 / 1.75),
         }
 
     def test_a_row_dropped_as_non_finite_takes_its_exposure_with_it(self):
@@ -435,27 +536,34 @@ def test_categorical_ave_matches_manual_weighted_groups_with_missing_and_other(c
         exposure=exposure,
         max_categories=3,
     )
-    groups = []
+    groups = {}
     for level in levels:
         mask = np.array([value == level for value in values])
-        groups.append(
-            (
-                "__MISSING__" if level is None else level,
-                float((weight[mask] * exposure[mask]).sum()),
-                float((weight[mask] * actual[mask]).sum()),
-                float((weight[mask] * predicted[mask]).sum()),
-            )
+        groups[level] = (
+            float((weight[mask] * exposure[mask]).sum()),
+            float((weight[mask] * actual[mask]).sum()),
+            float((weight[mask] * predicted[mask]).sum()),
         )
-    groups.sort(key=lambda row: (-row[1], row[0]))
-    kept = groups[:3] + [("Other", *[sum(row[i] for row in groups[3:]) for i in (1, 2, 3)])]
+    missing = groups.pop(None)
+    ranked = sorted(groups.items(), key=lambda item: (-item[1][0], item[0]))
+    rest = [sums for _, sums in ranked[3:]]
+    kept = [
+        *ranked[:3],
+        (f"Other ({len(rest)} levels)", tuple(sum(s[i] for s in rest) for i in range(3))),
+        ("Missing", missing),
+    ]
+
+    def significant(value):
+        return float(f"{value:.6g}")
+
     expected = [
         dict(
-            label="Missing" if label == "__MISSING__" else label,
-            exposure=round(mass, 4),
-            avg_actual=round(a / mass, 6),
-            avg_predicted=round(p / mass, 6),
+            label=label,
+            exposure=significant(mass),
+            avg_actual=significant(a / mass),
+            avg_predicted=significant(p / mass),
         )
-        for label, mass, a, p in kept
+        for label, (mass, a, p) in kept
     ]
     assert result[0]["bins"] == expected
 
@@ -479,5 +587,10 @@ def test_categorical_ave_keeps_mixed_length_labels_compact():
     assert peak < 8 * 1024**2
     assert result[0]["bins"] == [
         dict(label=label, exposure=mass, avg_actual=1.0, avg_predicted=1.5)
-        for label, mass in [("a0000", 1.0), ("a0001", 1.0), ("a0002", 1.0), ("Other", 1998.0)]
+        for label, mass in [
+            ("a0000", 1.0),
+            ("a0001", 1.0),
+            ("a0002", 1.0),
+            ("Other (1998 levels)", 1998.0),
+        ]
     ]

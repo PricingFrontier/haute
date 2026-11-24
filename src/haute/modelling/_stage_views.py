@@ -51,13 +51,23 @@ def _compact_tables(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+#: The result panels' diagnostics a compact response blanks (Explain and Fit read them).
+RESULT_PANEL_FIELDS = (
+    "shap_summary",
+    "shap_beeswarm",
+    "shap_curves",
+    "pdp_data",
+    "actual_vs_predicted",
+)
+
+
 def compact_response(value: Mapping[str, Any]) -> dict[str, Any]:
     result = _compact_tables(value)
     result["diagnostics_view"] = "compact"
     if len(result.get("loss_history", [])) < len(value.get("loss_history", [])):
         result["loss_history_truncated"] = True
     # These diagnostics belong to the full result panels, not path decisions.
-    for name in ("shap_summary", "shap_beeswarm", "shap_curves", "pdp_data", "actual_vs_predicted"):
+    for name in RESULT_PANEL_FIELDS:
         if name in result:
             result[name] = []
     if "shap_link" in result:

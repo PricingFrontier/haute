@@ -26,7 +26,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from haute._file_lock import FileLock, file_lock_for
 from haute._file_ops import atomic_path
@@ -47,7 +47,7 @@ from haute.modelling._stage_objects import (
     object_kind,
     strict_json_loads,
 )
-from haute.modelling._stage_views import compact_result
+from haute.modelling._stage_views import RESULT_PANEL_FIELDS, compact_result
 
 logger = get_logger(component="stage_store")
 
@@ -59,6 +59,8 @@ _MANIFEST_LIMIT = 32 * 1024 * 1024
 _OPERATIONS = {"full", "pruned", "banded", "smoothed", "finalise"}
 _POINTER = {"schema_version", "current", "preview", "final", "job", "checkpoints", "next_preview"}
 # Pointer-record fields the public stage state never shows.
+#: How a narrow read hydrates the current record: in full, or compact with its result panels.
+CurrentView = Literal["full", "panels"]
 _PRIVATE = ("result_job_id", "view")
 _RECORD = {
     "revision",
@@ -258,6 +260,18 @@ class StageStore:
             record["revision"], sha256=record["sha256"], size=record["size"]
         )
 
+    def _load_panels(self, key: str, record: Mapping[str, Any]) -> dict[str, Any]:
+        """A record's compact view with its result panels' diagnostics, which the revision
+        manifest holds inline: no table or history object is read."""
+        view = self._load_result(key, record, compact=True)
+        response = self._manifest(self._objects(key), record).result.get("response")
+        if not isinstance(response, Mapping):
+            raise HauteValidationError("Stage revision has no valid result")
+        panels = {name: response[name] for name in RESULT_PANEL_FIELDS if name in response}
+        if "shap_link" in response:
+            panels["shap_link"] = response["shap_link"]
+        return {**view, "response": {**view["response"], **panels, "diagnostics_view": "panels"}}
+
     def _load_result(
         self, key: str, record: Mapping[str, Any], *, compact: bool = False
     ) -> dict[str, Any]:
@@ -319,10 +333,12 @@ class StageStore:
         *,
         compact: bool = False,
         known: Mapping[str, dict[str, Any]] | None = None,
+        current: CurrentView | None = None,
     ) -> dict[str, Any]:
         """The public stage state of *value*; call it with *value*'s revisions pinned.
 
-        *known* maps a revision to its store result already in memory.
+        *known* maps a revision to its store result already in memory. *current* reads the
+        current record alone in full or with its result panels; the others follow *compact*.
         """
         hydrated = self._copy_manifest(value)
         # Storage versioning is private; the public stage-state contract is unchanged.
@@ -333,9 +349,16 @@ class StageStore:
         }
         for record in self._records(hydrated):
             revision = record["revision"]
-            if revision not in results:
-                results[revision] = self._load_result(key, record, compact=compact)
-            record["result"] = results[revision]
+            if current is not None and record is hydrated["current"]:
+                record["result"] = (
+                    self._load_panels(key, record)
+                    if current == "panels"
+                    else self._load_result(key, record)
+                )
+            else:
+                if revision not in results:
+                    results[revision] = self._load_result(key, record, compact=compact)
+                record["result"] = results[revision]
             for private in _PRIVATE:
                 record.pop(private)
         return hydrated
@@ -381,7 +404,14 @@ class StageStore:
                 pins.enter_context(self._pinned(key, value))
             return self._hydrate(key, value, compact=compact)
 
-    def recover(self, key: str, *, compact: bool = False) -> dict[str, Any]:
+    def recover(
+        self, key: str, *, compact: bool = False, current: CurrentView | None = None
+    ) -> dict[str, Any]:
+        """The stage state, marking a dead process's job or queued preview interrupted.
+
+        With *current*, only the current record is read in full or with its result panels;
+        every other record is compact.
+        """
         with ExitStack() as pins:
             with self._lock(key):
                 value = self._read(key)
@@ -416,7 +446,9 @@ class StageStore:
                 if changed:
                     self._write(key, value)
                 pins.enter_context(self._pinned(key, value))
-            return self._hydrate(key, value, compact=compact)
+            return self._hydrate(
+                key, value, compact=compact or current is not None, current=current
+            )
 
     @contextmanager
     def lease(self, key: str, revision: str) -> Iterator[StoredRevision]:

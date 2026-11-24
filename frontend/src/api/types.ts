@@ -383,9 +383,14 @@ export interface TrainAveBin {
   avg_predicted: number
 }
 
+/** How a run grouped a factor's x-axis, as `compute_ave_per_feature` reports it. */
+export type AveGrouping = "each value" | "equal exposure" | "in order" | "A–Z" | "by exposure"
+
 export interface TrainAvePerFeatureRow {
   feature: string
   type: string
+  /** How the x-axis was grouped; absent on runs saved before it was reported. */
+  grouping?: AveGrouping
   bins: TrainAveBin[]
 }
 

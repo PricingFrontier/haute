@@ -320,9 +320,13 @@ real colours. So colour is never the only cue. Every line has its shape on its m
 - **Rows:** validation by default, or every out-of-fold row once every model drawn has them.
   Training rows, with the in-sample mark. The rows the `vs` run never saw. Never test rows.
 - **More:** the scale (rate, relativity, actual over expected, against the `vs` run). A split by a
-  second factor or by period, as small charts on one shared axis. A grid for a pair of factors. The
-  order of levels: natural, by exposure or by actual.
-- The axis moves only with the factor or the scale, never with the rows or the models.
+  second factor or by period, as small charts on one shared axis. A grid for a pair of factors.
+- **Grouping of the x-axis** (proposals 62 to 76, detail in `factor-axis-2026-11-23.md`): one
+  grouping per factor per node, display only. The caption names it and is its control:
+  `20 groups · equal exposure  −  +  ▾`. The popover holds counts, Each value, the order of levels
+  (natural, by exposure, by actual over expected), Custom cuts… and Reset.
+- The axis moves only with the factor, the scale or the grouping you set, never with the rows or
+  the models.
 - Missing values, and levels not seen in training, are drawn as their own levels at the end. A
   factor with thousands of levels shows its top levels by exposure, with a search.
 

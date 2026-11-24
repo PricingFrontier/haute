@@ -1976,6 +1976,7 @@ function FlowEditor() {
             <ModellingToolbar
               onSave={requestSave}
               onCommit={requestCommit}
+              wsStatus={wsStatus}
               editingDisabled={editingReadOnly}
             />
           </Suspense>

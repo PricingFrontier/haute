@@ -21,6 +21,7 @@ import {
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
   ResponsiveChart,
 } from "../panels/modelling/ChartScaffold"
+import { aveGroupingCaption } from "../utils/aveGrouping"
 import { chartAxisLabel, chartDomain, chartLabelIndices, chartTicks, formatChartNumber } from "../utils/chartHelpers"
 
 const STAGE_MARKERS: Record<ModelStage, ChartLegendMarker> = { full: "dot", pruned: "ring", banded: "cross", smoothed: "diamond" }
@@ -71,7 +72,7 @@ export function ModelsAveChart({ feature, series }: { feature: string; series: r
       <div className="validation-chart-title">
         <div>
           <h4 className="validation-feature-heading">{feature}</h4>
-          <p className="validation-chart-description">{reference.data.type} · actual vs expected</p>
+          <p className="validation-chart-description">{aveGroupingCaption(reference.data)} · actual vs expected</p>
         </div>
         <ChartLegend
           items={[

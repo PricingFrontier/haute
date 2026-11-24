@@ -1,8 +1,8 @@
 /**
  * The toolbar while the Modelling view shows (specs/frontend-modelling-optimiser-ui): the
- * brand, Model Setup over Training Split and the project's controls, with no training,
- * undo, redo, source, pipeline
- * or canvas action.
+ * brand, Menu over Pipeline, Model Setup over Data Split, Features over Parameters, Training, and the
+ * project's controls, with no training,
+ * undo, redo, source or canvas action.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -14,7 +14,7 @@ vi.mock("../../components/BranchIndicator", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div data-testid="branch-indicator">{children}</div>,
 }))
 
-const handlers = { onSave: vi.fn(), onCommit: vi.fn() }
+const handlers = { onSave: vi.fn(), onCommit: vi.fn(), wsStatus: "connected" as const }
 
 const renderToolbar = (overrides: Partial<Parameters<typeof ModellingToolbar>[0]> = {}) =>
   render(<ModellingToolbar {...handlers} {...overrides} />)
@@ -33,7 +33,7 @@ describe("ModellingToolbar", () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
-    useModellingViewStore.setState({ modelId: null, panel: "model", trainAction: null })
+    useModellingViewStore.setState({ modelId: null, panel: "features", trainAction: null })
     useUIStore.setState({ gitOpen: false, assistantOpen: false, filesPlace: null })
   })
 
@@ -42,7 +42,7 @@ describe("ModellingToolbar", () => {
     const toolbar = screen.getByRole("toolbar", { name: "Modelling toolbar" })
 
     expect(within(toolbar).getByTestId("toolbar-brand")).toBeInTheDocument()
-    for (const gone of ["toolbar-undo", "toolbar-redo", "source-selector", "toolbar-pipeline-settings", "toolbar-zoom-in", "toolbar-layout"]) {
+    for (const gone of ["toolbar-undo", "toolbar-redo", "source-selector", "toolbar-zoom-in", "toolbar-layout"]) {
       expect(within(toolbar).queryByTestId(gone)).toBeNull()
     }
     fireEvent.click(within(toolbar).getByRole("button", { name: /^save$/i }))
@@ -51,21 +51,40 @@ describe("ModellingToolbar", () => {
     expect(handlers.onCommit).toHaveBeenCalledTimes(1)
   })
 
-  it("stacks setup above split and leaves training actions in the Training pane", () => {
+  it("stacks setup above split, features above parameters, and leaves training actions in the Training pane", () => {
     renderToolbar()
     const setup = screen.getByRole("group", { name: "Setup" })
-    expect(within(setup).getAllByRole("button").map((button) => button.textContent)).toEqual(["Model Setup", "Training Split"])
+    expect(within(setup).getAllByRole("button").map((button) => button.textContent)).toEqual(["Model Setup", "Data Split"])
     expect(setup).toHaveClass("toolbar-column")
-    expect(screen.getByRole("button", { name: "Model Setup" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Training Split" })).toBeDisabled()
+    const model = screen.getByRole("group", { name: "Model" })
+    expect(within(model).getAllByRole("button").map((button) => button.textContent)).toEqual(["Features", "Parameters"])
+    for (const name of ["Model Setup", "Data Split", "Features", "Parameters", "Training"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled()
+    }
     expect(screen.queryByRole("button", { name: "Train" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
   })
 
-  it("returns to Main Menu from the toolbar even while read-only", () => {
+  it("puts the pipeline toolbar's Pipeline button under Menu, Offline while the server is away", () => {
+    const { rerender } = renderToolbar()
+    const mainMenu = screen.getByRole("button", { name: "Menu" })
+    const pipeline = screen.getByTestId("toolbar-pipeline-settings")
+    expect(mainMenu.parentElement).toContainElement(pipeline)
+    // Straight after the brand, as the pipeline toolbar's Source over Pipeline column is.
+    const toolbar = screen.getByRole("toolbar", { name: "Modelling toolbar" })
+    expect(mainMenu.parentElement?.parentElement).toBe(toolbar)
+    expect(mainMenu.parentElement?.previousElementSibling).toBe(within(toolbar).getByTestId("toolbar-brand"))
+    expect(mainMenu.compareDocumentPosition(pipeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(pipeline).toHaveTextContent("Pipeline")
+    expect(pipeline).toHaveAttribute("aria-haspopup", "dialog")
+    rerender(<ModellingToolbar {...handlers} wsStatus="disconnected" />)
+    expect(screen.getByTestId("toolbar-pipeline-settings")).toHaveTextContent("Offline")
+  })
+
+  it("returns to Menu from the toolbar even while read-only", () => {
     useModellingViewStore.setState({ modelId: "frequency", chosenModel: "m1", factor: "age" })
     renderToolbar({ editingDisabled: true })
-    const mainMenu = screen.getByRole("button", { name: "Main Menu" })
+    const mainMenu = screen.getByRole("button", { name: "Menu" })
     expect(mainMenu).toBeEnabled()
     fireEvent.click(mainMenu)
     expect(useModellingViewStore.getState().modelId).toBeNull()
@@ -73,7 +92,7 @@ describe("ModellingToolbar", () => {
     expect(mainMenu).toBeDisabled()
   })
 
-  it("opens Model Setup and Training Split in the right-hand column, one at a time, a toolbar panel giving way", () => {
+  it("picks the right-hand column's panel, one at a time, a toolbar panel giving way", () => {
     useModellingViewStore.setState({ modelId: "frequency" })
     useUIStore.setState({ gitOpen: true })
     renderToolbar()
@@ -83,11 +102,26 @@ describe("ModellingToolbar", () => {
     expect(useUIStore.getState().gitOpen).toBe(false)
     expect(screen.getByRole("button", { name: "Model Setup" })).toHaveAttribute("aria-pressed", "true")
 
-    fireEvent.click(screen.getByRole("button", { name: "Training Split" }))
+    fireEvent.click(screen.getByRole("button", { name: "Data Split" }))
     expect(useModellingViewStore.getState().panel).toBe("split")
-    // Asking again goes back to the chosen model's settings.
-    fireEvent.click(screen.getByRole("button", { name: "Training Split" }))
-    expect(useModellingViewStore.getState().panel).toBe("model")
+    // Asking again closes it, as the pipeline's panel buttons do, and once more opens it.
+    fireEvent.click(screen.getByRole("button", { name: "Data Split" }))
+    expect(useModellingViewStore.getState().panel).toBeNull()
+    expect(screen.getByRole("button", { name: "Data Split" })).toHaveAttribute("aria-pressed", "false")
+    fireEvent.click(screen.getByRole("button", { name: "Data Split" }))
+    expect(useModellingViewStore.getState().panel).toBe("split")
+    // Under the Assistant it is not showing, so asking brings it back rather than closing it.
+    act(() => useUIStore.setState({ assistantOpen: true }))
+    expect(screen.getByRole("button", { name: "Data Split" })).toHaveAttribute("aria-pressed", "false")
+    fireEvent.click(screen.getByRole("button", { name: "Data Split" }))
+    expect(useModellingViewStore.getState().panel).toBe("split")
+    expect(useUIStore.getState().assistantOpen).toBe(false)
+    for (const [name, panel] of [["Features", "features"], ["Parameters", "params"], ["Training", "train"]] as const) {
+      fireEvent.click(screen.getByRole("button", { name }))
+      expect(useModellingViewStore.getState().panel).toBe(panel)
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true")
+    }
+    expect(screen.getByRole("button", { name: "Model Setup" })).toHaveAttribute("aria-pressed", "false")
   })
 
   it("keeps training controls out of the toolbar while a stage runs", () => {

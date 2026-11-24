@@ -1,4 +1,3 @@
-import { selectedFeatureColumns } from "./modelling/featureSelection"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
@@ -22,13 +21,13 @@ import useDocumentStatusStore, {
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ModellingPane } from "../stores/useUIStore"
-import useModellingViewStore, { openModelInModellingView, type TrainAction } from "../stores/useModellingViewStore"
+import { openModelInModellingView, type TrainAction } from "../stores/useModellingViewStore"
 import { applyModelUpdate, hasModels, interactiveModels, modelResultKey } from "../modelling/interactiveModels"
 import { ModelCheckpoints } from "../modelling/ModelCheckpoints"
 import { TrainingPane } from "../modelling/TrainingPane"
 import { appliedPath, EMPTY_RECIPE, stageConfiguration, stageMatchesDraft, STAGES, type ModelStage } from "../modelling/stageSettings"
-import { availablePaths, selectedCandidate, selectedPathPoint } from "../modelling/pathSelection"
-import { useStagedTraining, useAppliedStageRecipe, useStagedViews } from "../modelling/useStagedTraining"
+import { selectedCandidate, selectedPathPoint } from "../modelling/pathSelection"
+import { useStagedTraining, useAppliedStageRecipe } from "../modelling/useStagedTraining"
 import { hashConfig } from "../utils/configHash"
 import { configField } from "../utils/configField"
 import {
@@ -1017,35 +1016,12 @@ function ModellingEditor({
             <TrainingPane key={restoreVersion} view={stagedPane} settings={stagedDraft.stages} gbm={paneBody}
               currentResult={stageBuild.state?.current?.result.response}
               previewResult={selectedCandidate(stageBuild)}
-              finalResult={stageBuild.state?.final?.result.response}
               previewStage={selectedPathPoint(stageBuild)?.available.path.stage ?? stageBuild.state?.preview?.result.response.staged?.selected_stage}
               candidatePath={selectedPathPoint(stageBuild)?.available.path}
               candidatePoint={selectedPathPoint(stageBuild)?.pointId}
               inspectionPending={stageBuild.inspection?.loading || Boolean(stageBuild.inspection?.error)}
-              primaryMetric={metrics[0]}
               evaluationMode={(evaluation.validation as { method?: string } | undefined)?.method === "cross_validation" ? "OOF validation" : (evaluation.validation as { method?: string } | undefined)?.method === "single" ? "Validation" : "Development"}
               evaluationKey={hashConfig({ evaluation, target, modelId })}
-              setupSummary={`${target || "Choose a target"} · ${selectedFeatureColumns(config).length} features`}
-              onSetup={canReviewPane("target") ? () => reviewPane("target") : undefined}
-              onSplit={canReviewPane("split") ? () => reviewPane("split") : undefined}
-              onInspect={(pane, stage) => {
-                if (stage) {
-                  useStagedViews.getState().update(stageBuild.key, { pathStage: stage })
-                  const path = availablePaths(stageBuild)[stage]
-                  if (path) void stageBuild.inspect(path, path.path.selected_point)
-                }
-                useModellingViewStore.getState().showPane(pane)
-              }}
-              onCompare={(stage, parent) => {
-                useStagedViews.getState().update(stageBuild.key, { comparison: { stage, parent } })
-                useModellingViewStore.getState().showPane("factor")
-              }}
-              onFactor={(factor) => {
-                const stage = stageBuild.state?.preview?.result.response.staged?.selected_stage
-                const parent = stage && stageBuild.state?.preview?.result.response.staged?.stages[stage]?.parent as ModelStage | undefined
-                if (stage && parent) useStagedViews.getState().update(stageBuild.key, { comparison: { stage, parent } })
-                useModellingViewStore.getState().selectFactor(factor)
-              }}
               checkpoints={stageBuild.state?.current && <ModelCheckpoints checkpoints={stageBuild.state.checkpoints}
                 disabled={active !== null || stageBuild.busy || submitting || cancelling || otherTraining || stageBuild.state.preview != null}
                 onAction={(action, value) => stageBuild.checkpointAction(action, value, (updates) => {
@@ -1057,7 +1033,6 @@ function ModellingEditor({
                   }
                   return result
                 })} />}
-              jobMessage={stageBuild.state?.job && ["failed", "cancelled", "interrupted"].includes(stageBuild.state.job.status) ? stageBuild.state.job.message : undefined}
               pending={pending}
               stages={STAGES.filter((name) => current?.stages[name] !== undefined)}
               pathAvailable={current?.pruning_path != null}
@@ -1076,10 +1051,7 @@ function ModellingEditor({
               onDiscard={() => void stageBuild.previewAction("discard")}
               finalAvailable={stageBuild.state?.final != null}
               onExport={() => void stageBuild.prepareExport()}
-              exportPanel={stageBuild.finalJobId ? exportPane : undefined}
-              diagnosticsNote={current?.reference_fit === "development" && current.diagnostics_basis === "out_of_fold"
-                ? "Prediction curves use held-out validation rows. Tables and pruning path show the development reference fit."
-                : undefined} />
+              exportPanel={stageBuild.finalJobId ? exportPane : undefined} />
             {(stagedDraft.error || stageBuild.error || (stageBuild.state?.next_preview?.status !== "queued" ? stageBuild.state?.next_preview?.message : undefined) || stageBuild.state?.stale_reason || current?.path_unavailable_reason) &&
               <p className="px-4 pb-4 text-[11px] leading-relaxed" role="status" style={{ color: "var(--text-muted)" }}>
                 {stagedDraft.error || stageBuild.error || (stageBuild.state?.next_preview?.status !== "queued" ? stageBuild.state?.next_preview?.message : undefined) || stageBuild.state?.stale_reason || current?.path_unavailable_reason}

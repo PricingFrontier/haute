@@ -5218,7 +5218,7 @@ export interface TrainResponse {
     [k: string]: string;
   }[];
   diagnostics_set: 'development' | 'validation' | 'final_test';
-  diagnostics_view?: 'full' | 'compact';
+  diagnostics_view?: 'full' | 'compact' | 'panels';
   double_lift: {
     [k: string]: unknown;
   }[];

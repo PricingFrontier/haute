@@ -7,7 +7,7 @@ import useModellingViewStore, { openModelInModellingView } from "../useModelling
 import useWorkbenchStore from "../useWorkbenchStore"
 
 const reset = () => {
-  useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "model", pane: "factor", factor: null, trainAction: null })
+  useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "features", pane: "factor", factor: null, trainAction: null })
   useWorkbenchStore.setState({ activeView: "pipeline" })
 }
 
@@ -18,7 +18,7 @@ describe("useModellingViewStore", () => {
     useModellingViewStore.setState({ panel: "split", pane: "curve", factor: "age", hiddenModels: ["m2"] })
     useModellingViewStore.getState().openModel("frequency")
 
-    expect(useModellingViewStore.getState()).toMatchObject({ modelId: "frequency", panel: "model", pane: "factor", factor: null, hiddenModels: [] })
+    expect(useModellingViewStore.getState()).toMatchObject({ modelId: "frequency", panel: "features", pane: "factor", factor: null, hiddenModels: [] })
   })
 
   it("keeps the panel, the pane, the unticked models and the factor when the open model is opened again", () => {
@@ -33,14 +33,18 @@ describe("useModellingViewStore", () => {
     expect(useModellingViewStore.getState()).toMatchObject({ modelId: "frequency", panel: "setup", pane: "curve", factor: "age", hiddenModels: ["m2"] })
   })
 
-  it("goes back to the model's settings when the toolbar asks for the panel that shows, and ticks a model back on", () => {
+  it("shows the chosen model's Features from a shared panel, keeps a model panel or a closed one, and ticks a model back on", () => {
     const store = useModellingViewStore.getState()
-    store.togglePanel("split")
-    expect(useModellingViewStore.getState().panel).toBe("split")
-    store.togglePanel("setup")
-    expect(useModellingViewStore.getState().panel).toBe("setup")
-    store.togglePanel("setup")
-    expect(useModellingViewStore.getState().panel).toBe("model")
+    store.showPanel("split")
+    store.showModelPanel()
+    expect(useModellingViewStore.getState().panel).toBe("features")
+    store.showPanel("train")
+    store.showModelPanel()
+    expect(useModellingViewStore.getState().panel).toBe("train")
+    // A closed panel stays closed when a model is chosen.
+    store.closePanel()
+    store.showModelPanel()
+    expect(useModellingViewStore.getState().panel).toBeNull()
 
     store.setModelShown("m1", false)
     store.setModelShown("m1", false)

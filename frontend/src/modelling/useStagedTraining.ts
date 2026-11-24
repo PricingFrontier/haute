@@ -29,6 +29,17 @@ export function stagedRequest(args: TrainModelArgs): TrainModelArgs {
 }
 
 let inspectionSequence = 0
+/**
+ * Path points already inspected, by model, applied revision, artifact, path and point: a
+ * point's result never changes, so going back to a stage's path shows it at once.
+ */
+const inspected = new Map<string, TrainResponse>()
+const INSPECTED_LIMIT = 16
+function rememberInspection(identity: string, response: TrainResponse) {
+  inspected.delete(identity)
+  inspected.set(identity, response)
+  if (inspected.size > INSPECTED_LIMIT) inspected.delete(inspected.keys().next().value!)
+}
 export interface StagedView {
   actionBusy?: boolean
   pathStage?: PostFitStage
@@ -40,6 +51,8 @@ export interface StagedView {
   error?: string
   visible?: ModelStage[]
   tableStage?: ModelStage | "candidate"
+  /** The stage Explain and Fit show; the applied one when unset. */
+  diagnosticStage?: ModelStage
   comparison?: { stage: ModelStage; parent: ModelStage }
   finalExport?: { revision: string; jobId: string }
 }
@@ -148,6 +161,12 @@ export function useStagedTraining({ enabled, resultKey, request, jobId }: {
     const fence = captureDocumentExecutionFence()
     const selection = { requestId: ++inspectionSequence, currentRevision: current.revision,
       artifactRevision: available.artifactRevision, pathId: available.path.id, pointId, loading: true }
+    const identity = JSON.stringify([key, current.revision, available.artifactRevision, available.path.id, pointId])
+    const known = inspected.get(identity)
+    if (known) {
+      useStagedViews.getState().update(key, { inspection: { ...selection, loading: false, response: known }, pathStage: available.path.stage })
+      return
+    }
     useStagedViews.getState().update(key, { inspection: selection, pathStage: available.path.stage })
     const isCurrent = () => isDocumentExecutionFenceCurrent(fence)
       && useStagedViews.getState().models[key]?.inspection?.requestId === selection.requestId
@@ -158,6 +177,7 @@ export function useStagedTraining({ enabled, resultKey, request, jobId }: {
       if (!isCurrent()) return
       if (result.current_revision !== current.revision || result.artifact_revision !== available.artifactRevision
         || result.path_id !== available.path.id || result.point_id !== pointId) throw new Error("Path inspection identity changed")
+      rememberInspection(identity, result.response)
       useStagedViews.getState().update(key, { inspection: { ...selection, loading: false, response: result.response } })
     } catch (error) {
       if (isCurrent()) useStagedViews.getState().update(key, { inspection: { ...selection, loading: false, error: apiErrorMessage(error) } })

@@ -1710,13 +1710,19 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
   ).then(async (data) => (await import("../types/trainGuards")).parseTrainResponse(data))
 }
 
-function stageStateRequest<T extends TrainModelArgs>(path: string, args: T) {
+/**
+ * A stage read's diagnostics: besides full and compact, the current record alone in full
+ * (`current`) or compact with its result panels' SHAP, PDP and scatter (`panels`).
+ */
+export type StageReadDiagnostics = "full" | "compact" | "current" | "panels"
+
+function stageStateRequest<T extends Omit<TrainModelArgs, "diagnostics"> & { diagnostics?: StageReadDiagnostics }>(path: string, args: T) {
   const { signal, timeout, ...payload } = args
   return post<unknown>(`/api/modelling/stages/${path}`, { diagnostics: "compact", ...payload }, { signal, timeout })
     .then(async (data) => (await import("../types/trainGuards")).parseStageState(data))
 }
 
-export function readStages(args: TrainModelArgs) {
+export function readStages(args: Omit<TrainModelArgs, "diagnostics"> & { diagnostics?: StageReadDiagnostics }) {
   return stageStateRequest("read", args)
 }
 

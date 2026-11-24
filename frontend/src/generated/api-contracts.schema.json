@@ -26477,7 +26477,8 @@
           "default": "full",
           "enum": [
             "full",
-            "compact"
+            "compact",
+            "panels"
           ],
           "title": "Diagnostics View",
           "type": "string"

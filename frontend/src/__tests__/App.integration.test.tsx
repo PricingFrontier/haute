@@ -3334,7 +3334,7 @@ describe("App integration - a Model Training node's results panel", () => {
 describe("App integration - the Modelling view (specs/frontend-modelling-optimiser-ui)", () => {
   afterEach(() => {
     useWorkbenchStore.setState({ activeView: "pipeline" })
-    useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "model", pane: "factor", factor: null, trainAction: null })
+    useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "features", pane: "factor", factor: null, trainAction: null })
   })
 
   const configOf = (id: string): Record<string, unknown> =>

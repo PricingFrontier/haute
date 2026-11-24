@@ -3775,7 +3775,7 @@ it.each(["queued", "running", "finishing", "manual"] as const)("keeps %s stage w
   expect(screen.queryByText(/Preparing preview|Automatically prepares|Applying prepares/)).not.toBeInTheDocument()
   if (phase === "queued") {
     expect(cancel).toBeDisabled()
-    expect(screen.getByTestId("training-blockers")).toHaveTextContent("Finishing the current run")
+    expect(cancel).toHaveAttribute("title", expect.stringContaining("Finishing the current run"))
   } else {
     expect(cancel).toBeEnabled()
     mockReadStages.mockResolvedValue({ ...state, job: { ...state.job, status: "cancelled" } })

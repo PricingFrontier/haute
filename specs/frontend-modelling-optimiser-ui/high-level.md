@@ -190,21 +190,24 @@ workbench is enabled. While it shows it covers the area below the toolbar, and t
 editor stays mounted, invisible and inert, its keyboard shortcuts off, as under the
 Workbench view.
 
-- **The toolbar** is the view's own: the brand; **Main Menu**, which returns to the list
-  of modelling nodes (disabled there, available while read-only); **Model Setup** over **Training Split**, which open in the
-  right-hand column in place of the chosen model's settings (asking for the one that shows
-  goes back to them); one **Train** button that becomes **Cancel** while the chosen model
+- **The toolbar** is the view's own: the brand; **Menu**, which returns to the list
+  of modelling nodes (disabled there, available while read-only), over the pipeline
+  toolbar's **Pipeline** button (its settings, or Offline while the server is away); **Model Setup** over **Data Split**, then the chosen model's
+  **Features** over **Parameters**, and **Training**: these five pick what the right-hand
+  column shows, which has no tabs of its own (choosing a model from Model Setup or Data
+  Split shows its Features). That column is the pipeline's side panel: it slides in, its
+  left edge drags to resize it (320px to half the window, 400px at first), and its red X,
+  or the lit button asked again, closes it, the editor kept hidden; one **Train** button that becomes **Cancel** while the chosen model
   trains and returns to **Train** when it stops. Train is unavailable while the model cannot
   train: it is greyed out and disabled, with the reason as its tooltip. Warnings never
   insert a banner above the chart panes; configuration warnings appear after the controls
   in the right-hand pane, and training failures appear at that pane’s foot. Cancel stops the
   training and is disabled while its request is pending; and the project's controls (Pipeline files and Local files,
-  Assistant, Help, the branch, Save and Commit). It has no source selector, Pipeline
-  control, Undo or Redo (undo and redo are the keyboard's), and none of the pipeline
-  toolbar's canvas actions; a model trains on the source last chosen in Pricing. Model
-  Setup, Training Split and Train are off until a node is open. The Git, Files and
+  Assistant, Help, the branch, Save and Commit). It has no source selector, Undo or Redo (undo and redo are the keyboard's), and none of the pipeline
+  toolbar's canvas actions; a model trains on the source last chosen in Pricing. These five
+  and Train are off until a node is open. The Git, Files and
   Assistant panels open at the view's right, one at a time, in the same place, and
-  opening Model Setup or Training Split closes them.
+  opening any of the five closes them.
 - **The left column** is the palette column of the other views, as wide as the node palette
   in Pricing, with the view switcher at its foot, beside the list of models and a model
   alike, so the toolbar's controls after the brand start over the area beside it, as in
@@ -227,7 +230,7 @@ Workbench view.
   family is unchanged and never appears in the view.
 - **Models.** The view opens on the interactive builds of the graph the canvas shows (the
   pipeline, or the submodel open on the canvas), each with its target and whether its last
-  run is training, trained, failed or absent. A row opens the model. Main Menu returns to the
+  run is training, trained, failed or absent. A row opens the model. Menu returns to the
   list, which also shows when the open model has left the graph.
 - **A model.** Its factors are named in the right-hand **Features** pane, one name for each column the model
   can take as a factor, under a search by name, and a name selects the factor to chart.
@@ -257,16 +260,17 @@ Workbench view.
   directions and parameters start as the chosen model's; **Duplicate** copies the model's
   own settings under a new name; neither copies a run. Each model trains, and keeps its
   latest run, on its own; only one training runs at a time.
-- **Settings.** The right column shows **Features**, **Parameters** and **Training** tabs for the chosen
-  model, Features first, with no duplicate model-name heading above them. Features contains the complete searchable, animated factor list
-  and its fitting controls, with no duplicate list on the left. The tab strip stays visible
-  while either pane scrolls. The chart and settings selectors use the same compact uppercase
-  typography, padding and bar height, with tabs sized to their labels and grouped at the left of
-  each bar. Switching tabs or opening a toolbar panel preserves the feature
-  search and expansion and keeps the model editor mounted for drafts and the stage
-  training actions. Model Setup and Training Split still open their shared settings in this
-  column. Read-only mode allows switching tabs, searching and charting; fitting and parameter
-  edits stay disabled. Settings content cannot extend the page beyond the viewport.
+- **Settings.** The right column shows the panel the toolbar picks for the chosen model,
+  **Features**, **Parameters** or **Training**, Features first. Features contains the complete
+  searchable, animated factor list and its fitting controls, with no duplicate list on the
+  left. Switching panels or closing the column preserves the feature search and expansion
+  and keeps the model editor mounted for drafts and the stage training actions. Model Setup
+  and Data Split open their shared settings in the same column. **Training** shows only each
+  stage's title, status and action (GBM, Pruning, Banding, Smoothing, Final model), with the
+  controls an action needs (the development-rows choice, Clear prepared path, Export,
+  checkpoints): no summaries, notes or links to other panes. Why an action is unavailable is
+  its tooltip. Read-only mode allows switching panels, searching and charting; fitting and
+  parameter edits stay disabled. Settings content cannot extend the page beyond the viewport.
 - **Its columns.** Opening a model selects its node in the pipeline, as a click on it does,
   so in automatic calculation the node is previewed and the preview brings the columns
   reaching it, which are the factors the list offers. While they are not known the list
@@ -280,7 +284,7 @@ Workbench view.
 - **Not in the view yet.** An interactive build's Export pane cannot be reached, from the
   view or from the node's panel: its model cannot be saved to a project file, logged to
   MLflow or exported as a training script, so it stays with its training result. Its split
-  is set in Training Split, so its Parameters offer tuning, which compares trials on the
+  is set in Data Split, so its Parameters offer tuning, which compares trials on the
   validation rows a split sets aside.
 - **Panes.** Tabs along the top of the area between the factors and the settings choose
   what it shows: **Factor**, shared by every model, then the chosen model's own **Learning
@@ -307,7 +311,7 @@ Workbench view.
 - **While the pipeline cannot be edited** (a read-only document or submodel, or the
   assistant at work) the editor is inert and fitting controls are disabled, so no factor can be included, excluded
   or constrained and nothing trains, and the keyboard undoes nothing. The list of models,
-  choosing and ticking models, Model Setup and Training Split (inert), the panes, the
+  choosing and ticking models, Model Setup and Data Split (inert), the panes, the
   factor selection and the charts still work.
 
 ## Modelling config panes

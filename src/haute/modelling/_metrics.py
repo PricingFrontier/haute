@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -456,6 +457,15 @@ def compute_double_lift(
     return result
 
 
+#: A number with at most this many distinct values charts one bin per value.
+AVE_EACH_VALUE_LIMIT = 20
+#: An ordered category (an Enum, or levels that all read as numbers) shows every level, in
+#: order, up to this many.
+AVE_ORDERED_LEVEL_LIMIT = 60
+#: The significant figures a bin's exposure and averages are rounded to.
+_AVE_FIGURES = 6
+
+
 def compute_ave_per_feature(
     df: pl.DataFrame,
     features: list[str],
@@ -473,9 +483,13 @@ def compute_ave_per_feature(
 
     For each feature (up to *max_features* when set, in the order given —
     the caller should pre-sort by importance):
-    - Numeric features are quantile-binned into *n_bins*.
-    - Categorical features are grouped by category (top *max_categories*
-      by mass, remainder lumped into ``"Other"``).
+    - A numeric feature has one bin per value when it has at most
+      ``AVE_EACH_VALUE_LIMIT`` distinct values, else up to *n_bins* bands of equal
+      mass, closed on the right.
+    - A categorical feature keeps an Enum's or its numbered levels' order, else shows
+      every level in natural order up to *max_categories*, else its largest levels by
+      mass and ``"Other (n levels)"``.
+    - Missing values are always the last bin, ``"Missing"``.
 
     A row's mass is its weight (one without a weight), times its *exposure* when
     one is given. A bin's ``exposure`` is its summed mass, and its averages are
@@ -488,6 +502,7 @@ def compute_ave_per_feature(
     Returns a list of dicts::
 
         {feature, type ("numeric"|"categorical"),
+         grouping ("each value"|"equal exposure"|"in order"|"A–Z"|"by exposure"),
          bins: [{label, exposure, avg_actual, avg_predicted}]}
     """
     if len(features) == 0 or len(y_true) == 0:
@@ -503,8 +518,7 @@ def compute_ave_per_feature(
         df = df.filter(pl.Series(finite_mask))
 
     w = weight if weight is not None else np.ones(len(y_true))
-    if exposure is not None:
-        exposure = _ave_exposure(exposure, finite_mask)
+    mass = w if exposure is None else w * _ave_exposure(exposure, finite_mask)
     cat_set = set(cat_features)
     results: list[dict[str, Any]] = []
 
@@ -516,13 +530,16 @@ def compute_ave_per_feature(
         is_cat = feat in cat_set
 
         if is_cat:
-            bins = _ave_categorical_bins(col, y_true, y_pred, w, exposure, max_categories)
+            bins, grouping = _ave_categorical_bins(
+                col, y_true, y_pred, w, mass, max_categories, n_bins
+            )
             feat_type = "categorical"
         else:
-            bins = _ave_numeric_bins(col, y_true, y_pred, w, exposure, n_bins)
+            values = col.to_numpy().astype(float)
+            bins, grouping = _ave_numeric_bins(values, y_true, y_pred, w, mass, n_bins)
             feat_type = "numeric"
 
-        results.append({"feature": feat, "type": feat_type, "bins": bins})
+        results.append({"feature": feat, "type": feat_type, "grouping": grouping, "bins": bins})
 
     return results
 
@@ -545,78 +562,98 @@ def _ave_exposure(exposure: np.ndarray, finite_mask: np.ndarray) -> np.ndarray:
     return kept
 
 
-def _ave_numeric_bins(
-    col: pl.Series,
+def _ave_entry(label: str, mass: float, actual: float, predicted: float) -> dict[str, Any]:
+    """A bin: its summed mass and its weighted actual and predicted averages per unit of it."""
+    return {
+        "label": label,
+        "exposure": _significant(mass),
+        "avg_actual": _significant(actual / mass),
+        "avg_predicted": _significant(predicted / mass),
+    }
+
+
+def _significant(value: float) -> float:
+    """*value* to the significant figures a bin reports."""
+    return float(f"{value:.{_AVE_FIGURES}g}")
+
+
+def _group_sums(
+    group: np.ndarray,
+    groups: int,
     y_true: np.ndarray,
     y_pred: np.ndarray,
     weight: np.ndarray,
-    exposure: np.ndarray | None,
+    mass: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each group's mass and weighted actual and predicted totals, from a group per row."""
+    return (
+        np.bincount(group, weights=mass, minlength=groups),
+        np.bincount(group, weights=y_true * weight, minlength=groups),
+        np.bincount(group, weights=y_pred * weight, minlength=groups),
+    )
+
+
+def _ave_numeric_bins(
+    values: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    weight: np.ndarray,
+    mass: np.ndarray,
     n_bins: int,
-) -> list[dict[str, Any]]:
-    """Bin a numeric feature by quantile and compute weighted AvE per unit of mass per bin."""
-    vals = col.to_numpy().astype(float)
-    n = len(vals)
-
-    # Separate NaN mask
-    nan_mask = np.isnan(vals)
-    valid_mask = ~nan_mask
-
-    valid_count = int(valid_mask.sum())
+) -> tuple[list[dict[str, Any]], str]:
+    """A number's bins and their grouping: one bin per value when it has few, else bands of
+    equal mass closed on the right, with NaN as the last bin, ``Missing``."""
+    missing = np.isnan(values)
+    valid = values[~missing]
+    distinct = np.unique(valid)
+    if distinct.size <= AVE_EACH_VALUE_LIMIT:
+        edges, grouping = distinct[:-1], "each value"
+    else:
+        bands = min(n_bins, max(2, valid.size // 3))
+        edges, grouping = _equal_mass_edges(valid, mass[~missing], bands), "equal exposure"
+    # A value equal to an edge falls in the band below it: bands are closed on the right.
+    group = np.searchsorted(edges, values, side="left")
+    group[missing] = edges.size + 1
+    total, actual, predicted = _group_sums(group, edges.size + 2, y_true, y_pred, weight, mass)
     bins: list[dict[str, Any]] = []
+    for index in range(edges.size + 1):
+        if total[index] == 0:
+            continue
+        held = values[group == index]
+        low, high = float(held.min()), float(held.max())
+        label = _value_label(low) if grouping == "each value" else _band_label(low, high)
+        bins.append(_ave_entry(label, total[index], actual[index], predicted[index]))
+    if total[-1] > 0:
+        bins.append(_ave_entry("Missing", total[-1], actual[-1], predicted[-1]))
+    return bins, grouping
 
-    if valid_count > 0:
-        effective_bins = min(n_bins, max(2, valid_count // 3))
 
-        # Compute quantile edges on valid values
-        valid_vals = vals[valid_mask]
-        quantiles = np.linspace(0, 100, effective_bins + 1)
-        edges = np.unique(np.percentile(valid_vals, quantiles))
+def _equal_mass_edges(values: np.ndarray, mass: np.ndarray, bands: int) -> np.ndarray:
+    """The upper edges of up to *bands* bands of equal mass over *values*.
 
-        # Digitize: assign each valid value to a bin (1-indexed)
-        bin_indices = np.digitize(valid_vals, edges[1:-1])  # 0 to len(edges)-2
+    A band closes at the distinct value where the cumulative mass reaches its share, so a
+    tied value is never split; a heavy value takes several shares and leaves fewer bands.
+    """
+    distinct, group = np.unique(values, return_inverse=True)
+    cumulative = np.cumsum(np.bincount(group, weights=mass, minlength=distinct.size))
+    if cumulative[-1] <= 0:
+        return distinct[:0]
+    shares = cumulative[-1] * np.arange(1, bands) / bands
+    edges = np.unique(distinct[np.searchsorted(cumulative, shares, side="left")])
+    inner: np.ndarray = edges[edges < distinct[-1]]
+    return inner
 
-        # Build a full-length bin assignment (-1 for NaN)
-        full_bins = np.full(n, -1, dtype=int)
-        full_bins[valid_mask] = bin_indices
 
-        actual_n_bins = int(bin_indices.max()) + 1 if len(bin_indices) > 0 else 0
-        for b in range(actual_n_bins):
-            mask = full_bins == b
-            if not mask.any():
-                continue
-            bw = weight[mask]
-            total_mass = (bw if exposure is None else bw * exposure[mask]).sum()
-            if total_mass == 0:
-                continue
+def _value_label(value: float) -> str:
+    """A value as a label: positional, with no exponent and no trailing zeros."""
+    return str(np.format_float_positional(value, trim="-"))
 
-            bin_vals = vals[mask]
-            lo, hi = float(np.nanmin(bin_vals)), float(np.nanmax(bin_vals))
-            label = f"{lo:.4g}–{hi:.4g}" if lo != hi else f"{lo:.4g}"
 
-            bins.append(
-                {
-                    "label": label,
-                    "exposure": round(float(total_mass), 4),
-                    "avg_actual": round(float((y_true[mask] * bw).sum() / total_mass), 6),
-                    "avg_predicted": round(float((y_pred[mask] * bw).sum() / total_mass), 6),
-                }
-            )
-
-    # NaN bin
-    if nan_mask.any():
-        bw = weight[nan_mask]
-        total_mass = (bw if exposure is None else bw * exposure[nan_mask]).sum()
-        if total_mass > 0:
-            bins.append(
-                {
-                    "label": "Missing",
-                    "exposure": round(float(total_mass), 4),
-                    "avg_actual": round(float((y_true[nan_mask] * bw).sum() / total_mass), 6),
-                    "avg_predicted": round(float((y_pred[nan_mask] * bw).sum() / total_mass), 6),
-                }
-            )
-
-    return bins
+def _band_label(low: float, high: float) -> str:
+    """A band's label: the smallest and largest values it holds, to four significant figures."""
+    first = _value_label(float(f"{low:.4g}"))
+    last = _value_label(float(f"{high:.4g}"))
+    return first if first == last else f"{first}–{last}"
 
 
 def _ave_categorical_bins(
@@ -624,56 +661,73 @@ def _ave_categorical_bins(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     weight: np.ndarray,
-    exposure: np.ndarray | None,
+    mass: np.ndarray,
     max_categories: int,
-) -> list[dict[str, Any]]:
-    """Group a categorical feature by category and compute weighted AvE per unit of mass."""
-    if len(col) == 0:
-        return []
+    n_bins: int,
+) -> tuple[list[dict[str, Any]], str]:
+    """A category's bins and their grouping, with nulls as the last bin, ``Missing``.
 
-    # Dictionary codes avoid scheduling a separate group query for each feature.
-    # All arrays are O(rows + levels), including high-cardinality columns.
-    encoded = col.cast(pl.Utf8).fill_null("__MISSING__").to_arrow().dictionary_encode()
+    An Enum keeps its order and levels that all read as numbers keep theirs, up to
+    ``AVE_ORDERED_LEVEL_LIMIT`` levels; more numbered levels are joined into bands as for a
+    number. Any other category shows every level in natural order up to *max_categories*,
+    else its largest levels by mass and ``Other (n levels)``.
+    """
+    enum_order = list(col.dtype.categories) if isinstance(col.dtype, pl.Enum) else None
+    # Dictionary codes avoid scheduling a separate group query for each feature. All
+    # arrays are O(rows + levels), including high-cardinality columns. A null takes the
+    # code after the last level, so it never meets a level of the same name.
+    encoded = col.cast(pl.Utf8).to_arrow().dictionary_encode()
     labels = np.asarray(encoded.dictionary.to_pylist(), dtype=object)
-    codes = encoded.indices.to_numpy()
-    mass = np.bincount(
-        codes, weights=weight if exposure is None else weight * exposure, minlength=len(labels)
+    missing = len(labels)
+    codes = encoded.indices.fill_null(missing).to_numpy()
+    total, actual, predicted = _group_sums(codes, missing + 1, y_true, y_pred, weight, mass)
+    present = np.flatnonzero(total[:missing] != 0)
+    numbers = _level_numbers(labels[present])
+    rest = present[:0]
+    if enum_order is not None and present.size <= AVE_ORDERED_LEVEL_LIMIT:
+        rank = {level: index for index, level in enumerate(enum_order)}
+        kept = present[np.argsort([rank[level] for level in labels[present]], kind="stable")]
+        grouping = "in order"
+    elif numbers is not None and present.size <= AVE_ORDERED_LEVEL_LIMIT:
+        kept, grouping = present[np.argsort(numbers, kind="stable")], "in order"
+    elif numbers is not None:
+        values = np.full(missing + 1, np.nan)
+        values[present] = numbers
+        return _ave_numeric_bins(values[codes], y_true, y_pred, weight, mass, n_bins)
+    elif present.size <= max_categories:
+        natural = sorted(present, key=lambda i: _natural_key(str(labels[i])))
+        kept, grouping = np.asarray(natural, dtype=np.intp), "A–Z"
+    else:
+        # The largest levels by mass, equal masses in the order of their labels.
+        by_mass = present[np.lexsort((labels[present], -total[present]))]
+        kept, rest, grouping = by_mass[:max_categories], by_mass[max_categories:], "by exposure"
+    bins = [_ave_entry(str(labels[i]), total[i], actual[i], predicted[i]) for i in kept]
+    if rest.size:
+        name = f"Other ({rest.size} level{'' if rest.size == 1 else 's'})"
+        bins.append(_ave_entry(name, total[rest].sum(), actual[rest].sum(), predicted[rest].sum()))
+    if total[missing] > 0:
+        bins.append(_ave_entry("Missing", total[missing], actual[missing], predicted[missing]))
+    return bins, grouping
+
+
+def _level_numbers(labels: np.ndarray) -> np.ndarray | None:
+    """The levels read as finite numbers, or None as soon as one does not read as one."""
+    numbers = np.empty(labels.size)
+    for index, label in enumerate(labels):
+        try:
+            numbers[index] = float(label)
+        except ValueError:
+            return None
+    return numbers if labels.size and bool(np.isfinite(numbers).all()) else None
+
+
+def _natural_key(label: str) -> tuple[tuple[tuple[int, int, str], ...], str]:
+    """A label's natural order: case aside, runs of digits compare as numbers (B2 before B10)."""
+    parts = re.split(r"([0-9]+)", label)
+    return (
+        tuple((0, int(part), "") if part.isdigit() else (1, 0, part.casefold()) for part in parts),
+        label,
     )
-    actual = np.bincount(codes, weights=y_true * weight, minlength=len(labels))
-    predicted = np.bincount(codes, weights=y_pred * weight, minlength=len(labels))
-    # Preserve top levels by mass and the lexical tie break of the original report.
-    ordered = np.lexsort((labels, -mass))
-
-    def entry(label: str, total: float, a: float, p: float) -> dict[str, Any]:
-        return {
-            "label": label,
-            "exposure": round(total, 4),
-            "avg_actual": round(a / total, 6),
-            "avg_predicted": round(p / total, 6),
-        }
-
-    bins = [
-        entry(
-            "Missing" if labels[index] == "__MISSING__" else str(labels[index]),
-            float(mass[index]),
-            float(actual[index]),
-            float(predicted[index]),
-        )
-        for index in ordered[:max_categories]
-        if mass[index] != 0
-    ]
-    remainder = ordered[max_categories:]
-    other_mass = float(mass[remainder].sum())
-    if len(remainder) and other_mass > 0:
-        bins.append(
-            entry(
-                "Other",
-                other_mass,
-                float(actual[remainder].sum()),
-                float(predicted[remainder].sum()),
-            )
-        )
-    return bins
 
 
 def compute_residuals_histogram(

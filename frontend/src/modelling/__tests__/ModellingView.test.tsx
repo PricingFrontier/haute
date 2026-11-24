@@ -21,6 +21,13 @@ import { makeTrainResult } from "../../test-utils/factories"
 import { modelResultKey } from "../interactiveModels"
 import { answerQuestion, asked } from "../../test-utils/question"
 import type { TBoostTables } from "../../api/types"
+import { readStages } from "../../api/client"
+
+// Real reads, except where a test holds the on-demand stage read back.
+vi.mock("../../api/client", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../api/client")>()
+  return { ...original, readStages: vi.fn(original.readStages) }
+})
 
 vi.mock("../../panels/ModellingConfig", () => ({
   default: (props: {
@@ -198,14 +205,17 @@ function updatedConfig(onUpdateNode: { mock: { calls: unknown[][] } }, index?: n
 
 describe("ModellingView", () => {
   beforeEach(() => {
-    useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "model", pane: "factor", factor: null, trainAction: null })
+    useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "features", panelWidth: 400, pane: "factor", factor: null, trainAction: null })
     useNodeResultsStore.setState({ trainResults: {}, trainJobs: {} })
+    // A test's saved stages would otherwise stand in for the next one's runs.
+    useStagedViews.setState({ models: {}, preferences: {} })
     useWorkbenchStore.setState({ enabled: false, activeView: "modelling" })
     useUIStore.setState({ paletteOpen: true })
   })
 
   afterEach(() => {
     cleanup()
+    vi.mocked(readStages).mockReset()
     useWorkbenchStore.setState({ enabled: false, activeView: "pipeline" })
     useUIStore.setState({ gitOpen: false, assistantOpen: false, filesPlace: null, paletteOpen: true })
   })
@@ -401,7 +411,7 @@ describe("ModellingView", () => {
     expect(within(models).getByRole("button", { name: "t-boost" })).toBeInTheDocument()
     expect(within(models).getByRole("button", { name: "Add" })).toBeInTheDocument()
     expect(within(column).queryByRole("button", { name: "age" })).not.toBeInTheDocument()
-    expect(screen.getByRole("tabpanel", { name: "Features" })).toContainElement(screen.getByRole("navigation", { name: "Factors" }))
+    expect(screen.getByRole("complementary", { name: "t-boost settings" })).toContainElement(screen.getByRole("navigation", { name: "Factors" }))
     expect(screen.queryByRole("button", { name: "Models" })).not.toBeInTheDocument()
   })
 
@@ -474,9 +484,9 @@ describe("ModellingView", () => {
 
     // The settings, the factors' among them, are inert, and an edit is refused.
     expect(screen.getByTestId("node-editor").closest("[inert]")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("tab", { name: "Training" }))
+    act(() => useModellingViewStore.getState().showPanel("train"))
     fireEvent.click(screen.getByRole("button", { name: "Leave out region" }))
-    fireEvent.click(screen.getByRole("tab", { name: "Features" }))
+    act(() => useModellingViewStore.getState().showPanel("features"))
     expect(onUpdateNode).not.toHaveBeenCalled()
 
     // Looking is not editing: a factor can still be charted, a model unticked and Model Setup shown.
@@ -508,7 +518,7 @@ describe("ModellingView", () => {
 
     // Typing in a field keeps Ctrl+Z for the text; a plain key is nobody's.
     fireEvent.keyDown(screen.getByRole("searchbox", { name: "Search factors" }), { key: "z", ctrlKey: true })
-    fireEvent.click(screen.getByRole("tab", { name: "Training" }))
+    act(() => useModellingViewStore.getState().showPanel("train"))
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Stand-in field" }), { key: "z", ctrlKey: true })
     fireEvent.keyDown(window, { key: "z" })
     expect(onUndo).toHaveBeenCalledTimes(1)
@@ -645,53 +655,77 @@ describe("ModellingView", () => {
     expect(within(screen.getByRole("tabpanel", { name: "Learning curve" })).getByText("Not boosted yet")).toBeInTheDocument()
   })
 
-  it("shows separate Features, Parameters and Training on the right, Model Setup and Training Split from the toolbar, and Go to leads to the panel that holds a pane", () => {
+  it("shows Features, Parameters, Training, Model Setup and Data Split on the right as the toolbar picks them, and Go to leads to the panel that holds a pane", () => {
     renderView()
     fireEvent.click(screen.getByRole("button", { name: "frequency" }))
     const editor = () => screen.getByTestId("node-editor")
     // One mounted editor retains drafts across parameter and action tabs.
     expect(screen.getByRole("complementary", { name: "t-boost settings" })).toContainElement(editor())
     expect(editor()).toHaveAttribute("data-panes", "params")
-    expect(screen.getByRole("tab", { name: "Features" })).toHaveAttribute("aria-selected", "true")
+    expect(useModellingViewStore.getState().panel).toBe("features")
+    expect(screen.getByRole("heading", { name: "Features" })).toBeInTheDocument()
     expect(editor()).not.toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "age" }))
     fireEvent.click(screen.getByRole("button", { name: "age settings" }))
     const search = screen.getByRole("searchbox", { name: "Search factors" })
     fireEvent.change(search, { target: { value: "age" } })
-    fireEvent.click(screen.getByRole("tab", { name: "Training" }))
+    act(() => useModellingViewStore.getState().showPanel("train"))
     expect(editor()).toBeVisible()
     expect(screen.queryByRole("searchbox", { name: "Search factors" })).not.toBeInTheDocument()
     expect(editor()).toHaveAttribute("data-model", "m1")
     expect(editor()).toHaveAttribute("data-factors", "age,region")
     expect(editor()).toHaveAttribute("data-reviewable", "features,params,target,split")
     expect(editor()).toHaveAttribute("data-stage-pane", "train")
-    expect(screen.getByRole("tabpanel", { name: "Training" })).toContainElement(editor())
-    fireEvent.click(screen.getByRole("tab", { name: "Parameters" }))
+    expect(screen.getByRole("heading", { name: "Training" })).toBeInTheDocument()
+    act(() => useModellingViewStore.getState().showPanel("params"))
     expect(editor()).toHaveAttribute("data-stage-pane", "params")
-    expect(screen.getByRole("tabpanel", { name: "Parameters" })).toContainElement(editor())
+    expect(screen.getByRole("heading", { name: "Parameters" })).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Go to Train" }))
     expect(editor()).toHaveAttribute("data-stage-pane", "train")
     const mountedEditor = editor()
 
-    act(() => useModellingViewStore.getState().togglePanel("setup"))
+    act(() => useModellingViewStore.getState().showPanel("setup"))
     expect(screen.getByRole("complementary", { name: "Model setup" })).toContainElement(editor())
     expect(editor()).toHaveAttribute("data-panes", "target")
-    expect(screen.queryByRole("tablist", { name: "Model settings" })).not.toBeInTheDocument()
-    act(() => useModellingViewStore.getState().togglePanel("split"))
-    expect(screen.getByRole("complementary", { name: "Training split" })).toContainElement(editor())
+    act(() => useModellingViewStore.getState().showPanel("split"))
+    expect(screen.getByRole("complementary", { name: "Data split" })).toContainElement(editor())
     expect(editor()).toHaveAttribute("data-panes", "split")
 
-    act(() => useModellingViewStore.getState().togglePanel("split"))
-    expect(useModellingViewStore.getState().panel).toBe("model")
+    act(() => useModellingViewStore.getState().showPanel("params"))
     expect(editor()).toBe(mountedEditor)
     expect(editor()).toHaveAttribute("data-panes", "params")
     fireEvent.click(screen.getByRole("button", { name: "Go to Factors" }))
-    expect(screen.getByRole("tab", { name: "Features" })).toHaveAttribute("aria-selected", "true")
+    expect(useModellingViewStore.getState().panel).toBe("features")
     expect(search).toHaveValue("age")
     expect(screen.getByRole("button", { name: "age settings" })).toHaveAttribute("aria-expanded", "true")
-    fireEvent.click(screen.getByRole("tab", { name: "Training" }))
+    act(() => useModellingViewStore.getState().showPanel("train"))
     fireEvent.click(screen.getByRole("button", { name: "Go to Target" }))
     expect(useModellingViewStore.getState().panel).toBe("setup")
+  })
+
+  it("shows the settings in the pipeline's side panel: its red X closes it, its left edge resizes it, and the editor stays", () => {
+    renderView()
+    fireEvent.click(screen.getByRole("button", { name: "frequency" }))
+    const panel = screen.getByTestId("modelling-settings-panel")
+    const editor = screen.getByTestId("node-editor")
+    expect(panel).toHaveClass("side-panel")
+    // Its slide-in starts past the right edge; the view clips it, so no scrollbar flashes.
+    expect(screen.getByTestId("modelling-view")).toHaveClass("overflow-hidden")
+    expect(panel.style.width).toBe("400px")
+
+    fireEvent.mouseDown(within(panel).getByTestId("panel-resize-handle"), { clientX: 1000 })
+    fireEvent.mouseMove(window, { clientX: 900, buttons: 1 })
+    fireEvent.mouseUp(window)
+    expect(useModellingViewStore.getState().panelWidth).toBe(500)
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Close" }))
+    expect(useModellingViewStore.getState().panel).toBeNull()
+    expect(panel).not.toBeVisible()
+    expect(screen.getByTestId("node-editor")).toBe(editor)
+
+    act(() => useModellingViewStore.getState().showPanel("params"))
+    expect(panel).toBeVisible()
+    expect(within(panel).getByRole("heading", { name: "Parameters" })).toBeInTheDocument()
   })
 
   it("hands the editor the factor chosen on the left, and keeps the panel that shows", () => {
@@ -700,7 +734,7 @@ describe("ModellingView", () => {
     expect(screen.getByTestId("node-editor")).toHaveAttribute("data-chosen-factor", "")
     fireEvent.click(screen.getByRole("button", { name: "region" }))
     expect(screen.getByTestId("node-editor")).toHaveAttribute("data-chosen-factor", "region")
-    expect(useModellingViewStore.getState().panel).toBe("model")
+    expect(useModellingViewStore.getState().panel).toBe("features")
   })
 
   it("keeps progress in the model name and selects its settings on a click", () => {
@@ -715,7 +749,7 @@ describe("ModellingView", () => {
 
     act(() => useModellingViewStore.getState().showPanel("split"))
     fireEvent.click(entry)
-    expect(useModellingViewStore.getState().panel).toBe("model")
+    expect(useModellingViewStore.getState().panel).toBe("features")
 
     act(() => useNodeResultsStore.setState({
       trainJobs: {
@@ -786,7 +820,7 @@ describe("ModellingView", () => {
   it("keeps readiness warnings out of the chart layout and shows failures in the settings column", () => {
     renderView()
     fireEvent.click(screen.getByRole("button", { name: "frequency" }))
-    fireEvent.click(screen.getByRole("tab", { name: "Training" }))
+    act(() => useModellingViewStore.getState().showPanel("train"))
     fireEvent.click(screen.getByRole("button", { name: "Report an issue" }))
     expect(screen.queryByText(/cannot train yet/)).not.toBeInTheDocument()
     expect(useModellingViewStore.getState().trainAction?.issues).toEqual(["Tick at least one factor."])
@@ -1047,6 +1081,96 @@ describe("ModellingView", () => {
 
     act(() => useNodeResultsStore.setState({ trainResults: trained([ageRow], AGE_TABLES) }))
     expect(within(screen.getByRole("tabpanel", { name: "Tables" })).getByRole("table", { name: "Table for age" })).toBeInTheDocument()
+  })
+
+  it("explains the latest run by importance and PDP, its factor picked from the importance list, and shows its fit", () => {
+    renderView()
+    fireEvent.click(screen.getByRole("button", { name: "frequency" }))
+    const panes = within(screen.getByRole("tablist", { name: "Panes" }))
+    fireEvent.click(panes.getByRole("tab", { name: "Explain" }))
+    expect(within(screen.getByRole("tabpanel", { name: "Explain" })).getByText("Not boosted yet")).toBeInTheDocument()
+
+    const run = trained([ageRow])
+    run[M1].result = makeTrainResult({
+      ...run[M1].result,
+      pdp_data: [
+        { feature: "age", type: "numeric", grid: [{ value: 20, avg_prediction: 0.2 }, { value: 60, avg_prediction: 0.1 }] },
+        { feature: "income", type: "numeric", grid: [{ value: 1, avg_prediction: 0.15 }, { value: 2, avg_prediction: 0.16 }] },
+      ],
+      double_lift: [{ decile: 1, actual: 0.1, predicted: 0.12, count: 12 }],
+    })
+    act(() => useNodeResultsStore.setState({ trainResults: run }))
+    const explain = within(screen.getByRole("tabpanel", { name: "Explain" }))
+    expect(explain.getByRole("region", { name: "Feature importance" })).toBeInTheDocument()
+    fireEvent.click(explain.getByRole("button", { name: "PDP" }))
+    fireEvent.click(explain.getByRole("button", { name: /income/ }))
+    // Picking a factor on Explain keeps the pane, and the view's factor follows.
+    expect(panes.getByRole("tab", { name: "Explain" })).toHaveAttribute("aria-selected", "true")
+    expect(useModellingViewStore.getState().factor).toBe("income")
+
+    fireEvent.click(panes.getByRole("tab", { name: "Fit" }))
+    const fit = within(screen.getByRole("tabpanel", { name: "Fit" }))
+    expect(fit.getByRole("region", { name: "Lift" })).toBeInTheDocument()
+    expect(fit.queryByText("No lift data available")).not.toBeInTheDocument()
+  })
+
+  it("picks a staged model's stage with buttons on Tables, Explain and Fit, and keeps SHAP, PDP and lift with the applied stage", async () => {
+    const snapshot = { metrics: { rmse: .2 }, feature_importance: [{ feature: "age", importance: 3 }], features: ["age"], cat_features: [],
+      diagnostics_set: "validation", ave_per_feature: [ageRow], ave_left_out: [], tboost_tables: null,
+      loss_history: [], fit_evidence: null, diagnostics_errors: [], recipe: { schema_version: 1, operations: [] } }
+    // The compact state: lift and importance, but no PDP until the panels read arrives.
+    const response = makeTrainResult({
+      diagnostics_view: "compact",
+      double_lift: [{ decile: 1, actual: 0.1, predicted: 0.12, count: 12 }],
+      staged: { schema_version: 2, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
+        configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+        stages: { full: snapshot, pruned: snapshot, banded: snapshot }, pruning_path: null, path_unavailable_reason: null, recommendation: null },
+    })
+    const record = { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "c".repeat(64), config_digest: "f".repeat(64),
+      result: { graph_digest: "d".repeat(64), response } }
+    const key = JSON.stringify([documentExecutionKey(useDocumentStatusStore.getState()), M1])
+    const state = { schema_version: 1 as const, next_preview: null, checkpoints: [], current: record, preview: null, final: null, job: null, stale_reason: null }
+    useStagedViews.getState().update(key, { state })
+    // Tables reads its result at once; the panels read is held back.
+    let answer!: (value: Awaited<ReturnType<typeof readStages>>) => void
+    vi.mocked(readStages).mockImplementation((args) => args.diagnostics === "panels"
+      ? new Promise((resolve) => { answer = resolve }) : Promise.resolve(state as Awaited<ReturnType<typeof readStages>>))
+    renderView()
+    fireEvent.click(screen.getByRole("button", { name: "frequency" }))
+    const panes = within(screen.getByRole("tablist", { name: "Panes" }))
+
+    fireEvent.click(panes.getByRole("tab", { name: "Tables" }))
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+    const tableStages = within(screen.getByRole("tablist", { name: "Table stage" }))
+    expect(tableStages.getByRole("tab", { name: "Banded" })).toHaveAttribute("aria-selected", "true")
+    expect(tableStages.getByRole("tab", { name: "Smoothed" })).toBeDisabled()
+
+    fireEvent.click(panes.getByRole("tab", { name: "Explain" }))
+    const explain = within(screen.getByRole("tabpanel", { name: "Explain" }))
+    const explainStages = within(explain.getByRole("tablist", { name: "Explain stage" }))
+    expect(explainStages.getByRole("tab", { name: "Banded" })).toHaveAttribute("aria-selected", "true")
+    // Importance draws from the compact state while only SHAP and PDP are read.
+    expect(explain.getByRole("region", { name: "Feature importance" })).toBeInTheDocument()
+    expect(explain.getByText("Loading SHAP and partial dependence…")).toBeInTheDocument()
+    expect(readStages).toHaveBeenCalledWith(expect.objectContaining({ diagnostics: "panels" }))
+    await act(async () => answer({ ...state, current: { ...record, result: { ...record.result, response: {
+      // A separate read parses its own stage snapshots.
+      ...structuredClone(response), diagnostics_view: "panels",
+      pdp_data: [{ feature: "age", type: "numeric", grid: [{ value: 20, avg_prediction: 0.2 }, { value: 60, avg_prediction: 0.1 }] }],
+    } } } } as Awaited<ReturnType<typeof readStages>>))
+    expect(explain.getByRole("button", { name: "PDP" })).toBeInTheDocument()
+    // Another stage keeps its importance, never the applied stage's PDP.
+    fireEvent.click(explainStages.getByRole("tab", { name: "Pruned" }))
+    expect(explain.queryByRole("button", { name: "PDP" })).not.toBeInTheDocument()
+    expect(explain.getByText("SHAP and partial dependence are kept for the applied stage, Banded, only")).toBeInTheDocument()
+    expect(explain.getByRole("region", { name: "Feature importance" })).toBeInTheDocument()
+
+    fireEvent.click(panes.getByRole("tab", { name: "Fit" }))
+    const fit = within(screen.getByRole("tabpanel", { name: "Fit" }))
+    const fitStages = within(fit.getByRole("tablist", { name: "Fit stage" }))
+    expect(fitStages.getByRole("tab", { name: "Banded" })).toHaveAttribute("aria-selected", "true")
+    expect(fitStages.getByRole("tab", { name: "Pruned" })).toBeDisabled()
+    expect(fit.queryByText("No lift data available")).not.toBeInTheDocument()
   })
 
   it("opens a toolbar panel at the right, in the settings' place, one at a time", async () => {

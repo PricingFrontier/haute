@@ -1,7 +1,7 @@
 import { evidenceLabel } from "./stageEvidence"
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useLayoutEffect, useState, type CSSProperties, type ReactNode } from "react"
 import { ErrorBoundary } from "../components/ErrorBoundary"
-import { PaletteColumn, PaletteHeader, PaletteRevealStrip } from "../haute-ui"
+import { PaletteColumn, PaletteHeader, PaletteRevealStrip, SidePanel, halfWindowWidth } from "../haute-ui"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "../hooks/keyboardTargets"
 import type { PanelGraphContextSnapshot } from "../hooks/usePanelGraphContext"
 import type { PreviewData } from "../panels/DataPreview"
@@ -12,13 +12,20 @@ import type { OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "../panels
 import { ChartEmptyState, ResponsiveChart } from "../panels/modelling/ChartScaffold"
 import { LossHistoryChart, LossTab } from "../panels/modelling/LossTab"
 import { TBoostTablesTab } from "../panels/modelling/TBoostTablesTab"
+import { FeaturesTab } from "../panels/modelling/FeaturesTab"
+import { LiftTab } from "../panels/modelling/LiftTab"
+import { PdpTab } from "../panels/modelling/PdpTab"
+import { ResidualsTab } from "../panels/modelling/ResidualsTab"
+import { ShapCurvesTab } from "../panels/modelling/ShapCurvesTab"
+import { ViewSwitch } from "../panels/ViewSwitch"
+import type { TrainResult } from "../stores/useNodeResultsStore"
 import { clearCachedResultShape, useUpstreamColumns } from "../panels/nodePanelData"
 import { removeStages } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import useSettingsStore from "../stores/useSettingsStore"
 import { useResultKey, useRequestScope } from "../panels/useGraph"
 import { hasTrainResult } from "../stores/nodeResultsSelectors"
-import useModellingViewStore, { type ModelPane, type SettingsPanel, type TrainAction } from "../stores/useModellingViewStore"
+import useModellingViewStore, { MODEL_PANELS, type ModelPane, type SettingsPanel, type TrainAction } from "../stores/useModellingViewStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ModellingPane } from "../stores/useUIStore"
@@ -27,6 +34,7 @@ import { documentRequestScope, prepareCanvasRequest } from "../utils/requestGate
 import ViewSwitcher from "../workbench/ViewSwitcher"
 import FactorList from "./FactorList"
 import { StageRestorer } from "./StageRestorer"
+import { StageButtons } from "./StageButtons"
 import { ModelEntries } from "./ModelEntries"
 import { ModelsAveChart, type ModelAveSeries } from "./ModelsAveChart"
 import { useModelResultKey, useModelRunState } from "./modelRuns"
@@ -92,23 +100,21 @@ interface ModellingViewProps {
 }
 
 /**
- * The panes of the node's editor each right-hand panel shows, and its heading: the chosen
- * model's own settings, then the toolbar's Model Setup (the settings every model shares)
- * and Training Split. The model's parameter pane contains its staged Training controls.
+ * The pane of the node's editor each right-hand panel shows, and its heading, as the
+ * toolbar picks it: the chosen model's Features, Parameters and Training, then Model Setup
+ * (the settings every model shares) and Data Split. The model's parameter pane contains
+ * its staged Training controls.
  */
-const PANELS: Readonly<Record<SettingsPanel, { heading: string | null; panes: readonly ModellingPane[] }>> = {
-  model: { heading: null, panes: ["features", "params", "train"] },
-  setup: { heading: "Model setup", panes: ["target"] },
-  split: { heading: "Training split", panes: ["split"] },
+const PANELS: Readonly<Record<SettingsPanel, { heading: string; pane: ModellingPane }>> = {
+  features: { heading: "Features", pane: "features" },
+  params: { heading: "Parameters", pane: "params" },
+  train: { heading: "Training", pane: "train" },
+  setup: { heading: "Model setup", pane: "target" },
+  split: { heading: "Data split", pane: "split" },
 }
-type ModelSettingsPane = "features" | "params" | "train"
-const MODEL_SETTINGS_TABS: readonly PreviewPanelTab<ModelSettingsPane>[] = [
-  { key: "features", label: "Features" },
-  { key: "params", label: "Parameters" },
-  { key: "train", label: "Training" },
-]
-const SETTINGS_ID = "modelling-settings"
-const PANEL_ORDER: readonly SettingsPanel[] = ["model", "setup", "split"]
+/** The narrowest the settings panel drags to, as the pipeline's panels. */
+const MIN_PANEL_WIDTH = 320
+const PANEL_ORDER: readonly SettingsPanel[] = ["features", "params", "train", "setup", "split"]
 
 /**
  * The panes of a model, along the top of the area between its factors and its settings:
@@ -119,6 +125,8 @@ const PANES: readonly PreviewPanelTab<ModelPane>[] = [
   { key: "curve", label: "Learning curve" },
   { key: "tables", label: "Tables" },
   { key: "paths", label: "Paths" },
+  { key: "explain", label: "Explain" },
+  { key: "fit", label: "Fit" },
 ]
 
 /** The ids `PreviewPanelTabs` gives the tabs, which name their panel. */
@@ -135,7 +143,7 @@ const CURVE_HEIGHT = 340
 
 /** The panel that holds a pane of the node's editor, for the editor's "Go to" links. */
 function panelForPane(pane: ModellingPane): SettingsPanel {
-  const holder = PANEL_ORDER.find((panel) => PANELS[panel].panes.includes(pane))
+  const holder = PANEL_ORDER.find((panel) => PANELS[panel].pane === pane)
   // The editor is told which panes it may link to (`reviewablePanes`), all of them here.
   if (holder === undefined) throw new Error(`The Modelling view has no panel for the ${pane} pane.`)
   return holder
@@ -148,10 +156,10 @@ const isInteractiveBuild = (node: SimpleNode): boolean =>
 /**
  * The Modelling view (specs/frontend-modelling-optimiser-ui), over the area below the
  * toolbar while it is the active view. It lists the interactive builds of the graph the
- * canvas shows, and opens one: its models down the left, its factors in Features on the right,
- * the pane chosen, and on the right the chosen model's settings, or Model Setup or Training
- * Split from the toolbar. The toolbar's Git, Files and Assistant panels open
- * at the view's right, in the settings' place.
+ * canvas shows, and opens one: its models down the left, the pane chosen, and on the right
+ * the settings panel the toolbar picks: the chosen model's Features (its factors),
+ * Parameters or Training, or Model Setup or Data Split. The toolbar's Git, Files and
+ * Assistant panels open at the view's right, in the settings' place.
  */
 export default function ModellingView({
   graph,
@@ -203,7 +211,8 @@ export default function ModellingView({
   const model = models.find((node) => node.id === modelId) ?? null
 
   return (
-    <div className="absolute inset-0 flex" data-testid="modelling-view" style={{ background: "var(--bg-base)" }}>
+    // Clipped, so a side panel sliding in from past the right edge never brings a scrollbar.
+    <div className="absolute inset-0 flex overflow-hidden" data-testid="modelling-view" style={{ background: "var(--bg-base)" }}>
       <GraphProvider
         allNodes={graph.allNodes}
         edges={graph.edges}
@@ -382,8 +391,11 @@ function ModelWorkspace({ node, graph, onUpdateNode, onOpenNode, onRefreshNode, 
   showSettings: boolean
 }) {
   const panel = useModellingViewStore((s) => s.panel)
-  const [settingsPane, setSettingsPane] = useState<ModelSettingsPane>("features")
   const showPanel = useModellingViewStore((s) => s.showPanel)
+  const showModelPanel = useModellingViewStore((s) => s.showModelPanel)
+  const closePanel = useModellingViewStore((s) => s.closePanel)
+  const panelWidth = useModellingViewStore((s) => s.panelWidth)
+  const setPanelWidth = useModellingViewStore((s) => s.setPanelWidth)
   const hiddenModels = useModellingViewStore((s) => s.hiddenModels)
   const setModelShown = useModellingViewStore((s) => s.setModelShown)
   const setTrainAction = useModellingViewStore((s) => s.setTrainAction)
@@ -428,7 +440,7 @@ function ModelWorkspace({ node, graph, onUpdateNode, onOpenNode, onRefreshNode, 
     const added = addModelCopy(config, source, name)
     if (updateConfig(added.config).ok) {
       chooseModel(added.model.id)
-      showPanel("model")
+      showModelPanel()
     }
   }
   const renameTo = (modelId: string, name: string): string | null => {
@@ -473,15 +485,15 @@ function ModelWorkspace({ node, graph, onUpdateNode, onOpenNode, onRefreshNode, 
   const upstreamEdges = useMemo(() => graph.edges.filter((edge) => edge.target === node.id), [graph.edges, node.id])
   const columns = useUpstreamColumns(node.id, upstreamEdges, nodeMap)
 
-  const shown = PANELS[panel]
-  const showFeatures = panel === "model" && settingsPane === "features"
-  const stagedPane = settingsPane === "train" ? "train" : "params"
-  const editorPanes: readonly ModellingPane[] = panel === "model" ? ["params"] : shown.panes
-  const visiblePane = panel === "model" ? settingsPane : shown.panes[0]
-  const reviewPane = (next: ModellingPane) => {
-    showPanel(panelForPane(next))
-    if (next === "features" || next === "params" || next === "train") setSettingsPane(next)
-  }
+  // Closed, the panel keeps the editor as the model's own panels do, hidden.
+  const shown = PANELS[panel ?? "features"]
+  const modelPanel = panel === null || MODEL_PANELS.includes(panel)
+  const settingsVisible = showSettings && panel !== null
+  const showFeatures = panel === "features"
+  const stagedPane = panel === "train" ? "train" : "params"
+  // The model's own panels share one editor pane, which holds its staged controls.
+  const editorPanes: readonly ModellingPane[] = modelPanel ? ["params"] : [shown.pane]
+  const reviewPane = (next: ModellingPane) => showPanel(panelForPane(next))
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       {models.filter((entry) => entry.id !== model.id).map((entry) => <StageRestorer key={entry.id}
@@ -497,7 +509,7 @@ function ModelWorkspace({ node, graph, onUpdateNode, onOpenNode, onRefreshNode, 
             readOnly={readOnly}
             onChoose={(modelId) => {
               chooseModel(modelId)
-              showPanel("model")
+              showModelPanel()
             }}
             onShow={setModelShown}
             // A new model starts from the chosen one's settings (proposal 59).
@@ -539,61 +551,66 @@ function ModelWorkspace({ node, graph, onUpdateNode, onOpenNode, onRefreshNode, 
               {pane === "paths" && <Suspense fallback={<ChartEmptyState>Loading paths…</ChartEmptyState>}>
                 <ModelPaths nodeId={node.id} modelId={model.id} readOnly={readOnly} />
               </Suspense>}
+              {pane === "explain" && <Explain nodeId={node.id} modelId={model.id} factor={factor} onSelectFactor={selectFactor} />}
+              {pane === "fit" && <Fit nodeId={node.id} modelId={model.id} />}
             </div>
           </div>
-          {/* Retain the editor and its running stage when a toolbar panel covers it. */}
-          <aside
-            aria-label={shown.heading ?? `${model.name} settings`}
-            hidden={!showSettings}
-            className={`${showSettings ? "flex" : "hidden"} min-h-0 w-[400px] shrink-0 flex-col`}
-            style={{ background: "var(--bg-panel)", borderLeft: "1px solid var(--chrome-border)" }}
+          {/* The pipeline's side panel: it slides in, its left edge resizes it and its red X
+              closes it. Retain the editor and its running stage while it is closed or a
+              toolbar panel covers it. */}
+          <SidePanel
+            title={<h3 className="side-panel-title">{shown.heading}</h3>}
+            subtitle={modelPanel ? <span className="block truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{model.name}</span> : undefined}
+            onClose={closePanel}
+            width={panelWidth}
+            onWidthChange={setPanelWidth}
+            minWidth={MIN_PANEL_WIDTH}
+            maxWidth={() => halfWindowWidth(MIN_PANEL_WIDTH)}
+            style={settingsVisible ? undefined : { display: "none" }}
+            testId="modelling-settings-panel"
           >
-            {shown.heading !== null && <h3 className="shrink-0 px-4 py-3 text-[13px] font-semibold">{shown.heading}</h3>}
-            {panel === "model" && (
-              <PreviewPanelTabs tabs={MODEL_SETTINGS_TABS} activeTab={settingsPane} onChange={setSettingsPane} ariaLabel="Model settings" accentColor="var(--model-accent)" idPrefix={SETTINGS_ID} />
-            )}
-            <div
-              hidden={!showFeatures}
-              className={showFeatures ? "relative flex min-h-0 flex-1 flex-col" : "hidden"}
-              role="tabpanel"
-              id={`${SETTINGS_ID}-features-pane`}
-              aria-labelledby={`${SETTINGS_ID}-features-tab`}
+            <aside
+              aria-label={modelPanel ? `${model.name} settings` : shown.heading}
+              hidden={!settingsVisible}
+              className={`${settingsVisible ? "flex" : "hidden"} min-h-0 flex-1 flex-col`}
             >
-              <nav aria-label="Factors" className="flex min-h-0 flex-1 flex-col px-3 py-3">
-                {columns.length === 0
-                  ? <ColumnsStatus preview={preview} onRefresh={() => onRefreshNode(node.id)} />
-                  : <FactorList config={flat} columns={columns} selected={factor} onSelect={selectFactor} onUpdate={onUpdate} readOnly={readOnly} />}
-              </nav>
-            </div>
-            {/* Retain drafts and running-stage controls across tab changes. */}
-            <div
-              hidden={showFeatures}
-              className={showFeatures ? "hidden" : "relative min-h-0 flex-1 overflow-y-auto"}
-              role={panel === "model" ? "tabpanel" : undefined}
-              id={panel === "model" ? `${SETTINGS_ID}-${stagedPane}-pane` : undefined}
-              aria-labelledby={panel === "model" ? `${SETTINGS_ID}-${stagedPane}-tab` : undefined}
-              inert={readOnly ? true : undefined}
-            >
-              {/* One editor per model across every panel: its drafts, estimate and training job are its own. */}
-              <ModellingConfig
-                key={model.id}
-                nodeId={node.id}
-                modelId={model.id}
-                config={flat}
-                onUpdate={onUpdate}
-                upstreamColumns={columns}
-                panes={editorPanes}
-                chosenFactor={factor}
-                onReviewPane={reviewPane}
-                reviewablePanes={PANEL_ORDER.flatMap((other) => PANELS[other].panes).filter((candidate) => candidate !== visiblePane)}
-                onTrainAction={setTrainAction}
-                stagedTraining
-                stagedPane={stagedPane}
-                onAppliedStage={(updates) => commitAppliedRecipe(model.id, updates)}
-              />
-            </div>
-            <TrainFailure name={model.name} action={trainAction} />
-          </aside>
+              <div
+                hidden={!showFeatures}
+                className={showFeatures ? "relative flex min-h-0 flex-1 flex-col" : "hidden"}
+              >
+                <nav aria-label="Factors" className="flex min-h-0 flex-1 flex-col px-3 py-3">
+                  {columns.length === 0
+                    ? <ColumnsStatus preview={preview} onRefresh={() => onRefreshNode(node.id)} />
+                    : <FactorList config={flat} columns={columns} selected={factor} onSelect={selectFactor} onUpdate={onUpdate} readOnly={readOnly} />}
+                </nav>
+              </div>
+              {/* Retain drafts and running-stage controls across tab changes. */}
+              <div
+                hidden={showFeatures}
+                className={showFeatures ? "hidden" : "relative min-h-0 flex-1 overflow-y-auto"}
+                inert={readOnly ? true : undefined}
+              >
+                {/* One editor per model across every panel: its drafts, estimate and training job are its own. */}
+                <ModellingConfig
+                  key={model.id}
+                  nodeId={node.id}
+                  modelId={model.id}
+                  config={flat}
+                  onUpdate={onUpdate}
+                  upstreamColumns={columns}
+                  panes={editorPanes}
+                  chosenFactor={factor}
+                  onReviewPane={reviewPane}
+                  reviewablePanes={PANEL_ORDER.map((other) => PANELS[other].pane).filter((candidate) => candidate !== shown.pane)}
+                  onTrainAction={setTrainAction}
+                  stagedTraining
+                  stagedPane={stagedPane}
+                  onAppliedStage={(updates) => commitAppliedRecipe(model.id, updates)}
+                />
+              </div>
+              <TrainFailure name={model.name} action={trainAction} />
+            </aside>
+          </SidePanel>
         </div>
       </main>
     </div>
@@ -780,14 +797,13 @@ function Tables({ nodeId, modelId }: { nodeId: string; modelId: string }) {
   const result = compact?.diagnostics_view === "compact" ? full.response : compact
   const built = selected === "candidate" ? result : result && stageResult(result, selected)
   if (applied?.staged) return <>
-    <label className="mb-4 flex items-center gap-3 text-[12px]">Stage
-      <select aria-label="Table stage" className="rounded border px-2 py-1" value={selected}
-        style={{ background: "var(--bg-panel)", borderColor: "var(--border)" }}
-        onChange={(event) => useStagedViews.getState().update(key, { tableStage: event.target.value as ModelStage | "candidate" })}>
-        {candidate && <option value="candidate">Selected candidate</option>}
-        {STAGES.map((stage) => <option key={stage} value={stage} disabled={!applied.staged?.stages[stage]}>{STAGE_LABELS[stage]}</option>)}
-      </select>
-    </label>
+    <div className="mb-4"><StageButtons<ModelStage | "candidate"> label="Table stage" value={selected}
+      onChange={(stage) => useStagedViews.getState().update(key, { tableStage: stage })}
+      options={[
+        ...(candidate ? [{ key: "candidate" as const, label: "Selected candidate" }] : []),
+        ...STAGES.map((stage) => ({ key: stage, label: STAGE_LABELS[stage],
+          disabled: !applied.staged?.stages[stage], title: applied.staged?.stages[stage] ? undefined : "Not built yet" })),
+      ]} /></div>
     <p className="mb-3 text-[11px]" style={{ color: "var(--text-muted)" }}>{applied.staged.reference_fit === "development" ? "Development reference fit" : "Validation training fit"} · table shapes and support</p>
     {full.error ? <p role="alert">{full.error}</p> : built ? <TBoostTablesTab result={built} />
       : compact?.diagnostics_view === "compact" ? <ChartEmptyState>Loading tables…</ChartEmptyState>
@@ -797,3 +813,143 @@ function Tables({ nodeId, modelId }: { nodeId: string; modelId: string }) {
   return <TBoostTablesTab result={cached.result} />
 }
 
+/** Diagnostics only the applied stage's run keeps, at its result's top level. */
+const APPLIED_ONLY = {
+  pdp_data: [], shap_summary: [], shap_beeswarm: [], shap_curves: [], feature_importance_loss: [],
+  double_lift: [], lorenz_curve: [], lorenz_curve_perfect: [], residuals_histogram: [], residuals_stats: {},
+  actual_vs_predicted: [],
+} satisfies Partial<TrainResult>
+const otherStageResults = new WeakMap<TrainResult, TrainResult>()
+
+/**
+ * A model's diagnostics by stage, else the latest run's. A staged model's compact state
+ * already holds importance, lift and the residual histogram, so they draw at once; only its
+ * SHAP, PDP and scatter are read on demand (`pending` until they arrive), never its tables.
+ * Every built stage keeps its own importance, but SHAP, PDP, lift and residuals belong to
+ * the applied stage only, so another stage has none.
+ */
+function useStageDiagnostics(nodeId: string, modelId: string): {
+  staged: { applied: ModelStage; built: ModelStage[]; chosen: ModelStage; choose: (stage: ModelStage) => void } | null
+  at: (stage: ModelStage | null) => TrainResult | null
+  pending: boolean
+  error?: string
+} {
+  const resultKey = useModelResultKey(nodeId, modelId)
+  const cached = useNodeResultsStore((s) => s.trainResults[resultKey])
+  const key = useStagedViewKey(resultKey)
+  const view = useStagedViews((state) => state.models[key])
+  const applied = view?.state?.current?.result.response
+  const compact = applied?.diagnostics_view === "compact"
+  const requestScope = useRequestScope()
+  const activeSource = useSettingsStore((state) => state.activeSource)
+  const request = useCallback(() => {
+    const target = prepareCanvasRequest(requestScope, nodeId)
+    return { graph: target.graph, node_id: target.nodeId, model: modelId, source: activeSource }
+  }, [requestScope, nodeId, modelId, activeSource])
+  const full = useStageTableResult({ request, viewKey: key, currentRevision: view?.state?.current?.revision,
+    enabled: compact, read: "panels" })
+  if (applied?.staged) {
+    const appliedStage = applied.staged.selected_stage
+    const built = STAGES.filter((stage) => applied.staged?.stages[stage])
+    const chosen = view?.diagnosticStage
+    const response = full.response ?? applied
+    const at = (stage: ModelStage | null): TrainResult | null => {
+      const result = response ? stageResult(response, stage ?? appliedStage) : null
+      if (result === null || stage === null || stage === appliedStage) return result
+      const other = otherStageResults.get(result) ?? { ...result, ...APPLIED_ONLY }
+      otherStageResults.set(result, other)
+      return other
+    }
+    return {
+      staged: { applied: appliedStage, built, chosen: chosen !== undefined && built.includes(chosen) ? chosen : appliedStage,
+        choose: (stage) => useStagedViews.getState().update(key, { diagnosticStage: stage }) },
+      at, pending: compact && !full.response && !full.error, error: full.error,
+    }
+  }
+  const result = cached !== undefined && hasTrainResult(cached) ? cached.result : null
+  return { staged: null, at: () => result, pending: false }
+}
+
+/** Why a pane's on-demand diagnostics could not be read, above what it can still draw. */
+function PaneError({ error }: { error?: string }) {
+  return error ? <p role="alert" className="mb-3 text-[12px]" style={{ color: "var(--danger-text-soft)" }}>{error}</p> : null
+}
+
+/**
+ * A note under a pane's stage buttons. A staged model's panes keep its line while it is
+ * empty, so a loading note that comes and goes never moves the charts.
+ */
+function PaneNote({ children, reserve = false }: { children?: ReactNode; reserve?: boolean }) {
+  if (!children && !reserve) return null
+  return <p className="mb-3 min-h-4 text-[11px] leading-4" style={{ color: "var(--text-muted)" }}>{children}</p>
+}
+
+type ExplainView = "importance" | "pdp" | "shap"
+
+/**
+ * What the model learned: its feature importance, and each factor's partial dependence and
+ * SHAP curve, the factor picked from a list ranked by importance. The stage buttons pick
+ * whose importance; SHAP and PDP come with the applied stage only.
+ */
+function Explain({ nodeId, modelId, factor, onSelectFactor }: {
+  nodeId: string; modelId: string; factor: string | null; onSelectFactor: (factor: string) => void
+}) {
+  const { staged, at, pending, error } = useStageDiagnostics(nodeId, modelId)
+  const [view, setView] = useState<ExplainView>("importance")
+  const [search, setSearch] = useState("")
+  const stage = staged?.chosen ?? null
+  const result = at(stage)
+  if (result === null) return <ChartEmptyState>Not boosted yet</ChartEmptyState>
+  const views: { key: ExplainView; label: string }[] = [
+    { key: "importance", label: "Importance" },
+    ...(result.pdp_data.length ? [{ key: "pdp" as const, label: "PDP" }] : []),
+    ...(result.shap_curves.length ? [{ key: "shap" as const, label: "SHAP curves" }] : []),
+  ]
+  const shown = views.some((entry) => entry.key === view) ? view : "importance"
+  const importance = new Map(result.feature_importance.map((item) => [item.feature, item.importance]))
+  const names = [...new Set([...result.pdp_data.map((item) => item.feature), ...result.shap_curves.map((item) => item.feature)])]
+  const featureBrowser = {
+    features: names.map((feature) => ({ feature, importance: importance.get(feature) ?? 0 })),
+    selected: factor !== null && names.includes(factor) ? factor : names[0] ?? null,
+    onSelect: onSelectFactor,
+    search,
+    onSearch: setSearch,
+  }
+  const note = staged === null || views.length > 1 ? null
+    : staged.chosen !== staged.applied ? `SHAP and partial dependence are kept for the applied stage, ${STAGE_LABELS[staged.applied]}, only`
+      : pending ? "Loading SHAP and partial dependence…"
+        : staged.applied !== "full" ? "SHAP and partial dependence are worked out for the full GBM only" : null
+  return <>
+    {staged && <div className="mb-3"><StageButtons label="Explain stage" value={staged.chosen} onChange={staged.choose}
+      options={STAGES.map((key) => ({ key, label: STAGE_LABELS[key], disabled: !staged.built.includes(key),
+        title: staged.built.includes(key) ? undefined : "Not built yet" }))} /></div>}
+    <div className="mb-3"><ViewSwitch label="Explain view" options={views} value={shown} onChange={setView} /></div>
+    <PaneError error={error} />
+    <PaneNote reserve={staged !== null}>{note}</PaneNote>
+    {shown === "importance" && <FeaturesTab result={result} />}
+    {shown === "pdp" && <PdpTab result={result} featureBrowser={featureBrowser} />}
+    {shown === "shap" && <ShapCurvesTab result={result} featureBrowser={featureBrowser} />}
+  </>
+}
+
+/**
+ * How well the model's predictions fit: lift and Lorenz, then the residuals. Only the
+ * applied stage's are kept, so its button is the one that can be chosen.
+ */
+function Fit({ nodeId, modelId }: { nodeId: string; modelId: string }) {
+  const { staged, at, pending, error } = useStageDiagnostics(nodeId, modelId)
+  const result = at(staged?.applied ?? null)
+  if (result === null) return <ChartEmptyState>Not boosted yet</ChartEmptyState>
+  return <>
+    {staged && <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+      <StageButtons label="Fit stage" value={staged.applied} onChange={() => {}}
+        options={STAGES.map((key) => ({ key, label: STAGE_LABELS[key], disabled: key !== staged.applied,
+          title: key === staged.applied ? undefined : staged.built.includes(key) ? "Lift and residuals are kept for the applied stage only" : "Not built yet" }))} />
+      <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{evidenceLabel(result)} rows</span>
+    </div>}
+    <PaneError error={error} />
+    <PaneNote reserve={staged !== null}>{pending ? "Loading the actual against predicted scatter…" : null}</PaneNote>
+    <section aria-label="Lift" className="mb-6"><LiftTab result={result} /></section>
+    <section aria-label="Residuals"><ResidualsTab result={result} /></section>
+  </>
+}

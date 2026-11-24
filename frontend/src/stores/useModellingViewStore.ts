@@ -9,13 +9,20 @@ import { create } from "zustand"
 import useWorkbenchStore from "./useWorkbenchStore"
 
 /**
- * What the right-hand column shows: the chosen model's own settings, or, from the
- * toolbar, Model Setup (the settings every model shares) or Training Split.
+ * What the right-hand column shows, as the toolbar picks it: the chosen model's own
+ * Features, Parameters or Training, or Model Setup (the settings every model shares) or
+ * Data Split.
  */
-export type SettingsPanel = "model" | "setup" | "split"
+export type SettingsPanel = "features" | "params" | "train" | "setup" | "split"
+
+/** The panels that hold the chosen model's own settings, not those every model shares. */
+export const MODEL_PANELS: readonly SettingsPanel[] = ["features", "params", "train"]
+
+/** The settings panel's width until its edge is dragged. */
+export const DEFAULT_PANEL_WIDTH = 400
 
 /** The panes of a model: what the area between its factors and its settings shows. */
-export type ModelPane = "factor" | "curve" | "tables" | "paths"
+export type ModelPane = "factor" | "curve" | "tables" | "paths" | "explain" | "fit"
 
 /** The chosen model's training, as the toolbar's Train button runs it. */
 export interface TrainAction {
@@ -38,7 +45,10 @@ interface ModellingViewState {
   chosenModel: string | null
   /** The ids of the node's models whose box is unticked: they are left off the charts. */
   hiddenModels: readonly string[]
-  panel: SettingsPanel
+  /** The right-hand settings panel; null while it is closed. */
+  panel: SettingsPanel | null
+  /** The settings panel's width in pixels, as its left edge was last dragged. */
+  panelWidth: number
   pane: ModelPane
   /** The factor whose chart shows; null until one is chosen. */
   factor: string | null
@@ -55,9 +65,12 @@ interface ModellingViewState {
   setModelShown: (modelId: string, shown: boolean) => void
   /** Back to the list of models. */
   closeModel: () => void
-  /** Show a settings panel; asking for the one that shows goes back to the model's. */
-  togglePanel: (panel: SettingsPanel) => void
   showPanel: (panel: SettingsPanel) => void
+  /** Close the settings panel; its editor stays, hidden. */
+  closePanel: () => void
+  /** From Model Setup or Data Split, show the chosen model's Features; else keep the panel. */
+  showModelPanel: () => void
+  setPanelWidth: (width: number) => void
   showPane: (pane: ModelPane) => void
   /** Chart a factor: choosing one shows the factor chart. */
   selectFactor: (factor: string | null) => void
@@ -68,25 +81,29 @@ const useModellingViewStore = create<ModellingViewState>()((set) => ({
   modelId: null,
   chosenModel: null,
   hiddenModels: [],
-  panel: "model",
+  panel: "features",
+  panelWidth: DEFAULT_PANEL_WIDTH,
   pane: "factor",
   factor: null,
   trainAction: null,
   openModel: (modelId) =>
     set((state) => (state.modelId === modelId
       ? {}
-      : { modelId, chosenModel: null, hiddenModels: [], panel: "model", pane: "factor", factor: null })),
+      : { modelId, chosenModel: null, hiddenModels: [], panel: "features", pane: "factor", factor: null })),
   chooseModel: (chosenModel) => set({ chosenModel }),
   setModelShown: (modelId, shown) => set((state) => ({
     hiddenModels: shown
       ? state.hiddenModels.filter((id) => id !== modelId)
       : [...state.hiddenModels.filter((id) => id !== modelId), modelId],
   })),
-  closeModel: () => set({ modelId: null, chosenModel: null, hiddenModels: [], panel: "model", factor: null }),
-  togglePanel: (panel) => set((state) => ({ panel: state.panel === panel ? "model" : panel })),
+  closeModel: () => set({ modelId: null, chosenModel: null, hiddenModels: [], panel: "features", factor: null }),
   showPanel: (panel) => set({ panel }),
+  closePanel: () => set({ panel: null }),
+  showModelPanel: () => set((state) => (state.panel === "setup" || state.panel === "split" ? { panel: "features" } : {})),
+  setPanelWidth: (panelWidth) => set({ panelWidth }),
   showPane: (pane) => set({ pane }),
-  selectFactor: (factor) => set((state) => factor === null ? { factor } : { factor, pane: state.pane === "paths" ? "paths" : "factor" }),
+  // A factor picked on Paths or Explain stays there; elsewhere it brings its chart.
+  selectFactor: (factor) => set((state) => factor === null ? { factor } : { factor, pane: state.pane === "paths" || state.pane === "explain" ? state.pane : "factor" }),
   setTrainAction: (trainAction) => set({ trainAction }),
 }))
 

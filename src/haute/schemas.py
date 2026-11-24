@@ -3555,6 +3555,14 @@ class TrainRequest(BaseModel):
     diagnostics: Literal["full", "compact"] = "full"
 
 
+class StageReadRequest(TrainRequest):
+    """A stage-state read. Besides ``full`` and ``compact``, it can read the current record
+    alone in full (``current``) or compact with its result panels (``panels``), every other
+    record compact."""
+
+    diagnostics: Literal["full", "compact", "current", "panels"] = "full"  # type: ignore[assignment]
+
+
 class StageActionRequest(TrainRequest):
     prepare_next: bool = False
     current_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
@@ -4120,7 +4128,7 @@ class TrainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["started", "completed", "error"]
-    diagnostics_view: Literal["full", "compact"] = Field(
+    diagnostics_view: Literal["full", "compact", "panels"] = Field(
         default="full", exclude_if=lambda value: value == "full"
     )
     table_summary: StageTableSummary | None = Field(

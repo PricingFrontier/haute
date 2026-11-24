@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback } from "react"
 import { ChevronDown, Plus, Trash2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -6,17 +6,7 @@ import useGraphStore from "../stores/useGraphStore"
 import { confirmed } from "../stores/useQuestionStore"
 import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
 import useClickOutside from "../hooks/useClickOutside"
-
-const PipelineSettingsModal = lazy(() => import("./PipelineSettingsModal"))
-
-// Only these statuses mean the server is known to be unreachable; idle and
-// connecting are not evidence, so a page load never flashes "Offline".
-const OFFLINE_TITLES: Partial<Record<WsStatus, string>> = {
-  reconnecting: "Server offline - reconnecting…",
-  disconnected: "Server offline - reload the page once haute serve is running",
-}
-
-const PIPELINE_SETTINGS_TITLE = "Pipeline settings - preview rows, chunk rows and cached data"
+import PipelineSettingsButton from "./PipelineSettingsButton"
 
 /**
  * Remove *source*, first removing its values from split global constants. When
@@ -58,10 +48,6 @@ export default function SourcePipelineControls({
   const setActiveSource = useSettingsStore((s) => s.setActiveSource)
   const addSource = useSettingsStore((s) => s.addSource)
   const removeSource = useSettingsStore((s) => s.removeSource)
-  // Local, not in the UI store: this column is the only thing that opens the
-  // pipeline settings pane, so no other surface needs to read or set this.
-  const [pipelineSettingsOpen, setPipelineSettingsOpen] = useState(false)
-  const closePipelineSettings = useCallback(() => setPipelineSettingsOpen(false), [])
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -69,7 +55,6 @@ export default function SourcePipelineControls({
   const sourceRef = useRef<HTMLDivElement>(null)
   const closeSource = useCallback(() => setSourceOpen(false), [])
   useClickOutside(sourceRef, closeSource, sourceOpen)
-  const offlineTitle = OFFLINE_TITLES[wsStatus]
 
   return (
     <>
@@ -195,29 +180,8 @@ export default function SourcePipelineControls({
             </div>
           )}
         </div>
-        {/* The button reads "Pipeline" whatever the calculation mode, and
-            "Offline" while the server is away, as nothing calculates then.
-            "Offline" is no wider than "Pipeline", so going offline never
-            widens the column. */}
-        {/* Spelled as the Source selector over it is, whose chevron the kit's
-            centred action would not take, so the two texts line up. */}
-        <button
-          data-testid="toolbar-pipeline-settings"
-          onClick={() => setPipelineSettingsOpen(true)}
-          aria-haspopup="dialog"
-          aria-expanded={pipelineSettingsOpen}
-          className="toolbar-btn w-full px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
-          style={offlineTitle ? { color: 'var(--danger)' } : undefined}
-          title={offlineTitle ?? PIPELINE_SETTINGS_TITLE}
-        >
-          {offlineTitle ? "Offline" : "Pipeline"}
-        </button>
+        <PipelineSettingsButton wsStatus={wsStatus} />
       </div>
-      {pipelineSettingsOpen && (
-        <Suspense fallback={null}>
-          <PipelineSettingsModal onClose={closePipelineSettings} />
-        </Suspense>
-      )}
     </>
   )
 }

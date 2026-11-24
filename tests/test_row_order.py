@@ -610,5 +610,5 @@ def test_ave_keeps_its_largest_levels_ties_by_level_in_any_order() -> None:
         return compute_ave_per_feature(rows, ["area"], ["area"], y, p)[0]["bins"]
 
     first = bins(frame, actual, predicted)
-    assert [entry["label"] for entry in first] == [*levels[:15], "Other"]
+    assert [entry["label"] for entry in first] == [*levels[:15], "Other (5 levels)"]
     assert first == bins(frame[permutation], actual[permutation], predicted[permutation])

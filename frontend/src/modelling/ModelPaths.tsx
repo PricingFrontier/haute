@@ -11,6 +11,7 @@ import { type PostFitStage } from "./stageSettings"
 import type { StagePathPayload, StagePathPointPayload } from "../generated/api-contracts.generated"
 import PathCandidateSummary from "./PathCandidateSummary"
 import { PruningPath } from "./PruningPath"
+import { StageButtons } from "./StageButtons"
 
 const labels: Record<PostFitStage, string> = { pruned: "Pruning", banded: "Banding", smoothed: "Smoothing" }
 function pointLabel(path: StagePathPayload, point: StagePathPointPayload): string {
@@ -123,11 +124,8 @@ export default function ModelPaths({ nodeId, modelId, readOnly }: {
   }
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="inline-flex gap-1 rounded-lg p-1" style={{ background: "var(--bg-panel)" }} role="tablist" aria-label="Model paths">
-        {(Object.keys(labels) as PostFitStage[]).map((value) => <button key={value} type="button" role="tab" aria-selected={stage === value}
-          className="focus-ring rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors" onClick={() => activate(value)}
-          style={{ color: stage === value ? "var(--text-primary)" : "var(--text-muted)", background: stage === value ? "var(--bg-hover)" : "transparent" }}>{labels[value]}</button>)}
-      </div>
+      <StageButtons label="Model paths" value={stage} onChange={activate}
+        options={(Object.keys(labels) as PostFitStage[]).map((key) => ({ key, label: labels[key] }))} />
       {path && <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{path.evidence === "out_of_fold" ? "OOF validation" : path.evidence === "validation" ? "Validation" : "Development rows"} · {path.metric.replaceAll("_", " ")} · lower is better</span>}
     </div>
     {!path ? <ChartEmptyState>{current ? `Run the preceding enabled stage to prepare ${labels[stage].toLowerCase()}.` : "Train the GBM to explore its paths."}</ChartEmptyState> : <>

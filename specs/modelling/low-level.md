@@ -1522,10 +1522,29 @@ potentially large copy on its threadpool.
 - `compute_ave_per_feature` reports every bin (a numeric bin, a categorical level, the
   `Missing` bin and the `Other` lump) as `{label, exposure, avg_actual, avg_predicted}`
   over the bin's mass. A row's mass is its weight (one without a weight), times its
-  exposure when the caller passes `exposure`. A bin's `exposure` is its summed mass,
-  rounded to four decimal places, and its averages are the weighted sums of the actuals
-  and of the predictions, each divided by that mass and rounded to six; the categorical
-  fold ranks levels by mass, and a bin with no mass is left out. `TrainingJob._compute_metrics`
+  exposure when the caller passes `exposure`. A bin's `exposure` is its summed mass and
+  its averages are the weighted sums of the actuals and of the predictions, each divided
+  by that mass; all three are rounded to six significant figures, and a bin with no mass
+  is left out. Each feature also reports its `grouping`, which the factor chart's caption
+  names:
+  - A numeric feature with at most 20 distinct values has one bin per value
+    (`"each value"`), labelled with the value. Otherwise it is cut into up to `n_bins`
+    bands of equal mass (`"equal exposure"`): a band closes at the distinct value where
+    the cumulative mass reaches its share, so a tied value never straddles two bands, and
+    bands are closed on the right, as in Banding and t-boost. A band is labelled with
+    the smallest and largest values it holds, to four significant figures and without
+    an exponent.
+  - A categorical feature with an order keeps it: a Polars Enum's categories, read before
+    the string cast, or levels that all read as numbers, in numeric order (`"in order"`),
+    up to 60 levels. Beyond 60, numbered levels are joined into equal-exposure bands as
+    for a number, and Enum levels fold as below.
+  - Any other categorical feature with at most `max_categories` levels shows every level
+    in natural order, digits compared as numbers (`"A–Z"`). With more, it keeps its
+    `max_categories` largest levels by mass, equal masses ordered by level, and sums the
+    rest into `Other (n levels)` (`"by exposure"`).
+  - Nulls (and NaN for a number) are the `Missing` bin. It is never ranked, never in
+    `Other`, and always last, and it cannot collide with a level of the same name.
+  `TrainingJob._compute_metrics`
   passes the offset column as `exposure` only under a log link (`TrainingJob._offset_link`),
   where a prediction is a rate times the exposure, so the averages are rates per unit of
   exposure; it passes none for an identity-link offset, an additive base value, and the
@@ -3428,6 +3447,15 @@ reads and restore-final.
   before the pointer is written. A response failure therefore never follows a commit.
   Publication's new result is the one in memory and is never read back.
 - Compact reads skip table objects and thin histories through `compact_response`.
+- `/stages/read` also takes two narrower reads (`StageReadRequest.diagnostics`), each
+  leaving every record but `current` compact: `current` hydrates the current record in
+  full (the Tables pane), and `panels` returns the current record's compact view with
+  the result-panel fields `compact_response` blanks (`RESULT_PANEL_FIELDS`: SHAP, PDP and
+  the actual-versus-predicted scatter) copied from its revision manifest, never loading
+  table or history objects (the Explain and Fit panes). Its response is labelled
+  `diagnostics_view: "panels"`. Other stage endpoints keep `full`/`compact` only.
+- Actions that recover only to mark dead jobs interrupted (remove, checkpoint) recover
+  compact: they discard the hydrated state.
 - Only the revision-level compact view is persisted; there are no per-snapshot or
   per-point views. A compact status read verifies the view against the pointer record's
   digest and parses only it, never the revision manifest. A damaged manifest is refused by

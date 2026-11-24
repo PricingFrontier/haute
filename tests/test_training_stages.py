@@ -333,6 +333,14 @@ def test_stage_routes_restore_only_selected_model_and_apply_with_revision_checks
     other = client.post("/api/modelling/stages/read", json={**payload, "model": "m2"})
     assert other.status_code == 200, other.text
     assert other.json()["current"] is None
+    for narrow in ("current", "panels"):
+        read = client.post("/api/modelling/stages/read", json={**payload, "diagnostics": narrow})
+        assert read.status_code == 200, read.text
+        assert read.json()["current"]["revision"] == current["revision"]
+        assert read.json()["preview"]["result"]["response"]["diagnostics_view"] == "compact"
+    # Only the read knows the narrow modes.
+    refused = client.post("/api/modelling/stages/remove", json={**payload, "diagnostics": "panels"})
+    assert refused.status_code == 422, refused.text
     action = {
         **payload,
         "current_revision": current["revision"],

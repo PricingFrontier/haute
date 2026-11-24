@@ -38,8 +38,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/modelling/interactiveModels.ts` | `INTERACTIVE_MODEL_KEYS`, model configuration projection, names, colours and immutable identifiers. |
 | `frontend/src/modelling/modelRuns.ts` | Per-model result keys and training/last-run state selectors. |
 | `frontend/src/panels/modelling/FeatureMonotonicity.tsx` | Shared compact feature-direction controls used by the modelling node and interactive feature settings. |
-| `frontend/src/modelling/ModellingView.tsx` | Lazy interactive modelling workspace with Main Menu, shared setup/split settings, left model palette, right Features/Training tabs and central Factor/Learning curve/Tables/Paths tabs. Projects per-model config through `applyModelUpdate`; restores all saved stage results; draws visible stage predictions only on comparable evaluation identities and bins; selects tables independently of the applied recipe and keeps the learning curve on the full GBM. Retains palette layout, feature controls, keyboard shortcuts, document editing fences and side panels. |
-| `frontend/src/modelling/ModellingToolbar.tsx` | Main Menu, Model Setup and Training Split with shared project controls. Stage actions live in Training, so no toolbar Train/Cancel action is rendered. |
+| `frontend/src/modelling/ModellingView.tsx` | Lazy interactive modelling workspace with Menu, shared setup/split settings, left model palette, right Features/Training tabs and central Factor/Learning curve/Tables/Paths/Explain/Fit tabs. Explain (importance, PDP, SHAP curves; the importance-ranked list picks the factor) and Fit (lift, Lorenz, residuals) draw importance, lift and the residual histogram from the compact state at once and read only SHAP, PDP and the scatter on demand (`/stages/read` `panels`); Tables reads the current record alone in full (`current`). The last four on-demand results and sixteen path-point inspections are kept by revision identity, so returning to a pane or a path stage reads nothing again. Neither pane attributes the applied stage's diagnostics to another stage. Tables, Explain and Fit pick stages with Paths' stage buttons (`StageButtons.tsx`), not dropdowns; another stage on Explain shows its own importance only. Projects per-model config through `applyModelUpdate`; restores all saved stage results; draws visible stage predictions only on comparable evaluation identities and bins; selects tables independently of the applied recipe and keeps the learning curve on the full GBM. Retains palette layout, feature controls, keyboard shortcuts, document editing fences and side panels. |
+| `frontend/src/modelling/ModellingToolbar.tsx` | Menu, Model Setup over Data Split, Features over Parameters, and Training (they pick the right-hand panel) with shared project controls. Stage actions live in Training, so no toolbar Train/Cancel action is rendered. |
 | `frontend/src/stores/useModellingViewStore.ts` | The Modelling view's own state, none of it saved or undone: the open node's id (null for the list), its chosen model's id, the unticked models (`hiddenModels`), the right-hand `panel` (`model`, `setup` or `split`; `togglePanel` back to `model` when asked for the one that shows), the pane, the charted factor and the chosen model's `trainAction`, which its editor publishes (`TrainAction`: training, busy, issues, error, train and cancel). Opening another node starts at its first model, every model ticked, its settings and the Factor pane with no factor; opening the open one keeps them. Choosing a factor shows the factor chart, or retains Paths while a path point is selected. `openModelInModellingView` opens a model and shows the view. |
 | `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the ModalShell Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. Its collapsed bar summarises the first two of the metrics the result leads with (`headlineMetrics`). |
@@ -814,7 +814,7 @@ the job polling and its ranges published while a document reset retires it.
 The Modelling view is covered by `frontend/src/modelling/__tests__/ModellingView.test.tsx`
 (the list of interactive builds and no other model, opening one with the node's columns as
 its factors, both in the palette column with the view switcher at its foot and the factors
-named in it with their fitting controls collapsed, the model disclosures with chart checkboxes, progress bars and no state words, the failure alert at the settings column’s foot, several models drawn on the factor chart and an unticked one left off, Add, Duplicate, Rename and Remove, the single right feature list's expand/collapse, model-specific inclusion and numeric direction edits, read-only browsing and disabled edits, and Features/Training tabs on the right with the editor retained across toolbar panel changes, with Model setup and Training split from the store and the chosen factor handed to the editor, an edit through the
+named in it with their fitting controls collapsed, the model disclosures with chart checkboxes, progress bars and no state words, the failure alert at the settings column’s foot, several models drawn on the factor chart and an unticked one left off, Add, Duplicate, Rename and Remove, the single right feature list's expand/collapse, model-specific inclusion and numeric direction edits, read-only browsing and disabled edits, and Features/Training tabs on the right with the editor retained across toolbar panel changes, with Model setup and Data split from the store and the chosen factor handed to the editor, an edit through the
 node's update, the factor chart's states, the learning
 curve of the latest run and of a running boost, the tables, each panel's panes and **Go to**, the editing
 fence, save, undo and redo from the keyboard, the toolbar's panels in the settings' place,
@@ -1255,7 +1255,7 @@ long model names fit the palette and fitting controls fit the Features pane at d
 
 ### Modelling workspace navigation
 
-`ModellingToolbar` owns Main Menu, which calls `closeModel` even while read-only. Neither
+`ModellingToolbar` owns Menu, which calls `closeModel` even while read-only. Neither
 `ModelWorkspace` nor `NoModels` renders a back arrow. The workspace's left `PaletteColumn`
 holds the Models header, a Models navigation containing vertical `ModelEntries`, and the view
 switcher at its foot. Model entries fill the width, truncate long names with a title, and
@@ -1267,7 +1267,7 @@ contains the existing `FactorList` and column-loading/Refresh states. Both featu
 one `ModellingConfig` per model stay mounted when hidden. `ModellingConfig` renders Parameters
 while the model panel shows and Target/Split for shared settings. `onReviewPane` can select
 Features or Parameters. Only the editor body is inert in read-only mode; feature browsing
-and settings tabs remain interactive. Tests cover Main Menu, the models' location, both
+and settings tabs remain interactive. Tests cover Menu, the models' location, both
 settings tabs, preserved drafts/search/expansion, model-specific edits and hidden-editor
 training registration. Browser checks cover long names, disclosure animation and viewport scrolling.
 
@@ -1309,7 +1309,7 @@ and reduced-motion rule. Tests cover selection versus expansion, one open row, p
 chart visibility, model operations, read-only controls and progress while collapsed.
 
 The workspace omits the node-name subtitle in the left palette and the model-name heading
-above Features/Parameters. Shared Model setup and Training split headings remain; the
+above Features/Parameters. Shared Model setup and Data split headings remain; the
 settings aside retains its accessible name identifying the selected model.
 
 Both Modelling tab strips use `PreviewPanelTabs` with its default appearance and
@@ -1337,8 +1337,8 @@ copy-and-select outcome. Browser checks include keyboard access and scroll-bound
 Interactive t-boost's right model tabs are Features, Parameters and Training. Parameters
 renders GBM, Pruning, Banding and Smoothing cards with animated settings disclosures.
 Training renders separate cards with fixed headings and visible stage actions. Only the active operation's action becomes Cancel; all
-other actions wait while any training job runs. The toolbar holds Main Menu, Model Setup,
-Training Split and project controls, with no Train button. Readiness and last-run errors
+other actions wait while any training job runs. The toolbar holds Menu, Model Setup,
+Data Split and project controls, with no Train button. Readiness and last-run errors
 remain at the foot of the right column. The existing node editor retains ordinary training.
 
 `modelling/stageSettings.ts` splits supported legacy post-fit keys out of GBM parameters on
@@ -1402,7 +1402,7 @@ keeps parameter controls mounted but hidden in its action view, preserving numer
 and validity. Parameter cards contain settings only; action cards have fixed headings and
 visible buttons. Apply / Clear prepared path are outside disclosures. Selecting a
 path point stays in Paths and updates linked read-only inspection. Tabpanel IDs track the selected tab. Shared Model Setup
-and Training Split remain unchanged. Tests prove view separation, invalid drafts blocking
+and Data Split remain unchanged. Tests prove view separation, invalid drafts blocking
 training across tab switches, reachable pruning decisions and cancellation.
 
 `StageSettings.enabled` contains booleans for pruned, banded and smoothed. The frontend

@@ -116,6 +116,25 @@ On 20 November 2026 a team of nine agents honed `workflow.md` and `ui.md` and ad
 - **Q6.** Do reviews and acknowledged checks travel with work in progress, in git? [No.
   They stay local until logging, then go into the model card.]
 
+*The factor axis* (from `factor-axis-2026-11-23.md`, 23 November):
+
+- **Q7.** One bar per value for a number factor with up to 20 values? [Yes, 20.]
+- **Q8.** Is analytics.md's band count the default? [Yes: 20, or claims / 50 if fewer, at
+  least 5.]
+- **Q9.** How many category levels before Other? [15, with `+` to 30, 50 and All.]
+- **Q10.** Where is a grouping saved? [The browser's view store. `modelling.json` only if
+  it must travel with the project.]
+- **Q11.** Copy as Banding rules, copying text only? [Yes.]
+- **Q12.** Keys to step fewer and more groups? [Not in the first cut.]
+- **Q13.** "Use this count for every number factor"? [Later, if asked for.]
+- **Q14.** A–Z order for a category when every level shows, named in the caption? [Yes.]
+- **Q15.** Calendar buckets for dates (month, quarter, year)? [Planned now, built after the
+  first cut.]
+- **Q16.** Kept predictions earlier, so every cut is exact? [No. Ask before snapping until
+  then.]
+- **Q17.** Old reference models shown as they are, not overlaid, until trained again?
+  [Yes.]
+
 **Concerns about settled lines** (from the team). The files stay inside every settled line.
 Each concern gives the problem and the smallest change that would fix it. To accept one,
 say its letter.
@@ -141,16 +160,26 @@ say its letter.
   range of values. Smallest change: say both in the rule.
 - **F. "Feature engineering stays in the pre-processing nodes."** Grouping levels inside one
   GLM term stretches it. The reading taken: what only the GLM sees is a term, not a column.
+  Typed cuts on the factor chart look like banding too (23 Nov): no change is needed while
+  they are display only and Copy as Banding rules only copies text.
 - **G. "There is one menu for the settings all models share, then a menu for each model
   type."** The menus are now per model: two t-boost models each have their own tab, with
   their own factors. Smallest change: "then a menu for each model".
 - **H. "The model type a schedule trains and logs is picked when the schedule is set up."**
   A node can now hold two t-boost models, so the model type alone does not say which one a
   schedule trains. Smallest change: "The model a schedule trains and logs".
+- **I. "The node is only the connection point. It holds no config."** A factor grouping that
+  has to travel with the project would sit in `modelling.json`, the node's config. Smallest
+  change: none while groupings stay in the browser (Q10). If they must travel: "…apart from
+  the Modelling UI's saved views."
+- **J. "The actual-against-expected charts show every trained model…"** A model trained on
+  other rows is named but not drawn. Smallest change: "…every trained model on the same rows;
+  one on other rows is named."
 
 **Proposed** (say the number to strike or change one). Items 1 to 19 are from before the
 team's work and keep their numbers, reworded where the team changed them. Items 20 to 58
-are the team's. Items 59 on follow Ralph's decisions of 20 November.
+are the team's. Items 59 to 61 follow Ralph's decisions of 20 November. Items 62 to 76 are
+from the factor-axis team of 23 November (`factor-axis-2026-11-23.md`).
 
 1. ~~One model per model type in a node. The two yardsticks are reference models, so this
    holds.~~ Struck 20 Nov: a node can hold several models of one model type (settled).
@@ -314,6 +343,42 @@ are the team's. Items 59 on follow Ralph's decisions of 20 November.
     runs and logging; ui.md, The frame)*
 61. Default boost takes its factors like any new model, and keeps them until changed in its
     tab. *(Models, runs and logging)*
+
+*The factor axis*
+
+62. One grouping per factor per node, shared by every model, stage and left-out chart.
+    Display only: the model's bands do not change. *(ui.md, Charts)*
+63. A default by kind of factor, with no setting: one bar per value up to 20 values,
+    otherwise equal-exposure bands with round edges; numbered categories in order, others
+    top 15 then Other; Missing last. *(analytics.md)*
+64. The chart's description line names the grouping drawn and is its control: `−` and `+`
+    step the count, and `▾` opens a popover. A grouping that is not the default shows in the
+    accent colour, with Reset. *(ui.md, Charts)*
+65. The popover holds counts, Each value, Order, t-boost's bands, Custom cuts… and Reset.
+    The order of levels moves here from More. *(ui.md, Charts)*
+66. Custom cuts: an edge list, a Fill line, live exposure shares and Apply. A cut inside a
+    slice asks before it moves. *(ui.md, Charts)*
+67. Split and Merge with next in a bar's hover detail. Exact, and they edit nothing.
+    *(ui.md, Charts)*
+68. Search pins a category level beside the top levels and takes it out of Other. *(ui.md,
+    Charts)*
+69. Each run stores unrounded sums per slice of a node grid. The browser merges them,
+    exactly for whole slices. `ave_per_feature` is derived from them. *(analytics.md;
+    plan.md)*
+70. The node grid is cut from the non-test rows by value and mass: one slice per value up to
+    200 values, else about 100 equal-exposure slices plus round values; categories up to
+    1,000 levels. It carries a digest. *(analytics.md)*
+71. Series overlay when they share the grid digest and the evaluation identity. *(ui.md,
+    Charts)*
+72. A grouping is view state, saved per node and factor. It is never a job field and never
+    part of the training identity. *(ui.md, Where each thing lives)*
+73. A model's bands are offered as a grouping only where they are exact. *(ui.md, Charts)*
+74. Copy as Banding rules is the one bridge from the chart to pre-processing. *(Hand edits)*
+75. "The axis moves only with the factor, the scale or the grouping you set." An order by
+    actual over expected follows the chosen model. *(ui.md, Charts)*
+76. Left out: dragging edges, a grouping per model, log and to-scale axes, a choice of cut
+    methods, automatic merging of thin levels, lists of sentinel values, and merging levels
+    by hand. *(ui.md, Left out)*
 
 ## The idea
 

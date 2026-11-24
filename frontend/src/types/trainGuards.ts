@@ -26,6 +26,7 @@ import {
   validateStagePathInspectionPayload,
   validateTrainStatusResponse,
 } from "../generated/api-contracts.training.validators.mjs"
+import { AVE_GROUPINGS } from "../utils/aveGrouping"
 import { expectGeneratedContract } from "./generatedContractValidation"
 import {
   expectArray,
@@ -84,6 +85,9 @@ function parseAvePerFeatureRow(value: unknown, field: string): NonNullable<Train
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
     type: expectString("parseTrainResponse", obj.type, `${field}.type`),
+    ...(obj.grouping === undefined ? {} : {
+      grouping: expectStringLiteral("parseTrainResponse", obj.grouping, `${field}.grouping`, AVE_GROUPINGS),
+    }),
     bins: obj.bins === undefined ? [] : parseArray("parseTrainResponse", obj.bins, `${field}.bins`, parseAveBin),
   }
 }

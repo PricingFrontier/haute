@@ -4,6 +4,7 @@ import type { TrainAvePerFeatureRow } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import ChartFocusDetail from "../ChartFocusDetail"
+import { aveGroupingCaption } from "../../utils/aveGrouping"
 import {
   ChartEmptyState,
   ChartLegend,
@@ -53,7 +54,7 @@ export function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
       <div className="validation-chart-title">
         <div>
           <h4 className="validation-feature-heading">{data.feature}</h4>
-          <p className="validation-chart-description">{data.type} · actual vs expected</p>
+          <p className="validation-chart-description">{aveGroupingCaption(data)} · actual vs expected</p>
         </div>
         <ChartLegend
           items={[

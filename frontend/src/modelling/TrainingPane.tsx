@@ -2,13 +2,10 @@ import { useCallback, useId, useState, type ReactNode } from "react"
 import { Play, Square } from "lucide-react"
 import { NumberField, type NumberBounds } from "../panels/modelling/NumberField"
 import { MODELLING_INPUT_STYLE } from "../panels/modelling/styles"
-import { STAGE_LABELS, resolveStageParents, savedStageSettings, stageMatchesDraft, type ModelStage, type PostFitStage, type StageSettings } from "./stageSettings"
+import { STAGE_LABELS, resolveStageParents, stageMatchesDraft, type ModelStage, type PostFitStage, type StageSettings } from "./stageSettings"
 import type { StagePathPayload } from "../generated/api-contracts.generated"
 import type { TrainResponse } from "../api/types"
-import { StageDecision } from "./StageDecision"
 import { isAppliedPathPoint } from "./pathSelection"
-import { appliedChain, evidenceLabel } from "./stageEvidence"
-import { formatMetricValue, metricLabel } from "../panels/modelling/metricOptions"
 import "./disclosures.css"
 
 function StageHeading({ name, number }: { name: string; number: number }) {
@@ -40,9 +37,10 @@ function StageCard({ name, number, children, enabled = true, onEnabled, busy = f
   </section>
 }
 
-function StageAction({ name, number, children, action, disabled, running, busy, onAction, status }: {
+/** A stage's title, status and action; why the action is unavailable is its tooltip. */
+function StageAction({ name, number, children, action, disabled, running, busy, onAction, status, hint }: {
   name: string; number: number; children?: ReactNode; action: string; disabled: boolean
-  running: boolean; busy: boolean; onAction: () => void; status?: string
+  running: boolean; busy: boolean; onAction: () => void; status?: string; hint?: string
 }) {
   const Icon = running ? Square : Play
   return <section className="overflow-hidden rounded-xl border" style={{ borderColor: "var(--border)", background: "var(--bg-panel)" }}>
@@ -52,7 +50,7 @@ function StageAction({ name, number, children, action, disabled, running, busy, 
     </div>
     {children && <div className="space-y-3 px-3.5 pb-3">{children}</div>}
     <div className="border-t px-3.5 py-2.5" style={{ borderColor: "var(--border)" }}>
-      <button type="button" disabled={running ? busy : disabled || busy} onClick={onAction}
+      <button type="button" disabled={running ? busy : disabled || busy} onClick={onAction} title={(running ? busy : disabled || busy) ? hint : undefined}
         className="focus-ring flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-35"
         style={{ background: "var(--model-accent-soft)", color: "var(--model-accent)" }}>
         <Icon size={12} />{running ? "Cancel" : action}
@@ -72,19 +70,17 @@ function Setting({ phase, label, value, onChange, onValidity, ...bounds }: Numbe
   </label>
 }
 
-export function TrainingPane({ view = "train", settings, gbm, stages, pathAvailable, pathChanged, active, busy, blocked, postfitBlocked = false, preview, onRun, onCancel, onUpdate, onApply, onDiscard, finalAvailable = false, onExport, exportPanel, diagnosticsNote, pending = [], currentResult, previewResult, finalResult, previewStage = "pruned", candidatePath, candidatePoint, inspectionPending = false, primaryMetric, evaluationMode, evaluationKey = "", setupSummary, onSetup, onSplit, onInspect, onCompare, onFactor, checkpoints, jobMessage, blockingReasons = [] }: {
-  currentResult?: TrainResponse; previewResult?: TrainResponse; finalResult?: TrainResponse
+export function TrainingPane({ view = "train", settings, gbm, stages, pathAvailable, pathChanged, active, busy, blocked, postfitBlocked = false, preview, onRun, onCancel, onUpdate, onApply, onDiscard, finalAvailable = false, onExport, exportPanel, pending = [], currentResult, previewResult, previewStage = "pruned", candidatePath, candidatePoint, inspectionPending = false, evaluationMode, evaluationKey = "", checkpoints, blockingReasons = [] }: {
+  currentResult?: TrainResponse; previewResult?: TrainResponse
   candidatePath?: StagePathPayload; candidatePoint?: string; inspectionPending?: boolean
-  previewStage?: ModelStage; primaryMetric?: string; evaluationMode?: string; evaluationKey?: string; setupSummary?: string
-  onSetup?: () => void; onSplit?: () => void; onInspect?: (pane: "paths" | "curve" | "tables", stage?: PostFitStage) => void
-  onCompare?: (stage: ModelStage, parent: ModelStage) => void; onFactor?: (factor: string) => void
-  checkpoints?: ReactNode; jobMessage?: string; blockingReasons?: readonly string[]
+  previewStage?: ModelStage; evaluationMode?: string; evaluationKey?: string
+  checkpoints?: ReactNode; blockingReasons?: readonly string[]
   view?: "params" | "train"
   settings: StageSettings; gbm: ReactNode; stages: readonly ModelStage[]; pathAvailable: boolean; pathChanged: boolean
   active: ModelStage | "finalise" | null; busy: boolean; blocked: boolean; postfitBlocked?: boolean; preview: boolean
   onRun: (stage: ModelStage | "finalise") => void; onCancel: () => void; onUpdate: (settings: StageSettings) => void
   onApply: () => void; onDiscard: () => void
-  pending?: readonly ModelStage[]; finalAvailable?: boolean; onExport?: () => void; exportPanel?: ReactNode; diagnosticsNote?: string
+  pending?: readonly ModelStage[]; finalAvailable?: boolean; onExport?: () => void; exportPanel?: ReactNode
 }) {
   const [acknowledged, setAcknowledged] = useState<string | null>(null)
   const [invalidFields, setInvalidFields] = useState<ReadonlySet<string>>(new Set())
@@ -100,7 +96,6 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
   const action = (stage: ModelStage | "finalise") => active === stage ? onCancel : () => onRun(stage)
   const invalidPhase = (stage: PostFitStage) => [...invalidFields].some((field) => field.startsWith(`${stage}:`))
   const invalidPath = settings.enabled.pruned && (invalidFields.has("pruned:Path points") || invalidFields.has("pruned:Minimum OOB rows"))
-  const enabledPending = pending.filter((stage) => stage === "full" || settings.enabled[stage])
   const disabled = blocked || active !== null
   const toggle = (stage: PostFitStage, enabled: boolean) => onUpdate(resolveStageParents({
     ...settings, enabled: { ...settings.enabled, [stage]: enabled },
@@ -108,7 +103,6 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
   const showDevelopmentChoice = evaluationMode === "Development" && currentResult?.diagnostics_set !== "development"
   const needsAcknowledgement = showDevelopmentChoice && acknowledged !== evaluationKey
   const appliedPoint = isAppliedPathPoint(currentResult, candidatePath, candidatePoint)
-  const linkClass = "hover-chrome focus-ring rounded px-1 py-1 text-[11px] underline underline-offset-4"
   const stageState = (stage: ModelStage, parent?: ModelStage) => {
     if (preview && previewStage === stage && !appliedPoint) return "Candidate ready"
     if (stage !== "full" && !settings.enabled[stage]) return "Disabled"
@@ -120,23 +114,14 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
     if (parent && (!stages.includes(parent) || pending.includes(parent))) return `Needs ${STAGE_LABELS[parent]}`
     return "Ready"
   }
-  const blockers = [...blockingReasons]
-  if (blocked && blockers.length === 0) blockers.push("Resolve the model configuration before training.")
-  if (active !== null) blockers.push("A model run is in progress. Wait for it to finish or use Cancel before starting another stage.")
-  if (busy && active === null) blockers.push("A model action is in progress. Wait for it to finish before training.")
-  if (needsAcknowledgement) blockers.push("To enable Train GBM, choose validation in Review split or tick the development exploration option above.")
-  for (const field of invalidFields) {
-    const [phase, label] = field.split(":")
-    if (settings.enabled[phase as PostFitStage]) blockers.push(`Correct ${label} in Parameters before running ${label === "Path points" || label === "Minimum OOB rows" ? "GBM or pruning" : STAGE_LABELS[phase as PostFitStage]}.`)
+  // What keeps every stage from running, shown as the actions' tooltips rather than as text.
+  const fieldHint = (stage: PostFitStage) => {
+    const label = [...invalidFields].find((field) => field.startsWith(`${stage}:`))?.split(":")[1]
+    return label && settings.enabled[stage] ? `Correct ${label} in Parameters.` : undefined
   }
-  for (const [stage, name, parent] of [["pruned", "Pruning", "full"], ["banded", "Banding", settings.banding.parent], ["smoothed", "Smoothing", settings.smoothing.parent]] as const) {
-    if (!settings.enabled[stage]) blockers.push(`${name}: disabled in Parameters.`)
-    else if (postfitBlocked) blockers.push(`${name}: rebuild the GBM with the current settings and data first.`)
-    else if (!stages.includes(parent) || pending.includes(parent)) blockers.push(`${name}: build and apply ${STAGE_LABELS[parent]} first.`)
-    else if (stage === "pruned" && !pathAvailable && !pathChanged && !(preview && previewStage === stage)) blockers.push("Pruning: no pruning path is available. Adjust the path settings in Parameters and try again.")
-  }
-  if (!stages.includes("full")) blockers.push("Final model: train the GBM first.")
-  else if (postfitBlocked) blockers.push("Final model: rebuild the GBM with the current settings and data first.")
+  const generalHint = blockingReasons[0]
+    ?? (blocked ? "Resolve the model configuration before training." : undefined)
+    ?? (active !== null ? "A model run is in progress." : busy ? "A model action is in progress." : undefined)
   return <div className="space-y-3 p-3">
     <div hidden={view !== "params"} className="space-y-3">
       <StageCard name="GBM" number={1}>{gbm}</StageCard>
@@ -174,20 +159,12 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
       </section>
     </div>
     <div hidden={view !== "train"} className="space-y-3">
-      {diagnosticsNote && <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{diagnosticsNote}</p>}
-      <StageAction name="GBM" number={1} action="Train GBM" status={stageState("full")} disabled={disabled || needsAcknowledgement || invalidPath} running={active === "full"} busy={busy} onAction={action("full")}>
-        {setupSummary && <p className="text-[11px]" style={{ color: "var(--text-secondary)" }}>{setupSummary}</p>}
-        {evaluationMode && <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Next fit · {evaluationMode}</p>}
-        {currentResult && <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Saved evidence · {evidenceLabel(currentResult)}</p>}
-        <div className="flex flex-wrap gap-x-3">
-          {onSetup && <button type="button" className={linkClass} onClick={onSetup}>Model setup</button>}
-          {onSplit && <button type="button" className={linkClass} onClick={onSplit}>Review split</button>}
-          {stages.includes("full") && onInspect && <button type="button" className={linkClass} onClick={() => onInspect("paths")}>Inspect paths</button>}
-        </div>
-        {postfitBlocked && !needsAcknowledgement && <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>The saved model uses earlier settings or data. Train GBM rebuilds it with your current setup.</p>}
-        {showDevelopmentChoice && <label className="flex items-start gap-2 text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          <input type="checkbox" aria-label="Use development rows for exploration" className="mt-0.5" checked={acknowledged === evaluationKey} onChange={(event) => setAcknowledged(event.target.checked ? evaluationKey : null)} style={{ accentColor: "var(--model-accent)" }} />
-          <span>Use development rows for exploration<span className="block">These rows were used to fit the model; they do not measure unseen-data performance.</span></span>
+      <StageAction name="GBM" number={1} action="Train GBM" status={stageState("full")} disabled={disabled || needsAcknowledgement || invalidPath} running={active === "full"} busy={busy} onAction={action("full")}
+        hint={generalHint ?? (needsAcknowledgement ? "Choose validation in Data Split, or tick Use development rows." : invalidPath ? fieldHint("pruned") : undefined)}>
+        {showDevelopmentChoice && <label className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-secondary)" }}
+          title="These rows were used to fit the model; they do not measure unseen-data performance.">
+          <input type="checkbox" aria-label="Use development rows for exploration" checked={acknowledged === evaluationKey} onChange={(event) => setAcknowledged(event.target.checked ? evaluationKey : null)} style={{ accentColor: "var(--model-accent)" }} />
+          <span>Use development rows</span>
         </label>}
       </StageAction>
       {([['pruned', 'Pruning', 'full'], ['banded', 'Banding', settings.banding.parent], ['smoothed', 'Smoothing', settings.smoothing.parent]] as const).map(([stage, name, parent], index) => {
@@ -198,36 +175,24 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
         const ready = candidate && !changed && !inspectionPending && point?.status !== "rejected"
         const missingParent = !stages.includes(parent) || pending.includes(parent)
         const available = !postfitBlocked && !missingParent && (stage !== "pruned" || pathAvailable || pathChanged)
-        return <StageAction key={stage} name={name} number={index + 2} action={ready ? point?.identity ? "Keep unchanged" : `Apply ${name.toLowerCase()}` : `Build ${name.toLowerCase()}`} status={changed ? "Path needs refresh" : stageState(stage, parent)}
+        const hint = generalHint ?? fieldHint(stage) ?? (!settings.enabled[stage] ? `${name} is disabled in Parameters.`
+          : point?.status === "rejected" ? "The training guard rejected this candidate. Select another point in Paths."
+          : changed ? pending.includes(parent) ? `Parent settings changed. Rebuild ${STAGE_LABELS[parent]} first.` : "Settings changed. Build this path again."
+          : postfitBlocked ? "Rebuild the GBM to use the changed configuration."
+          : missingParent ? `Build and apply ${STAGE_LABELS[parent]} first, or disable ${name} in Parameters.`
+          : stage === "pruned" && !available ? "No pruning path is available. Adjust the path settings in Parameters." : undefined)
+        return <StageAction key={stage} name={name} number={index + 2} action={ready ? point?.identity ? "Keep unchanged" : `Apply ${name.toLowerCase()}` : `Build ${name.toLowerCase()}`} status={changed ? "Path needs refresh" : stageState(stage, parent)} hint={hint}
           disabled={disabled || (candidate && (inspectionPending || point?.status === "rejected")) || invalidPhase(stage) || !settings.enabled[stage] || (ready ? postfitBlocked || missingParent : !available)} running={active === stage} busy={busy} onAction={active === stage ? onCancel : ready ? onApply : action(stage)}>
-          <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{!settings.enabled[stage] ? `${name} disabled in Parameters` : candidate ? changed ? pending.includes(parent) ? `Parent settings changed. Rebuild ${STAGE_LABELS[parent]} first.` : "Settings changed. Build this path again." : "Candidate ready · inspect the path and shapes, then apply" : postfitBlocked ? "Rebuild the GBM to use the changed configuration" : missingParent ? `Build and apply ${STAGE_LABELS[parent]} first, or disable that phase in Parameters` : `Uses ${STAGE_LABELS[parent]}.`}</p>
-          {pending.includes(stage) && currentResult?.staged?.stages[stage] && <details className="text-[10px]" style={{ color: "var(--text-muted)" }}><summary className="cursor-pointer">Saved settings</summary><pre className="overflow-x-auto pt-2">{JSON.stringify(savedStageSettings(currentResult.staged.stages[stage]), null, 2)}</pre></details>}
-          {candidate && onInspect && <button type="button" className={linkClass} onClick={() => onInspect("paths", stage)}>Inspect {name.toLowerCase()} path</button>}
-          {point?.status === "rejected" && <p className="text-[11px]">The training guard rejected this candidate. Select another point in Paths.</p>}
-          {candidate && currentResult && previewResult && <StageDecision current={currentResult} candidate={previewResult} stage={stage} metric={primaryMetric} onCompare={onCompare} onFactor={onFactor} />}
-          {candidate && <div className="space-y-2 border-t pt-3" style={{ borderColor: "var(--border)" }}>
-            <button type="button" disabled={active !== null || busy} onClick={onDiscard} className="hover-chrome focus-ring rounded-lg px-2 py-1 text-[11px] disabled:opacity-35">Clear prepared path</button>
-          </div>}
+          {candidate && <button type="button" disabled={active !== null || busy} onClick={onDiscard} className="hover-chrome focus-ring rounded-lg px-2 py-1 text-[11px] disabled:opacity-35">Clear prepared path</button>}
         </StageAction>
       })}
-      <StageAction name="Final model" number={5} action="Finalise applied model" status={finalAvailable ? "Ready to export" : undefined} disabled={disabled || postfitBlocked || !stages.includes("full")} running={active === "finalise"} busy={busy} onAction={action("finalise")}>
-        <p className="text-[11px] font-medium">Applied output · {appliedChain(currentResult)}</p>
-        <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>Refit this recipe on development rows and evaluate reserved test rows. Visible curves and pending phase settings do not select the final output.</p>
-        {finalResult && <div className="space-y-1 text-[11px]">
-          <p>Export output · {appliedChain(finalResult)}</p>
-          {Object.keys(finalResult.final_test_metrics).length > 0 ? <details><summary className="cursor-pointer">Final-test metrics</summary>{Object.entries(finalResult.final_test_metrics).map(([key, value]) => <p key={key}>{metricLabel(key)} · {formatMetricValue(value)}</p>)}</details> : <p style={{ color: "var(--text-muted)" }}>No reserved test metrics available.</p>}
-        </div>}
-      </StageAction>
-      {checkpoints}
-      {jobMessage && <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{jobMessage} Previous applied results remain available.</p>}
-      {enabledPending.length > 0 && <p className="text-[11px] leading-relaxed" role="status" style={{ color: "var(--text-muted)" }}>{enabledPending.map((name) => STAGE_LABELS[name]).join(", ")}: settings changed. Run that stage to apply them; existing curves retain their saved settings.</p>}
+      <StageAction name="Final model" number={5} action="Finalise applied model" status={finalAvailable ? "Ready to export" : undefined} disabled={disabled || postfitBlocked || !stages.includes("full")} running={active === "finalise"} busy={busy} onAction={action("finalise")}
+        hint={generalHint ?? (!stages.includes("full") ? "Train the GBM first." : postfitBlocked ? "Rebuild the GBM with the current settings and data first." : undefined)} />
       {finalAvailable && <section className="space-y-3 rounded-xl border p-3" style={{ borderColor: "var(--border)" }}>
         {exportPanel}
         <button type="button" disabled={disabled || busy || postfitBlocked} className="hover-chrome focus-ring w-full rounded-lg px-3 py-2 text-[11px] disabled:opacity-35" onClick={onExport}>{exportPanel ? "Refresh export" : "Export final model"}</button>
       </section>}
-      {blockers.length > 0 && <div data-testid="training-blockers" role="status" className="space-y-2 text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-        {[...new Set(blockers)].map((message) => <p key={message}>{message}</p>)}
-      </div>}
+      {checkpoints}
     </div>
   </div>
 }
