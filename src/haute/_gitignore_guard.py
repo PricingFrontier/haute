@@ -23,10 +23,9 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     "test_quotes_report.md",
     ".haute_cache/",
     "mlruns/",
-    # The root's local folders, anchored so the versioned pipeline folder's files/data/
-    # is never ignored with them.
-    "/data/",
-    "/outputs/",
+    # The root's local files/ (its data/ and outputs/), anchored so the versioned
+    # pipeline folder's files/ is never ignored with it.
+    "/files/",
     "/.cache/",
     # Deploy build folders and bytecode, which can sit inside the pipeline folder.
     ".haute_build/",

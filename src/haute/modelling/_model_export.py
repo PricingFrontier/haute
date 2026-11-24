@@ -1,7 +1,7 @@
 """Where the Export pane's "Save model to file" writes a trained model.
 
 The rules mirror a file Data Output (``resolve_data_output_path``) with the
-default model folder in place of ``outputs/``: a bare filename lands in the
+default model folder in place of ``files/outputs/``: a bare filename lands in the
 pipeline folder's ``files/models/`` (``_project_layout.default_model_folder``),
 a missing extension gets the trained model's, and every path is
 project-root-relative and must stay inside the project.

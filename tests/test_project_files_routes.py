@@ -25,7 +25,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root.mkdir()
     init_repo(root)
     (root / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
-    (root / ".gitignore").write_text("/data/\n/outputs/\n__pycache__/\n")
+    (root / ".gitignore").write_text("/files/\n__pycache__/\n")
     (root / "rating").mkdir()
     (root / "rating" / "main.py").write_text("# pipeline\n")
     git_run(root, "add", ".")
@@ -95,12 +95,13 @@ def test_the_pipeline_place_lists_its_known_folders_before_they_exist(
 
 
 def test_the_local_place_lists_exactly_data_and_outputs(client: TestClient, project: Path) -> None:
-    (project / "data").mkdir()
-    (project / "notes.txt").write_text("not a local folder")
+    (project / "files" / "data").mkdir(parents=True)
+    (project / "files" / "notes.txt").write_text("not a local folder")
+    (project / "data").mkdir()  # the root's own folders are not Local files
 
     listing = _list(client, "local")
 
-    assert listing["root"] == ""
+    assert listing["root"] == "files"
     assert listing["writable"] is False
     assert [e["name"] for e in listing["entries"]] == ["data", "outputs"]
     assert _list(client, "local", "data")["writable"] is True
@@ -133,7 +134,7 @@ def test_a_pipeline_file_not_yet_in_history_is_new_and_an_ignored_one_says_so(
     data.mkdir(parents=True)
     (data / "copied.csv").write_text("a\n")
     (data / "scratch.tmp").write_text("t\n")
-    (project / ".gitignore").write_text("/data/\n*.tmp\n")
+    (project / ".gitignore").write_text("/files/\n*.tmp\n")
 
     entries = _entries(_list(client, "pipeline", "data"))
 
@@ -282,7 +283,7 @@ def test_a_local_file_is_written_but_never_versioned(client: TestClient, project
 
     assert response.status_code == 200, response.text
     assert response.json()["git_sha"] is None
-    assert (project / "data" / "portfolio.parquet").read_bytes() == b"rows"
+    assert (project / "files" / "data" / "portfolio.parquet").read_bytes() == b"rows"
     assert git_run(project, "rev-parse", "--verify", "-q", f"{WORKING}-save", check=False) == ""
 
 
@@ -323,12 +324,14 @@ def test_a_pipeline_file_over_the_limit_is_refused_before_it_is_read(
 def test_a_pipeline_file_gitignore_would_ignore_is_refused_naming_the_rule(
     client: TestClient, project: Path
 ) -> None:
-    (project / ".gitignore").write_text("data/\n")  # unanchored: also ignores files/data/
+    (project / ".gitignore").write_text("files/\n")  # unanchored: also ignores rating/files/
 
     response = _put(client, "pipeline", "data/postcodes.csv", b"x")
 
     assert response.status_code == 409
-    assert "would be ignored by .gitignore (.gitignore:1:data/)" in _refused(response)
+    refusal = _refused(response)
+    assert "would be ignored by .gitignore (.gitignore:1:files/)" in refusal
+    assert "'/files/' instead of 'files/'" in refusal
 
 
 def test_a_hosted_app_refuses_local_files(
@@ -361,7 +364,7 @@ def test_a_branch_change_while_uploading_writes_nothing(
 def test_a_body_shorter_than_its_length_leaves_nothing_behind(
     client: TestClient, project: Path
 ) -> None:
-    (project / "data").mkdir()
+    (project / "files" / "data").mkdir(parents=True)
     response = client.put(
         "/api/project-files/content",
         params={"place": "local", "path": "data/cut.csv"},
@@ -371,7 +374,7 @@ def test_a_body_shorter_than_its_length_leaves_nothing_behind(
 
     assert response.status_code == 400
     assert "ended before it was complete" in _refused(response)
-    assert os.listdir(project / "data") == []
+    assert os.listdir(project / "files" / "data") == []
     assert os.listdir(project / ".haute" / "uploads") == []
 
 
@@ -386,16 +389,17 @@ def test_a_refused_upload_into_a_new_folder_leaves_no_folder(
     )
 
     assert response.status_code == 400
-    assert not (project / "data").exists()
+    assert not (project / "files").exists()
 
 
 def test_a_file_cannot_be_written_inside_a_file(client: TestClient, project: Path) -> None:
-    (project / "data").write_text("not a folder")
+    (project / "files").mkdir()
+    (project / "files" / "data").write_text("not a folder")
 
     response = _put(client, "local", "data/inner.csv", b"x")
 
     assert response.status_code == 400
-    assert "data/inner.csv is inside a file, not a folder." in _refused(response)
+    assert "files/data/inner.csv is inside a file, not a folder." in _refused(response)
     assert not (project / ".haute" / "uploads").exists()
 
 
@@ -428,7 +432,8 @@ def test_a_write_through_a_junction_is_refused(
     outside = tmp_path_factory.mktemp("outside")
     target = outside / "elsewhere"
     target.mkdir()
-    link = project / "data"
+    (project / "files").mkdir()
+    link = project / "files" / "data"
     if os.name == "nt":
         import _winapi
 
@@ -629,8 +634,8 @@ def test_a_staging_file_a_stopped_server_left_is_removed_at_the_next_upload(
 def test_a_download_is_an_attachment_never_rendered_inline(
     client: TestClient, project: Path
 ) -> None:
-    outputs = project / "outputs"
-    outputs.mkdir()
+    outputs = project / "files" / "outputs"
+    outputs.mkdir(parents=True)
     (outputs / "report.html").write_text("<script>alert(1)</script>")
 
     response = client.get(
@@ -646,8 +651,8 @@ def test_a_download_is_an_attachment_never_rendered_inline(
 
 
 def test_a_dot_file_cannot_be_downloaded(client: TestClient, project: Path) -> None:
-    (project / "data").mkdir()
-    (project / "data" / ".env").write_text("SECRET=1")
+    (project / "files" / "data").mkdir(parents=True)
+    (project / "files" / "data" / ".env").write_text("SECRET=1")
 
     response = client.get(
         "/api/project-files/content", params={"place": "local", "path": "data/.env"}
@@ -681,8 +686,8 @@ def test_a_pipeline_file_is_deleted_at_its_revision_and_the_removal_saved(
 
 
 def test_outputs_cannot_be_deleted(client: TestClient, project: Path) -> None:
-    (project / "outputs").mkdir()
-    (project / "outputs" / "scored.parquet").write_bytes(b"x")
+    (project / "files" / "outputs").mkdir(parents=True)
+    (project / "files" / "outputs" / "scored.parquet").write_bytes(b"x")
     revision = _entries(_list(client, "local", "outputs"))["scored.parquet"]["revision"]
 
     response = client.delete(
@@ -691,7 +696,7 @@ def test_outputs_cannot_be_deleted(client: TestClient, project: Path) -> None:
     )
 
     assert response.status_code == 403
-    assert (project / "outputs" / "scored.parquet").exists()
+    assert (project / "files" / "outputs" / "scored.parquet").exists()
 
 
 # ── which names are versioned ─────────────────────────────────────────────

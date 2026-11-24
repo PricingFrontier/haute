@@ -3544,7 +3544,7 @@ class BrowseFilesResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 #: The Files panels' two places: the pipeline folder's versioned ``files/``, and the
-#: project root's local ``data/`` and ``outputs/``.
+#: project root's local ``files/`` (its ``data/`` and ``outputs/``).
 ProjectFilePlace = Literal["pipeline", "local"]
 
 

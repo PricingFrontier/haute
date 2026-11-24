@@ -317,7 +317,7 @@ The destination request and Write send the request the gateway prepares when the
 address, also inside an open submodel. In the comparison view, which has no document to run,
 the editor is never ready and sends nothing.
 The File provider labels its destination **Filename or path**, with help explaining
-that bare filenames go under the project root's `outputs/` folder and explicit paths
+that bare filenames go under the project root's `files/outputs/` folder and explicit paths
 are project-relative. The resolved destination remains visible before writing.
 Write identity is projected from the semantic flattened graph, output
 node, execution source, and streaming settings. A 409 becomes

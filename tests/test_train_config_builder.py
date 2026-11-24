@@ -210,7 +210,7 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["evaluation"] == MINIMAL_EVALUATION
         assert kwargs["tuning"] is None
         assert kwargs["metrics"] == ["gini", "rmse"]
-        assert kwargs["output_dir"] == "outputs"
+        assert kwargs["output_dir"] == "files/outputs"
         assert kwargs["loss_function"] == "RMSE"
         assert kwargs["feature_columns"] == ["age", "region"]
         for key in (

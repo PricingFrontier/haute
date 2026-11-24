@@ -1,7 +1,8 @@
 # Project Files
 
-A Haute project keeps its files in two kinds of place. The pipeline folder is versioned with
-the pipeline. The local folders at the project root stay on your machine.
+A Haute project keeps its files in two `files/` folders. The one in the pipeline folder,
+`rating/files/`, is versioned with the pipeline. The one at the project root, `files/`, stays
+on your machine.
 
 ## Where files go
 
@@ -12,8 +13,8 @@ the pipeline. The local folders at the project root stay on your machine.
 | `rating/files/models/` | Model files with their feature contracts, and optimiser results | Yes |
 | `rating/files/params/` | Parameter files the pipeline reads; a Workbench column's allowed values can come from one | Yes |
 | `rating/workbench/` | The workbench's schema, sheets and sample, a file for each table and each sheet ([Workbench](workbench.md#the-workbenchs-files)) | Yes |
-| `data/` | Local data: portfolios, extracts, anything large or personal | No |
-| `outputs/` | What runs write: Data Output files and exported data | No |
+| `files/data/` | Local data: portfolios, extracts, anything large or personal | No |
+| `files/outputs/` | What runs write: Data Output files and exported data | No |
 
 `rating/` is the pipeline folder of a new project. A project whose `haute.toml` names another
 pipeline file uses that file's folder.
@@ -22,16 +23,15 @@ Everything in the pipeline folder goes into version history. Save records the pi
 files, and Commit also records every other file you add to the pipeline folder, so a model or
 table in `rating/files/` reaches CI and deploys with the pipeline. A file larger than 100 MiB
 can't be versioned (GitHub refuses it), so Commit stops and names it. Keep a file that size
-in `data/`, or log the model to MLflow.
+in `files/data/`, or log the model to MLflow.
 
 Data the quote output reads must be in the pipeline folder: a deploy refuses a Data Input
-on the way to the quote output that reads from `data/`. Anything else, such as model
-training or optimisation, can read from `data/`: a deploy drops every node the quote output
+on the way to the quote output that reads from `files/data/`. Anything else, such as model
+training or optimisation, can read from `files/data/`: a deploy drops every node the quote output
 doesn't depend on ([Deployment](../deployment/index.md)).
 
-`data/` and `outputs/` stay on your machine. Moving to another version, catching up or
-branching away leaves both as they are, so `outputs/` can hold what another version's runs
-wrote.
+`files/` stays on your machine. Moving to another version, catching up or branching away
+leaves it as it is, so `files/outputs/` can hold what another version's runs wrote.
 
 **Save model to file** and an optimiser result's **Save to file** put a filename without a
 folder in `rating/files/models/`.
@@ -42,8 +42,9 @@ Two buttons in the toolbar open the project's files beside the canvas or the wor
 
 - **Pipeline files** opens `rating/files/`. A file you add here is saved into version history
   straight away, and a file you delete is recorded the same way.
-- **Local files** opens `data/` and `outputs/`. Files here stay on your machine. You can add
-  and delete files in `data/`; `outputs/` only downloads, because a run writes it.
+- **Local files** opens `files/`, with its `data/` and `outputs/`. Files here stay on your
+  machine. You can add and delete files in `data/`; `outputs/` only downloads, because a run
+  writes it.
 
 The panel shows one folder at a time. Click a folder to open it, and click a name in the path
 under the title to go back. Each file shows its size and when it last changed, with
@@ -60,13 +61,15 @@ In Pipeline files a file marked **New** isn't in version history yet, such as on
 with your file explorer; the next Commit adds it. One marked **Changed** has been edited
 since it went into version history; the next Commit records the change. One marked
 **Ignored** is left out by your `.gitignore`, so it is never versioned. A file larger than 100 MiB can't be added to
-Pipeline files: put it in `data/`.
+Pipeline files: put it in Local files' `data/`.
 
 A hosted Haute app keeps only what version history keeps, so it takes no files in Local
 files.
 
 !!! note "Projects made before this layout"
-    Older projects have empty `rating/data/` and `rating/outputs/` folders that nothing uses:
-    delete them. If your `.gitignore` has a `data/` line, change it to `/data/`. Without the
-    leading slash it also ignores `rating/files/data/`. Add `/outputs/` and `/.cache/` while
-    you're there.
+    Older projects keep local files in `data/` and `outputs/` at the project root. Move them
+    into `files/data/` and `files/outputs/`, and change the paths of the nodes that read them
+    to match. In `.gitignore`, replace the `/data/` and `/outputs/` lines with `/files/`. Keep
+    the leading slash: without it the line also ignores `rating/files/`. Older projects may
+    also have empty `rating/data/` and `rating/outputs/` folders that nothing uses: delete
+    them.

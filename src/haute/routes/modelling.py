@@ -20,6 +20,7 @@ from haute._logging import get_logger
 from haute._node_addresses import labelled, resolved_request
 from haute._path_resolution import RuntimePathError, reject_unportable_destination
 from haute._project_context import current_project
+from haute._project_layout import LOCAL_OUTPUTS_FOLDER
 from haute.errors import (
     ConflictError,
     HauteValidationError,
@@ -606,7 +607,7 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
 
     from haute.modelling import generate_training_script
 
-    data_path = body.data_path or f"outputs/{config.get('name', 'model')}.parquet"
+    data_path = body.data_path or f"{LOCAL_OUTPUTS_FOLDER}/{config.get('name', 'model')}.parquet"
     try:
         script = generate_training_script(config, data_path)
     except TrainingConfigError as exc:

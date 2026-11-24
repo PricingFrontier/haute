@@ -15,7 +15,7 @@ import { formatBytes } from "../utils/formatBytes"
 import { relativeTime } from "../utils/relativeTime"
 
 const TITLES: Record<ProjectFilePlace, string> = { pipeline: "Pipeline files", local: "Local files" }
-/** The one local folder that takes files; outputs/ only downloads. */
+/** The one folder of the local files/ that takes files; outputs/ only downloads. */
 const LOCAL_WRITABLE_FOLDER = "data"
 
 const MUTED = { color: "var(--text-muted)" }
@@ -47,7 +47,7 @@ function folderTakesFiles(place: ProjectFilePlace, folder: string): boolean {
   return folder === LOCAL_WRITABLE_FOLDER || folder.startsWith(`${LOCAL_WRITABLE_FOLDER}/`)
 }
 
-/** Where a drop on the open folder lands: Local files' root sends it to data/. */
+/** Where a drop on the open folder lands: Local files' root sends it to files/data/. */
 function dropFolder(place: ProjectFilePlace, path: string): string {
   return place === "local" && path === "" ? LOCAL_WRITABLE_FOLDER : path
 }
@@ -333,7 +333,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       subtitle={
         <nav aria-label="Folder" className="flex min-w-0 items-center gap-0.5 text-[11px]" style={MUTED}>
           <button type="button" className="truncate hover:underline" onClick={() => setPath("")} data-testid="files-crumb-root">
-            {place === "pipeline" ? root || "files" : "project"}
+            {root || "files"}
           </button>
           {crumbs.map((part, index) => (
             <span key={crumbs.slice(0, index + 1).join("/")} className="flex min-w-0 items-center gap-0.5">

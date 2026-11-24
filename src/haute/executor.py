@@ -70,6 +70,7 @@ from haute._project_imports import (
     unbind_project_utility,
     utility_bound_to,
 )
+from haute._project_layout import LOCAL_OUTPUTS_FOLDER
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     PREAMBLE_FILENAME,
@@ -2165,7 +2166,7 @@ def resolve_data_output_path(
 
     Returns ``(filesystem_path, display_path)``; the filesystem path is
     ``None`` for database targets (which have no local file). Bare filenames
-    land under ``outputs/``. File outputs are project-root-relative. The default
+    land under ``files/outputs/``. File outputs are project-root-relative. The default
     extension comes from the format registry; explicit extensions are preserved.
     """
     from haute._polars_io_registry import format_for_config, format_group, is_databricks_output
@@ -2188,7 +2189,7 @@ def resolve_data_output_path(
     path = data_output_written_path(config)
     if format_group(fmt_entry) == "file":
         # The setting as written: joined to the root, a drive-letter path would land in a
-        # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``outputs/``.
+        # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``files/outputs/``.
         reject_unportable_path_text(config["path"], project_root=root)
     if format_group(fmt_entry) != "file":
         return _contain_output_path(graph, path, project_root=root), path
@@ -2207,7 +2208,7 @@ def resolve_data_output_path(
 
 def data_output_written_path(config: Mapping[str, Any]) -> str:
     """A Data Output's ``path`` as its writer reads it, from the project root: a bare file
-    name goes in ``outputs/``, and the format's extension is added when it names none."""
+    name goes in ``files/outputs/``, and the format's extension is added when it names none."""
     from haute._polars_io_registry import default_output_extension, format_for_config
 
     raw = config.get("path", "")
@@ -2215,7 +2216,7 @@ def data_output_written_path(config: Mapping[str, Any]) -> str:
         raise ValueError("Data output node has no output path configured")
     path = raw
     if "/" not in path and "\\" not in path:
-        path = f"outputs/{path}"
+        path = f"{LOCAL_OUTPUTS_FOLDER}/{path}"
     ext = default_output_extension(format_for_config(config))
     if ext is not None and not Path(path).suffix:
         path = f"{path}{ext}"

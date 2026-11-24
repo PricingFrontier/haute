@@ -73,12 +73,14 @@ class TestInitCreatesProjectStructure:
         assert (tmp_path / "tests" / "quotes" / "example.json").is_file()
         assert "Already there, so kept: rating/main.py, tests/test_pipeline.py" in result.output
 
-    def test_creates_data_directory(
+    def test_creates_the_local_files_folder(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         use_project(tmp_path)
         runner.invoke(cli, ["init"], catch_exceptions=False)
-        assert (tmp_path / "data").is_dir()
+        assert (tmp_path / "files" / "data").is_dir()
+        assert (tmp_path / "files" / "outputs").is_dir()
+        assert not (tmp_path / "data").exists()
 
     def test_starter_has_no_node_specific_config_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

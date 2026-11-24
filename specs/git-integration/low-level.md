@@ -232,10 +232,10 @@ repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
 `.env`, `.haute/`, `impact_report.md`, `test_quotes_report.md` (the report `haute app build`
-writes), `.haute_cache/`, `mlruns/`, `/data/`, `/outputs/`,
-`/.cache/`, `.haute_build/`, `__pycache__/` and `.venv/`. `/data/`, `/outputs/` and
-`/.cache/` are anchored to the project root, so the pipeline folder's `files/data/` stays
-versioned; an unanchored `data/` line in an existing project ignores it, and the project
+writes), `.haute_cache/`, `mlruns/`, `/files/`,
+`/.cache/`, `.haute_build/`, `__pycache__/` and `.venv/`. `/files/` and `/.cache/` are
+anchored to the project root, so the pipeline folder's `files/` stays versioned; an
+unanchored `files/` or `data/` line in an existing project ignores it, and the project
 fixes that line by hand.
 `ensure_gitignore_guards(project_dir)` creates `.gitignore` with those lines when absent or
 appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 bytes are decoded
@@ -520,7 +520,7 @@ which a writer killed before its rename leaves beside its target. The route pass
 `_project_layout.pipeline_folder`; `None` (no pipeline folder below the root) adds nothing.
 Any swept path inside the pipeline folder that is a file larger than
 `VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's
-`data/` as the place for it, before anything is committed. A non-empty sweep is recorded in
+`files/data/` as the place for it, before anything is committed. A non-empty sweep is recorded in
 one final ledger save with the fixed message `"Updated project files"`, without hooks; a new
 file outside the pipeline folder is never included → `_run_commit_hooks` runs the project's
 `pre-commit` and `commit-msg` hooks, the ones a `git commit` of the milestone would run, when
@@ -677,8 +677,8 @@ files back lets it complete.
 **The volatile wipe (`_wipe_volatile_artefacts`).** Restore, Catch up and Spin off a copy
 wipe `_VOLATILE_ARTEFACTS` once their files are in place, so a refused or failed one deletes
 nothing. The wipe is best-effort and covers only reconstructable caches: the root's
-`__pycache__`, `.haute_cache`, `.cache` and the tool caches. It never touches `outputs/`, the
-analyst's local results, or `output/`, where Apply Optimisation reads published optimiser
+`__pycache__`, `.haute_cache`, `.cache` and the tool caches. It never touches `files/`, the
+analyst's local data and results, or `output/`, where Apply Optimisation reads published optimiser
 results. `_assert_no_git_op_in_progress` checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/
 `REVERT_HEAD`/`rebase-merge`/`rebase-apply` under the git dir.
 
@@ -764,7 +764,7 @@ the project or add it to .gitignore, then try again." A file left larger than
 `VERSIONED_FILE_LIMIT_BYTES` (100 MiB) is refused next by `_refuse_too_large_for_history`
 (`_git_core`), the check the sweep before a milestone or restore applies to the pipeline
 folder (`_refuse_unversionable`): "<path> (<size>) is too large for version history, which
-takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
+takes files up to 100 MiB. Move it to the project's files/data/ folder, which stays on this machine,
 and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added through
 `stage_paths`, with `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec, the
 pre-commit hook `--chmod=+x` so the root commit holds it executable on Windows too.
@@ -1260,7 +1260,7 @@ process failures, and precise ref-movement races deterministic.
   version refused naming it while a large file outside the pathspecs is left out), version
   restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
   one save on the same branch with later saves kept, files changed, deleted and added since
-  put back, untracked files, `.haute/` and `outputs/` untouched and caches wiped,
+  put back, untracked files, `.haute/` and `files/outputs/` untouched and caches wiped,
   unrecorded changes and new pipeline files recorded first, the already-current,
   other-branch, overwrite, identity and in-progress refusals, and a failure writing the
   files leaving the restore recorded and the caches in place), milestone

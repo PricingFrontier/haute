@@ -128,7 +128,10 @@ def test_two_outputs_writing_one_file_are_refused_at_save(tmp_path: Path) -> Non
 
 def test_a_bare_file_name_and_its_outputs_path_are_one_destination() -> None:
     graph = PipelineGraph(
-        nodes=[_file_output("first", "result"), _file_output("second", "outputs/result.parquet")],
+        nodes=[
+            _file_output("first", "result"),
+            _file_output("second", "files/outputs/result.parquet"),
+        ],
         edges=[],
     )
 

@@ -294,7 +294,7 @@ class TestInit:
         use_project(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert (tmp_path / "data").is_dir()
+        assert (tmp_path / "files" / "data").is_dir()
         assert (tmp_path / "tests" / "quotes").is_dir()
         assert (tmp_path / "haute.toml").exists()
         assert (tmp_path / ".env.example").exists()
