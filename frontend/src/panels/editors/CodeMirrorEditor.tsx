@@ -12,6 +12,7 @@ import { tags } from "@lezer/highlight"
 import { SYNTAX_COLORS } from "../../theme/colors"
 import useGraphStore from "../../stores/useGraphStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import { openEdit } from "../../components/form/useCommittedDraft"
 import { constantCompletionSource, constantCompletions, type ConstantCompletion } from "./constantCompletion"
 
 const LOCAL_CHANGE_DEBOUNCE_MS = 150
@@ -284,8 +285,11 @@ export default function CodeMirrorEditor({
   const drafts = useGraphStore((s) => s.globalConstants)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const constants = useMemo(() => constantCompletions(drafts, activeSource), [drafts, activeSource])
+  // The text last sent to the owner, or last received from it: what the store holds when
+  // nothing moved it from outside.
   const lastPropValueRef = useRef(defaultValue)
-  const pendingExternalValueRef = useRef<string | null>(null)
+  // Closes the open edit typing not yet flushed holds with the shared draft.
+  const closeOpenEditRef = useRef<(() => void) | null>(null)
 
   // Keep onChange ref fresh without recreating the editor
   useEffect(() => { onChangeRef.current = onChange }, [onChange])
@@ -303,10 +307,12 @@ export default function CodeMirrorEditor({
     }
   }, [onEditorView])
 
-  // A local edit commits once typing pauses, and at once on blur, before an
-  // external value is applied, and on unmount.
+  // A local edit commits once typing pauses, and at once on blur, on unmount, and when a
+  // save commits the open edits. Until then it is an open edit of the shared draft's.
   const localChange = useDebouncedCallback(
     (value: string) => {
+      closeOpenEditRef.current?.()
+      closeOpenEditRef.current = null
       if (value === lastPropValueRef.current) return
       lastPropValueRef.current = value
       onChangeRef.current(value)
@@ -314,45 +320,34 @@ export default function CodeMirrorEditor({
     LOCAL_CHANGE_DEBOUNCE_MS,
     { onUnmount: "flush" },
   )
-
-  const applyExternalValue = useCallback((view: EditorView, value: string) => {
-    localChange.flush()
-    const currentDoc = view.state.doc.toString()
-    if (value === currentDoc) {
-      lastPropValueRef.current = value
-      pendingExternalValueRef.current = null
-      return
-    }
-    view.dispatch({
-      changes: { from: 0, to: currentDoc.length, insert: value },
-      annotations: externalSyncAnnotation.current.of(true),
+  const scheduleLocalChange = useCallback((value: string) => {
+    localChange.schedule([value])
+    closeOpenEditRef.current ??= openEdit(() => {
+      localChange.flush()
+      return true
     })
-    lastPropValueRef.current = value
-    pendingExternalValueRef.current = null
   }, [localChange])
 
-  // Sync external value changes into the editor. Focused editors still accept
-  // updates when their buffer matches the last committed prop value, which
-  // keeps websocket-driven refreshes visible without clobbering active edits.
+  // The stored value wins, as for every field (specs/frontend-shared, "Panel values and
+  // Undo"): a value that moves from outside (an Undo, a Redo, a sync frame, the assistant's
+  // change) replaces the text, and typing not yet flushed is dropped. The echo of the
+  // editor's own last flush is no move, so typing since then stays. Every owner stores
+  // exactly the text it is sent, so an echo is always that text.
   useEffect(() => {
+    if (defaultValue === lastPropValueRef.current) return
+    lastPropValueRef.current = defaultValue
+    localChange.cancel()
+    closeOpenEditRef.current?.()
+    closeOpenEditRef.current = null
     const view = viewRef.current
-    if (!view) {
-      lastPropValueRef.current = defaultValue
-      return
-    }
+    if (!view) return
     const currentDoc = view.state.doc.toString()
-    if (defaultValue === currentDoc) {
-      lastPropValueRef.current = defaultValue
-      pendingExternalValueRef.current = null
-      localChange.cancel()
-      return
-    }
-    if (!view.hasFocus || currentDoc === lastPropValueRef.current) {
-      applyExternalValue(view, defaultValue)
-      return
-    }
-    pendingExternalValueRef.current = defaultValue
-  }, [applyExternalValue, defaultValue, localChange])
+    if (defaultValue === currentDoc) return
+    view.dispatch({
+      changes: { from: 0, to: currentDoc.length, insert: defaultValue },
+      annotations: externalSyncAnnotation.current.of(true),
+    })
+  }, [defaultValue, localChange])
 
   // Create the editor once on mount
   useEffect(() => {
@@ -369,7 +364,7 @@ export default function CodeMirrorEditor({
           lastPropValueRef.current = value
           onChangeRef.current(value)
         } else {
-          localChange.schedule([value])
+          scheduleLocalChange(value)
         }
         // Clear diagnostics after the current CodeMirror transaction completes.
         if (diagnosticsClearRef.current) clearTimeout(diagnosticsClearRef.current)
@@ -429,23 +424,10 @@ export default function CodeMirrorEditor({
           ...defaultKeymap,
         ]),
 
-        // Focus tracking for external sync
+        // Leaving the editor commits what was typed.
         EditorView.domEventHandlers({
-          blur: (_event, view) => {
-            const lastCommittedBeforeBlur = lastPropValueRef.current
-            const pendingLocalBeforeBlur = localChange.pending()?.[0] ?? null
+          blur: () => {
             localChange.flush()
-            if (
-              pendingLocalBeforeBlur !== null &&
-              pendingLocalBeforeBlur !== lastCommittedBeforeBlur
-            ) {
-              pendingExternalValueRef.current = null
-              return
-            }
-            const pendingValue = pendingExternalValueRef.current
-            if (pendingValue !== null && view.state.doc.toString() === lastPropValueRef.current) {
-              applyExternalValue(view, pendingValue)
-            }
           },
         }),
 

@@ -70,21 +70,23 @@ export function draftPart(): Part {
 }
 
 /**
- * Register an edit that lives outside the shared draft (a code editor's text not yet
- * flushed) while *commit* is given, so a save commits it first. `commit` returns whether
- * the edit landed.
+ * Register an edit not yet committed that is held outside React state (a code editor's
+ * text not yet flushed), so a save commits it first and an answer that would write over a
+ * field waits for it; `commit` returns whether the edit landed. The returned function
+ * closes it, once the edit is committed or dropped; closing it again does nothing.
  */
+export function openEdit(commit: () => boolean): () => void {
+  const edit: OpenEdit = { commit }
+  openEdits.add(edit)
+  draftsMoved()
+  return () => {
+    if (openEdits.delete(edit)) draftsMoved()
+  }
+}
+
+/** Keep the draft's edit open while *commit* is given. */
 function useOpenEdit(commit: (() => boolean) | null): void {
-  useLayoutEffect(() => {
-    if (!commit) return
-    const edit: OpenEdit = { commit }
-    openEdits.add(edit)
-    draftsMoved()
-    return () => {
-      openEdits.delete(edit)
-      draftsMoved()
-    }
-  }, [commit])
+  useLayoutEffect(() => (commit ? openEdit(commit) : undefined), [commit])
 }
 
 export type CommittedDraft<T> = {
@@ -94,6 +96,13 @@ export type CommittedDraft<T> = {
   editing: boolean
   /** Replace the draft with what was typed. */
   edit: (next: T) => void
+  /**
+   * Replace the draft with *next* as its owner previews it in the store, a pick shown at
+   * each step: the stored value the preview brings back moves the draft's basis, the way a
+   * commit that stays does, and the draft still commits when it is left, even as the value
+   * the store now holds, so its owner can finish what the previews began.
+   */
+  preview: (next: T) => void
   /**
    * Commit the draft once, or *next* in its place (a list's own edit, made in an event);
    * whether it landed (true when there was nothing to commit).
@@ -124,8 +133,8 @@ export function useCommittedDraft<T>(
   onCommit: (next: T) => CommitResult<T>,
   { owner, equals = Object.is }: DraftOptions<T> = {},
 ): CommittedDraft<T> {
-  // The typed value; null while nothing is typed.
-  const [draft, setDraft] = useState<{ value: T } | null>(null)
+  // The typed value; null while nothing is typed. `previewed` once its owner showed it in the store.
+  const [draft, setDraft] = useState<{ value: T; previewed?: true } | null>(null)
   // The stored value and owner the draft was typed over, and the stored value a commit
   // that keeps the draft brings back. React's adjust-state-on-render pattern drops a stale
   // draft before it is shown for, or committed into, a new value.
@@ -148,7 +157,7 @@ export function useCommittedDraft<T>(
     const typed = next === undefined ? held : { value: next }
     if (typed === null || committed.has(typed)) return true
     let result: CommitResult<T> = undefined
-    if (!equals(typed.value, value)) {
+    if (typed.previewed || !equals(typed.value, value)) {
       result = onCommit(typed.value)
       if (result && !result.ok) {
         if (next !== undefined) setDraft(typed)
@@ -170,6 +179,10 @@ export function useCommittedDraft<T>(
     shown: held === null ? value : held.value,
     editing: held !== null,
     edit: (next) => setDraft({ value: next }),
+    preview: (next) => {
+      setDraft({ value: next, previewed: true })
+      setBasis((current) => ({ ...current, expected: { value: next } }))
+    },
     commit,
     discard: () => setDraft(null),
   }

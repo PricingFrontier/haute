@@ -1,5 +1,5 @@
-import { useState } from "react"
 import { COLOUR_WHEEL_GRADIENT, PIVOT_CHART_COLORS } from "../../theme/colors"
+import { useCommittedDraft } from "./useCommittedDraft"
 
 /**
  * A colour chosen as Explore's charts choose one: Automatic (null), one of the swatches
@@ -52,10 +52,7 @@ export default function ColourSwatches({
           }}
         />
       ))}
-      {/* Remounted as a committed value lands, dropping a stale draft; while each step is
-          previewed the value moves with the pick, and a remount would close the picker. */}
       <CustomColourInput
-        key={onPreview === undefined ? (value ?? "automatic") : "previewed"}
         name={name}
         value={value}
         own={value !== null && !swatches.includes(value)}
@@ -80,11 +77,13 @@ function CustomColourInput({
   onCommit: (value: string) => void
   onPreview?: (value: string) => void
 }) {
-  // The native picker fires an input event per drag tick; committing each
-  // tick would persist one edit (and one undo step) per tick. Track a local
-  // draft, hand each tick up to be previewed when asked to, and commit once on
-  // blur, like the other committed controls.
-  const [draft, setDraft] = useState<string | null>(null)
+  // The native picker fires an input event per drag tick; committing each tick would
+  // persist one edit (and one undo step) per tick. The shared draft holds the pick, each tick
+  // handed up to be previewed when asked to, and commits it once on blur; a change from
+  // outside the pick (an Undo, a sync frame) lets it go.
+  const draft = useCommittedDraft<string | null>(value, (picked) => {
+    if (picked !== null) onCommit(picked)
+  })
   // The picker itself, unseen over a colour wheel's rainbow: a press on the square opens it.
   return (
     <span
@@ -95,17 +94,17 @@ function CustomColourInput({
         type="color"
         aria-label={`Custom colour for ${name}`}
         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-        value={draft ?? value ?? PIVOT_CHART_COLORS.defaultSeries[0]}
+        value={draft.shown ?? PIVOT_CHART_COLORS.defaultSeries[0]}
         onChange={(event) => {
           const picked = event.target.value.toUpperCase()
-          setDraft(picked)
-          onPreview?.(picked)
+          if (onPreview === undefined) {
+            draft.edit(picked)
+            return
+          }
+          draft.preview(picked)
+          onPreview(picked)
         }}
-        onBlur={() => {
-          // A previewed pick already shows, so it is committed even as the value it now holds.
-          if (draft !== null && (onPreview !== undefined || draft !== value)) onCommit(draft)
-          setDraft(null)
-        }}
+        onBlur={() => draft.commit()}
       />
     </span>
   )

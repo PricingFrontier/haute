@@ -11,6 +11,8 @@ import {
 } from "../../utils/apiInputPorts"
 import { FrameTableActions } from "./FrameTableActions"
 import PathPickerField from "./shared/PathPickerField"
+import { useRowKeys } from "./shared/useRowKeys"
+import type { RowChange } from "../../utils/rowKeys"
 import { inferJsonCacheSchema } from "../../api/client"
 import {
   classifyConfig,
@@ -119,6 +121,9 @@ export default function ApiInputEditor({
   const shape = useMemo(() => classifyConfig(config), [config])
   const v2: ApiInputConfigV2 =
     shape.kind === "v2" ? shape.v2 : emptyV2(currentPath)
+  // Each table's identity, which its fields' drafts are kept by: it follows the editor's
+  // own writes, and any other change (an Undo, a sync frame) gives every table a new one.
+  const tableKeys = useRowKeys(v2.tables)
 
   // The path inventory: every key across the current frames plus the
   // most-recent inference snapshot (current frames win on name/type).
@@ -143,8 +148,16 @@ export default function ApiInputEditor({
   // Helpers to push state changes back through onUpdate. Each write
   // recomposes the full v2 record-shaped object so we never have to fan
   // out individual onUpdate calls per nested field.
-  const writeBack = (next: ApiInputConfigV2): OnUpdateConfigResult => {
+  const writeBack = (
+    next: ApiInputConfigV2,
+    change: RowChange = { kind: "edit" },
+    columns?: { table: number; expect: ExpectColumns; change: RowChange },
+  ): OnUpdateConfigResult => {
     const raw = writeV2(next)
+    // The rows as they come back: the stored config is read, and normalised, as it renders.
+    const stored = readV2(raw)
+    tableKeys.expect(stored.tables, change)
+    if (columns) columns.expect(stored.tables[columns.table]?.columns ?? [], columns.change)
     // Use a single batched update so NodePanel only fires one
     // handleConfigUpdate (per the existing OnUpdateConfig contract).
     const commitResult = onUpdate(raw)
@@ -183,6 +196,7 @@ export default function ApiInputEditor({
     tableIdx: number,
     colIdx: number,
     patch: Partial<ApiInputColumnV2>,
+    expectColumns: ExpectColumns,
   ): OnUpdateConfigResult => {
     // Editing a column's name, path, type or date format IS confirming it —
     // the user has looked at the row and made it theirs.
@@ -234,9 +248,9 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    return writeBack(next)
+    return writeBack(next, { kind: "edit" }, { table: tableIdx, expect: expectColumns, change: { kind: "edit" } })
   }
-  const addColumn = (tableIdx: number) => {
+  const addColumn = (tableIdx: number, expectColumns: ExpectColumns) => {
     // A hand-added column arrives BLANK (ruled 2026-07-09): no placeholder
     // column_N name or synthetic path. The render-gate flags the incomplete row
     // (and reconcile's blank carve-out protects it); committing a valid path
@@ -261,9 +275,9 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    writeBack(next)
+    writeBack(next, { kind: "edit" }, { table: tableIdx, expect: expectColumns, change: { kind: "add" } })
   }
-  const removeColumn = (tableIdx: number, colIdx: number) => {
+  const removeColumn = (tableIdx: number, colIdx: number, expectColumns: ExpectColumns) => {
     const next = {
       ...v2,
       tables: v2.tables.map((t, ti) =>
@@ -272,7 +286,7 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    writeBack(next)
+    writeBack(next, { kind: "edit" }, { table: tableIdx, expect: expectColumns, change: { kind: "remove", index: colIdx } })
   }
   // Bundle 3d — PASTE-IN for a table's columns. The pasted grid is
   // tab-separated `name<TAB>path<TAB>type<TAB>selected` rows (the shape Copy
@@ -350,11 +364,11 @@ export default function ApiInputEditor({
         },
       ],
     }
-    writeBack(next)
+    writeBack(next, { kind: "add" })
   }
   const removeTable = (i: number) => {
     const next = { ...v2, tables: v2.tables.filter((_, idx) => idx !== i) }
-    writeBack(next)
+    writeBack(next, { kind: "remove", index: i })
   }
   /**
    * Infer the selected file's tables. The reply is bound to the very draft it
@@ -811,13 +825,12 @@ export default function ApiInputEditor({
               </div>
             )}
             <div className="space-y-2">
-              {/* Positional keys, NOT `${table.path}-${ti}`: rows are only
-                  ever appended/removed (never reordered), and a key derived
-                  from the edited path remounted the row on every committed
-                  path change - dropping focus mid-edit (CODE_REVIEW W1.5). */}
+              {/* Keyed by identity, not by the edited path, which remounted the row on
+                  every committed path change and dropped focus mid-edit (CODE_REVIEW
+                  W1.5), nor by position, which would carry a draft to another table. */}
               {v2.tables.map((table, ti) => (
                 <TableBlock
-                  key={ti}
+                  key={tableKeys.keys[ti]}
                   table={table}
                   testIdPrefix={`api-input-table-${ti}`}
                   ambiguousNames={ambiguous}
@@ -825,9 +838,9 @@ export default function ApiInputEditor({
                   commitError={labelCommitErrors[ti] ?? labelViolations.get(table.label) ?? null}
                   onUpdate={(patch) => updateTable(ti, patch)}
                   onRemove={() => removeTable(ti)}
-                  onAddColumn={() => addColumn(ti)}
-                  onUpdateColumn={(ci, patch) => updateColumn(ti, ci, patch)}
-                  onRemoveColumn={(ci) => removeColumn(ti, ci)}
+                  onAddColumn={(expectColumns) => addColumn(ti, expectColumns)}
+                  onUpdateColumn={(ci, patch, expectColumns) => updateColumn(ti, ci, patch, expectColumns)}
+                  onRemoveColumn={(ci, expectColumns) => removeColumn(ti, ci, expectColumns)}
                   onPasteColumns={(grid) => pasteColumns(ti, grid)}
                   onConfirmAll={() => confirmAllColumns(ti)}
                   onToggleKeyColumn={(ci) => toggleKeyColumn(ti, ci)}
@@ -944,6 +957,9 @@ export default function ApiInputEditor({
 
 // ─── TableBlock ───────────────────────────────────────────────────
 
+/** What a column write of the editor's tells a table's column keys it does. */
+type ExpectColumns = (next: ApiInputColumnV2[], change: RowChange) => unknown
+
 function TableBlock({
   table,
   testIdPrefix,
@@ -968,9 +984,9 @@ function TableBlock({
   commitError: string | null
   onUpdate: (patch: Partial<ApiInputTableV2>) => OnUpdateConfigResult
   onRemove: () => void
-  onAddColumn: () => void
-  onUpdateColumn: (colIdx: number, patch: Partial<ApiInputColumnV2>) => OnUpdateConfigResult
-  onRemoveColumn: (colIdx: number) => void
+  onAddColumn: (expectColumns: ExpectColumns) => void
+  onUpdateColumn: (colIdx: number, patch: Partial<ApiInputColumnV2>, expectColumns: ExpectColumns) => OnUpdateConfigResult
+  onRemoveColumn: (colIdx: number, expectColumns: ExpectColumns) => void
   /** Replace this table's columns from a pasted tab-separated grid. */
   onPasteColumns: (grid: string[][]) => void
   /** Confirm every not-yet-confirmed column on this frame. */
@@ -978,6 +994,9 @@ function TableBlock({
   /** Toggle a column's key membership (moves it in/out of the keys section). */
   onToggleKeyColumn: (colIdx: number) => void
 }) {
+  // Each column's identity, which its fields' drafts are kept by; the editor's column writes
+  // say what they do through `columnKeys.expect`.
+  const columnKeys = useRowKeys(table.columns)
   return (
     <div
       data-testid={testIdPrefix}
@@ -1085,12 +1104,10 @@ function TableBlock({
         </button>
       </div>
       <div className="pl-3 space-y-1">
-        {/* Positional keys for the same reason as the table rows above:
-            `${col.path}-${ci}` remounted the row (and lost focus) on every
-            committed path edit (CODE_REVIEW W1.5). */}
+        {/* Keyed by identity for the same reason as the table rows above. */}
         {table.columns.map((col, ci) => (
           <ColumnRow
-            key={ci}
+            key={columnKeys.keys[ci]}
             col={col}
             framePath={table.path}
             ambiguousNames={ambiguousNames}
@@ -1101,14 +1118,14 @@ function TableBlock({
                 table.columns.filter((_, i) => i !== ci).map((c) => c.name),
               )
             }
-            onUpdate={(patch) => onUpdateColumn(ci, patch)}
-            onRemove={() => onRemoveColumn(ci)}
+            onUpdate={(patch) => onUpdateColumn(ci, patch, columnKeys.expect)}
+            onRemove={() => onRemoveColumn(ci, columnKeys.expect)}
             onToggleKey={() => onToggleKeyColumn(ci)}
           />
         ))}
         <button
           data-testid={`${testIdPrefix}-add-col`}
-          onClick={onAddColumn}
+          onClick={() => onAddColumn(columnKeys.expect)}
           className="text-[11px] font-semibold px-1.5 py-0.5 rounded flex items-center gap-1"
           style={{ color: "var(--text-muted)" }}
         >

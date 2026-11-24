@@ -1,4 +1,5 @@
 import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
+import { isNoHauteAnswer } from "./transportErrors"
 
 /** The detail a route refused with, when it is an object: the fields a refusal carries past its message. */
 export function apiErrorRawDetail(error: unknown): Record<string, unknown> | null {
@@ -56,13 +57,15 @@ function validationMessage(error: unknown): string | null {
 }
 
 /**
- * The message to show for a failed request: the server's detail when it sent
- * one, a thrown error's own message otherwise, and `fallback` when neither is
- * meaningful (an HTTP error without a detail only knows its status). Without a
- * fallback, that status message, or a non-error value's string form, is used.
- * This is the one error-text helper; lint rejects local copies.
+ * The message to show for a failed request. A request that got no answer of Haute's (none
+ * at all, none in time, or one from something in Haute's place) says so, whatever text the
+ * failure carried. Otherwise the server's detail when it sent one, a thrown error's own
+ * message otherwise, and `fallback` when neither is meaningful (an HTTP error without a
+ * detail only knows its status). Without a fallback, that status message, or a non-error
+ * value's string form, is used. This is the one error-text helper; lint rejects local copies.
  */
 export function apiErrorMessage(error: unknown, fallback?: string): string {
+  if (isNoHauteAnswer(error)) return error.message
   const record = apiErrorRawDetail(error)
   const message = record?.message
   if (typeof message === "string" && message.trim()) return message

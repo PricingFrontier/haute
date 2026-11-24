@@ -27,6 +27,8 @@ import useRatingLevels from "./rating/useRatingLevels"
 import { wholeDataStatusText } from "./shared/useWholeDataAnswer"
 import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
+import { useRowKeys } from "./shared/useRowKeys"
+import type { RowChange } from "../../utils/rowKeys"
 
 /**
  * The part of a Rating Step on show: the node panel's Tables tab or its
@@ -310,7 +312,16 @@ export default function RatingStepEditor({
   )
   const combinedColumnInvalid = hasCombinedOutput && (combinedColumnBlank || combinedColumnDuplicate)
 
-  const commitTables = (next: RatingTable[]) => onUpdate("tables", next)
+  // Each table's and combined output's identity, which the selected one's fields' drafts are
+  // kept by: it follows the editor's own writes, and any other change (an Undo, a sync frame)
+  // gives every one a new identity.
+  const tableKeys = useRowKeys(tables)
+  const combinedKeys = useRowKeys(combinedOutputs)
+  const commitTables = (next: RatingTable[], change: RowChange = { kind: "edit" }) => {
+    // The tables as they come back: the stored config is read, and normalised, as it renders.
+    tableKeys.expect(normaliseRatingTables({ ...config, tables: next }), change)
+    return onUpdate("tables", next)
+  }
 
   const updateTable = (idx: number, patch: Partial<RatingTable>) => {
     const next = tables.map((t, i) => i === idx ? { ...t, ...patch } : t)
@@ -390,7 +401,7 @@ export default function RatingStepEditor({
   }
 
   const addTable = () => {
-    commitTables([...tables, newRatingTable()])
+    commitTables([...tables, newRatingTable()], { kind: "add" })
     tableList.reset()
     selectTable(tables.length)
   }
@@ -398,7 +409,7 @@ export default function RatingStepEditor({
   const removeTable = (idx: number) => {
     if (tables.length <= 1) return
     const next = tables.filter((_, i) => i !== idx)
-    commitTables(next)
+    commitTables(next, { kind: "remove", index: idx })
     const nextActiveTab = idx === activeTab
       ? Math.min(idx, next.length - 1)
       : idx < activeTab
@@ -412,11 +423,12 @@ export default function RatingStepEditor({
   // edited stays selected, slice and all.
   const moveTable = (from: number, to: number) => {
     if (!isListMove(tables.length, from, to)) return
-    commitTables(moveListItem(tables, from, to))
+    commitTables(moveListItem(tables, from, to), { kind: "move", from, to })
     setActiveTab(indexAfterMove(safeIdx, from, to))
   }
 
-  const commitCombinedOutputs = (next: CombinedOutput[]) => {
+  const commitCombinedOutputs = (next: CombinedOutput[], change: RowChange = { kind: "edit" }) => {
+    combinedKeys.expect(normaliseCombinedOutputs({ ...config, combined_outputs: next }), change)
     onUpdate({ combined_outputs: next })
   }
 
@@ -437,14 +449,14 @@ export default function RatingStepEditor({
       ...combinedOutputs,
       { output_column: nextCombinedOutputName(combinedOutputs, tableOutputColumns), operation: "multiply" as CombinedOperation, base_value: 1 },
     ]
-    commitCombinedOutputs(next)
+    commitCombinedOutputs(next, { kind: "add" })
     setActiveCombinedIdx(combinedOutputs.length)
   }
 
   const removeCombinedOutput = (idx: number) => {
     if (combinedOutputs.length === 0) return
     const next = combinedOutputs.filter((_, i) => i !== idx)
-    commitCombinedOutputs(next)
+    commitCombinedOutputs(next, { kind: "remove", index: idx })
     setActiveCombinedIdx(next.length === 0 ? 0 : Math.min(activeCombinedIdx, next.length - 1))
   }
 
@@ -573,7 +585,7 @@ export default function RatingStepEditor({
                   its tooltip, and the menu gives each column's. The menu
                   leaves out the table's other factors, as Add factor's does. */}
               <ColumnSelector
-                key={`fsel-${safeIdx}-${fi}`}
+                key={`fsel-${tableKeys.keys[safeIdx]}-${fi}`}
                 compact
                 trigger="field"
                 label={`Factor ${fi + 1}`}
@@ -597,7 +609,7 @@ export default function RatingStepEditor({
               drawn like Add table, which opens the list of columns in one click. */}
           {factorCount < 3 && (
             <ColumnSelector
-              key={`fadd-${safeIdx}-${factorCount}`}
+              key={`fadd-${tableKeys.keys[safeIdx]}-${factorCount}`}
               compact
               trigger={factorCount === 0 ? "field" : "add"}
               label="Add factor"
@@ -646,11 +658,11 @@ export default function RatingStepEditor({
         </div>
       )}
       {factorCount === 1 && !tableTooLarge && (
-        <OneWayEditor table={table} bandingLevels={factorLevels}
+        <OneWayEditor key={`grid-${tableKeys.keys[safeIdx]}`} table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
       {factorCount === 2 && !tableTooLarge && (
-        <TwoWayGrid table={table} bandingLevels={factorLevels}
+        <TwoWayGrid key={`grid-${tableKeys.keys[safeIdx]}`} table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
       {factorCount === 3 && !tableTooLarge && (
@@ -669,7 +681,7 @@ export default function RatingStepEditor({
             </select>
           </div>
           {sliceLevels.length > 0 && (
-            <TwoWayGrid table={table} bandingLevels={factorLevels}
+            <TwoWayGrid key={`grid-${tableKeys.keys[safeIdx]}-${selectedSlice}`} table={table} bandingLevels={factorLevels}
               onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)}
               factorOverrides={{
                 factors: [table.factors[0], table.factors[1]],
@@ -706,7 +718,7 @@ export default function RatingStepEditor({
         </div>
         <div>
           <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <NumberField key={`def-${safeIdx}`} id={defaultInputId} value={table.default_value ?? null}
+          <NumberField key={`def-${tableKeys.keys[safeIdx]}`} id={defaultInputId} value={table.default_value ?? null}
             disabled={!usesDefault}
             onCommit={(value) => setDefaultValue(safeIdx, value)}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
@@ -801,7 +813,7 @@ export default function RatingStepEditor({
             <div>
               <label htmlFor={combinedColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Combined Output Column</label>
               <CommittedTextField
-                key={`combined-out-${safeCombinedIdx}`}
+                key={`combined-out-${combinedKeys.keys[safeCombinedIdx]}`}
                 type="text"
                 value={combinedOutput.output_column}
                 id={combinedColumnInputId}
@@ -845,7 +857,7 @@ export default function RatingStepEditor({
               <div>
                 <label htmlFor={combinedBaseValueInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedBaseValueInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Base Value</label>
                 <NumberField
-                  key={`combined-base-${safeCombinedIdx}`}
+                  key={`combined-base-${combinedKeys.keys[safeCombinedIdx]}`}
                   id={combinedBaseValueInputId}
                   value={combinedOutput.base_value}
                   problemClassName="mt-1 block text-[10px] font-medium"

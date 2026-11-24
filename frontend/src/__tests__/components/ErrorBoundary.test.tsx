@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { lazy, Suspense } from "react"
 import { ErrorBoundary } from "../../components/ErrorBoundary"
-import { recordChunkLoadFailures } from "../../utils/chunkLoadError"
+import { CHUNK_PROBE_TIMEOUT_MS, recordChunkLoadFailures } from "../../utils/chunkLoadError"
 import useGraphStore from "../../stores/useGraphStore"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -214,12 +214,21 @@ describe("ErrorBoundary", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // A lazily loaded chunk the rebuilt server no longer has
+  // A lazily loaded chunk that could not be loaded: gone from a rebuilt server, or
+  // asked for while the server did not answer
   // ────────────────────────────────────────────────────────────────
 
   describe("chunk-load failure", () => {
     const originalLocation = window.location
     let reload: ReturnType<typeof vi.fn>
+    let probe: ReturnType<typeof vi.spyOn>
+
+    /** How the server answers the question asked of it for the chunk once it failed. */
+    function serverAnswers(answer: number | "nothing") {
+      probe.mockImplementation(() => answer === "nothing"
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : Promise.resolve(new Response(null, { status: answer })))
+    }
 
     beforeEach(() => {
       reload = vi.fn()
@@ -227,11 +236,14 @@ describe("ErrorBoundary", () => {
         configurable: true,
         value: { ...originalLocation, reload },
       })
+      probe = vi.spyOn(globalThis, "fetch")
+      serverAnswers(404)
     })
 
     afterEach(() => {
       Object.defineProperty(window, "location", { configurable: true, value: originalLocation })
       useGraphStore.setState({ dirty: false })
+      probe.mockRestore()
     })
 
     /** The results workspace as the app loads it: a lazy chunk behind the preview's boundary. */
@@ -254,11 +266,72 @@ describe("ErrorBoundary", () => {
       )
 
       expect(await screen.findByText("Haute has been updated")).toBeTruthy()
+      expect(probe).toHaveBeenCalledWith(
+        "http://127.0.0.1:8200/assets/ModellingPreview-DMczYKmb.js",
+        expect.objectContaining({ cache: "no-store" }),
+      )
       expect(screen.queryByText("Something went wrong")).toBeNull()
       expect(screen.queryByRole("button", { name: "Try again" })).toBeNull()
 
       fireEvent.click(screen.getByRole("button", { name: "Reload" }))
       expect(reload).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ["nothing answers yet", "nothing" as const],
+      ["the file is there now", 200],
+    ])("says the server did not answer, not that Haute was updated, when %s", async (_case, answer) => {
+      serverAnswers(answer)
+      renderResultsWorkspace(
+        new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1:8200/assets/BandingEditor-x1.js"),
+      )
+
+      expect(await screen.findByText("Haute's server did not answer")).toBeTruthy()
+      expect(screen.getByText((text) => text.startsWith("This part of the page could not be loaded while the server was away."))).toBeTruthy()
+      expect(screen.queryByText("Haute has been updated")).toBeNull()
+      fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+      expect(reload).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([200, 503])(
+      "says neither an update nor an outage for a failure that names no file, the server answering %i",
+      async (status) => {
+        // Safari's message names no file: nothing says which file failed, or why.
+        serverAnswers(status)
+        renderResultsWorkspace(new TypeError("Importing a module script failed."))
+
+        expect(await screen.findByText("This part of the page could not be loaded")).toBeTruthy()
+        expect(screen.getByText("Reload to load it.")).toBeTruthy()
+        expect(screen.queryByText("Haute has been updated")).toBeNull()
+        expect(screen.queryByText("Haute's server did not answer")).toBeNull()
+        expect(probe).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+        expect(reload).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it("offers the Reload while the server is asked, and says it did not answer once the question times out", async () => {
+      vi.useFakeTimers()
+      try {
+        // A server, or a proxy, that takes the question and never answers it.
+        probe.mockImplementation((_url: RequestInfo | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
+        }))
+        renderResultsWorkspace(
+          new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1:8200/assets/BandingEditor-x1.js"),
+        )
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+        expect(screen.getByText("This part of the page could not be loaded")).toBeTruthy()
+        fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+        expect(reload).toHaveBeenCalledTimes(1)
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(CHUNK_PROBE_TIMEOUT_MS) })
+
+        expect(screen.getByText("Haute's server did not answer")).toBeTruthy()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it("asks for unsaved canvas changes to be saved before a reload loses them", async () => {

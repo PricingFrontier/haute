@@ -24,6 +24,7 @@ import {
   sendKeyed,
   updateUtilityFile,
 } from "../client"
+import { ServerUnreachableError } from "../transportErrors"
 import { memoryHold, sendHeld, type KeyedTicket } from "../keyedWrites"
 import { deleteProjectFile } from "../projectFiles"
 import { deleteTestQuote, saveWorkbenchForm } from "../workbench"
@@ -72,7 +73,7 @@ describe("every write is sent once", () => {
     ["commitMilestone, a POST", () => commitMilestone("msg", null)],
   ])("%s, whether its answer is lost or a server failure", async (_name, call) => {
     mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"))
-    await expect(call()).rejects.toBeInstanceOf(TypeError)
+    await expect(call()).rejects.toBeInstanceOf(ServerUnreachableError)
     expect(mockFetch).toHaveBeenCalledTimes(1)
 
     mockFetch.mockReset()
@@ -90,7 +91,7 @@ describe("every write is sent once", () => {
 
     const failure = await updateUtilityFile("helpers", "x = 1\n", "rev-1").catch((error: unknown) => error)
 
-    expect(failure).toBeInstanceOf(TypeError)
+    expect(failure).toBeInstanceOf(ServerUnreachableError)
     expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 
@@ -185,7 +186,7 @@ describe("sendHeld", () => {
   it("refuses other content under the held write's key before it is sent", async () => {
     const hold = memoryHold<Save>((save) => save.operation, (save) => save.content)
     mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"))
-    await expect(sendHeld(hold, first, send)).rejects.toBeInstanceOf(TypeError)
+    await expect(sendHeld(hold, first, send)).rejects.toBeInstanceOf(ServerUnreachableError)
 
     await expect(sendHeld(hold, { operation: first.operation, content: "changed" }, send)).rejects.toThrow(
       "A held keyed write is sent again exactly: other content takes a new key.",
