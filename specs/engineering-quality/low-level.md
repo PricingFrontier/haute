@@ -662,8 +662,10 @@
 - `tests/test_small_module_contracts.py` — JSON-safe serialization, shared contracts, and package-init module contracts.
 - `tests/test_test_debt.py` — AST debt scanner budgets and explicit-reason
   contracts for backend/frontend skip/xfail/fixme markers, plus the zero
-  backend-flaky budget, the Playwright retry budget, and exact regeneration of
-  `tests/test-health-summary.md`.
+  backend-flaky budget, the Playwright retry budget, exact regeneration of
+  `tests/test-health-summary.md`, and every module holding a test skipped off
+  Windows (a skip whose condition, judged with only the platform known, holds on
+  Linux and not on Windows) named by the platform smoke job's Windows leg.
 - `tests/test_workflow_coverage.py` — workflow coverage ledger validator: the
   real ledger is valid and complete, plus malformed cases (duplicate ids,
   unknown component, missing owning package, each covered-state omission and

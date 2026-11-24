@@ -11,9 +11,12 @@ import argparse
 import ast
 import functools
 import json
+import re
 import sys
 import textwrap
+from collections.abc import Iterable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -946,6 +949,133 @@ def test_frontend_scanner_ignores_chained_debt_in_comments_and_strings() -> None
     )
 
     assert [site.callee for site in sites] == ["test.skip"]
+
+
+# ---------------------------------------------------------------------------
+# Tests only Windows runs are run by the Windows job
+# ---------------------------------------------------------------------------
+
+# The jobs that run the whole suite are on Linux; the platform smoke job's Windows leg
+# runs the modules it names.
+_WINDOWS_JOB = "platform-smoke"
+_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_LINUX = {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(name="posix")}
+_WINDOWS = {"sys": SimpleNamespace(platform="win32"), "os": SimpleNamespace(name="nt")}
+_PLATFORM_SYSTEM = {"linux": "Linux", "win32": "Windows"}
+
+
+def _holds_off_windows_only(condition: ast.expr) -> bool:
+    """Whether *condition*, a skip's, holds on Linux and not on Windows, judged with only
+    the platform known (``sys.platform``, ``os.name``, ``platform.system()``): a condition
+    that reads anything else is not a platform's."""
+    code = compile(ast.Expression(body=condition), "<skip condition>", "eval")
+
+    def holds(names: dict[str, SimpleNamespace]) -> bool:
+        system = _PLATFORM_SYSTEM[names["sys"].platform]
+        scope = {**names, "platform": SimpleNamespace(system=lambda: system)}
+        return bool(eval(code, {"__builtins__": {}}, scope))
+
+    try:
+        return holds(_LINUX) and not holds(_WINDOWS)
+    except (AttributeError, NameError, TypeError):
+        return False
+
+
+def _skip_conditions(tree: ast.AST) -> Iterable[ast.expr]:
+    """The condition of each ``skipif`` mark, and of each ``if`` whose body skips."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("mark.skipif"):
+            condition = node.args[0] if node.args else _keyword_value(node, "condition")
+            if condition is not None:
+                yield condition
+        elif isinstance(node, ast.If) and any(
+            isinstance(call, ast.Call) and ast.unparse(call.func) == "pytest.skip"
+            for statement in node.body
+            for call in ast.walk(statement)
+        ):
+            yield node.test
+
+
+def _keyword_value(call: ast.Call, name: str) -> ast.expr | None:
+    return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+
+
+def _modules_skipped_off_windows(modules: Iterable[tuple[str, str]]) -> set[str]:
+    """Of *modules* (path, source), those holding a test skipped on every system but
+    Windows."""
+    return {
+        path
+        for path, source in modules
+        if any(
+            _holds_off_windows_only(condition) for condition in _skip_conditions(ast.parse(source))
+        )
+    }
+
+
+def _windows_job_modules() -> set[str]:
+    """The test modules the Windows job runs: those its steps name, but a step for
+    another system only."""
+    import yaml
+
+    job = yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"][_WINDOWS_JOB]
+    assert "windows-latest" in job["strategy"]["matrix"]["os"]
+    modules: set[str] = set()
+    for step in job["steps"]:
+        condition = str(step.get("if", ""))
+        if "runner.os" in condition and "Windows" not in condition:
+            continue
+        modules.update(re.findall(r"tests/[\w/]+\.py", str(step.get("run", ""))))
+    return modules
+
+
+@pytest.mark.meta
+def test_every_test_skipped_off_windows_is_in_a_module_the_windows_job_runs() -> None:
+    """A test only Windows runs, in a module the Windows job leaves out, runs in no job."""
+    modules = (
+        (path.relative_to(REPO_ROOT).as_posix(), path.read_text(encoding="utf-8"))
+        for path in source_files(TESTS_DIR)
+    )
+    left_out = _modules_skipped_off_windows(modules) - _windows_job_modules()
+    assert not left_out, (
+        f"Add these modules to the {_WINDOWS_JOB} job's pytest list in "
+        f".github/workflows/ci.yml: {sorted(left_out)}"
+    )
+
+
+def test_a_skip_off_windows_is_told_from_any_other() -> None:
+    probe = textwrap.dedent(
+        """
+        import os, sys, pytest
+
+        @pytest.mark.skipif(sys.platform != "win32", reason="Windows locks")
+        def test_a(): ...
+
+        def test_b():
+            if os.name != "nt":
+                pytest.skip("Windows paths")
+        """
+    )
+    others = textwrap.dedent(
+        """
+        import sys, pytest
+        POSIX = pytest.mark.skipif(sys.platform == "win32", reason="chmod")
+        LINUX = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_AS")
+
+        def test_c(flag):
+            if flag:
+                pytest.skip("not the platform's")
+        """
+    )
+
+    assert _modules_skipped_off_windows([("tests/a.py", probe), ("tests/o.py", others)]) == {
+        "tests/a.py"
+    }
+    for spelling in (
+        'not sys.platform.startswith("win")',
+        'platform.system() != "Windows"',
+        'sys.platform != "win32"',
+    ):
+        assert _holds_off_windows_only(ast.parse(spelling, mode="eval").body), spelling
 
 
 def _main(argv: list[str] | None = None) -> int:

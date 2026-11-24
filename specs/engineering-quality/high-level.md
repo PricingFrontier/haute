@@ -47,7 +47,10 @@ Out of scope:
   changed-code coverage check. They also run supported Python compatibility
   tests, package/install smoke tests, optional-dependency checks, frontend
   checks, browser E2E, the strict documentation build, and the named auxiliary
-  lanes in the CI workflow. Every gate runs on every run: a gate that combines
+  lanes in the CI workflow. The jobs that run the whole backend suite are on
+  Linux; the platform smoke job's Windows and macOS legs run the modules it names,
+  among them every module holding a test that is skipped off Windows, so no such
+  test is left to no job. Every gate runs on every run: a gate that combines
   other jobs' results (the coverage gate, the mutation gate) runs whether they
   passed or not and fails explicitly when one did not, so a red shard can never
   turn it into a skipped check.
