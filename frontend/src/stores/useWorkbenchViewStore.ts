@@ -125,6 +125,13 @@ interface WorkbenchViewState {
   schemaSearch: string
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
   widgetPanes: Record<string, WidgetPane>
+  /**
+   * The sheets added to each Export's workbook of cells, by component id, that may hold no
+   * cells yet: kept here so they outlast its Config pane; a sheet holding no cells is not saved.
+   */
+  exportSheets: Record<string, readonly string[]>
+  /** The sheets shown closed in each Export's Cells, by component id, each in lower case. */
+  exportCollapsed: Record<string, readonly string[]>
   /** The component Ctrl/Cmd+C copied, which Ctrl/Cmd+V pastes, or null. */
   copied: Copied | null
   /** The sheet element and its scrolling viewport, while the sheets show. */
@@ -165,6 +172,8 @@ interface WorkbenchViewState {
   setSchemaScroll: (top: number) => void
   setSchemaSearch: (text: string) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
+  setExportSheets: (id: string, sheets: readonly string[]) => void
+  setExportCollapsed: (id: string, sheets: readonly string[]) => void
   setCopied: (copied: Copied | null) => void
   setSheet: (element: HTMLElement | null) => void
   setViewport: (element: HTMLElement | null) => void
@@ -191,6 +200,8 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   schemaScroll: 0,
   schemaSearch: "",
   widgetPanes: {},
+  exportSheets: {},
+  exportCollapsed: {},
   copied: null,
   sheet: null,
   viewport: null,
@@ -245,6 +256,8 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
   setSchemaScroll: (schemaScroll) => set({ schemaScroll }),
   setSchemaSearch: (schemaSearch) => set({ schemaSearch }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),
+  setExportSheets: (id, sheets) => set((s) => ({ exportSheets: { ...s.exportSheets, [id]: sheets } })),
+  setExportCollapsed: (id, sheets) => set((s) => ({ exportCollapsed: { ...s.exportCollapsed, [id]: sheets } })),
   setCopied: (copied) => set({ copied }),
   setSheet: (sheet) => set({ sheet }),
   setViewport: (viewport) => set({ viewport }),
@@ -254,14 +267,16 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
 // A form read anew, on the view's first showing or after a branch switch, is fitted when its
 // sheets next show; the zoom chosen for the form before is nobody's. A save or an undo is no
 // read, however the history looks after it. The pane remembered for a component the form no
-// longer has, deleted or read away, is forgotten.
+// longer has, deleted or read away, is forgotten, with the sheets added to it and those closed.
 useWorkbenchFormStore.subscribe((state, previous) => {
   if (state.reads !== previous.reads) useWorkbenchViewStore.setState({ fitted: false })
   if (state.form === previous.form) return
-  const { widgetPanes } = useWorkbenchViewStore.getState()
+  const { widgetPanes, exportSheets, exportCollapsed } = useWorkbenchViewStore.getState()
   const form = state.form
-  const gone = Object.keys(widgetPanes).filter((id) => form === null || findWidget(form, id) === null)
-  if (gone.length > 0) useWorkbenchViewStore.setState({ widgetPanes: Object.fromEntries(Object.entries(widgetPanes).filter(([id]) => !gone.includes(id))) })
+  const isGone = (id: string) => form === null || findWidget(form, id) === null
+  if (Object.keys(widgetPanes).some(isGone)) useWorkbenchViewStore.setState({ widgetPanes: Object.fromEntries(Object.entries(widgetPanes).filter(([id]) => !isGone(id))) })
+  if (Object.keys(exportSheets).some(isGone)) useWorkbenchViewStore.setState({ exportSheets: Object.fromEntries(Object.entries(exportSheets).filter(([id]) => !isGone(id))) })
+  if (Object.keys(exportCollapsed).some(isGone)) useWorkbenchViewStore.setState({ exportCollapsed: Object.fromEntries(Object.entries(exportCollapsed).filter(([id]) => !isGone(id))) })
 })
 
 export default useWorkbenchViewStore

@@ -1503,18 +1503,34 @@ Out of scope:
   holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
   the file name and starting the other's settings afresh; a file's File name, a CSV's
   Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
-  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: a
-  row for each cell in order, as a schema column's row is drawn: a grip it is dragged by,
-  and Alt+Up and Alt+Down moving it, into a new order; its column's label, or "Missing
-  column" for one the schema no longer holds; on one line after it, its sheet and address
-  (`Slip!B3`), its label's address and its True/False text while it has them; a settings
+  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: the workbook's sheets, in the
+  order the cells first name them (a name matched whatever its case, as Excel matches it,
+  shown as first spelled), each a group that is opened and closed, open to start: its
+  header, a toggle, its name in a text field committed on blur or Enter (a new name, refused
+  while blank, while Excel would refuse it or while another sheet holds it, renaming the
+  sheet of each of its cells and of each table written to it, in one change), how many cells
+  it holds, and a warning mark while one of its cells or tables clashes; under it, while
+  open, a row for each of its cells in order, as a schema column's row is drawn: a grip it
+  is dragged by, and Alt+Up and Alt+Down moving it, the order the cells of every sheet in
+  turn, a cell moved past its sheet's first or last going to the sheet before or after,
+  dropped on another sheet's cell taking its place in that sheet, or on another sheet's
+  header going last in that sheet; its number in that order; its column's label, or
+  "Missing column" for one the schema no longer holds; on one line after it, its address
+  (`B3`), its label's address and its True/False text while it has them; a settings
   button opening its settings under it, one cell's at a time, the open cell staying open
   as it or another moves, is added or is taken away, and none open after a change from
-  outside the list (an undo's). Its settings: Field, a searchable
+  outside the list (an undo's); and, under its cells, Add a cell to the sheet, a
+  `ColumnSelector` of the columns a cell can be given drawn as an add button, a column chosen
+  adding a cell of it under the sheet's last cell, in the cell under that cell's, its label
+  in the cell under that cell's label while that cell has one, or in `A1` with no label in
+  a sheet with none. Under the sheets Add a sheet, a sheet named `SheetN` (the first such
+  name no sheet holds) shown last, open and holding no cells until a cell is added to it
+  or moved into it, with a cross while it holds none that takes it away; a sheet holding no
+  cells is not saved. A cell's settings: Field, a searchable
   `ColumnSelector` of the one-row tables' columns as a sheet shows them, each as
   `table.column` with its type, a column the schema no longer holds, or no longer of a
-  one-row table, shown and marked but never offered; Sheet and Cell, each in a text field
-  committed on blur or Enter, the address trimmed and taken in capitals; Label, a select of
+  one-row table, shown and marked but never offered; Cell, in a text field committed on
+  blur or Enter, the address trimmed and taken in capitals; Label, a select of
   None, Above, Under, Left, Right and Custom, read from where the label is (None while it
   has none, one of the four while it is that cell next to the cell, Custom anywhere else),
   a position past the sheet's edge, or any while the cell's address is not a cell,
@@ -1529,13 +1545,11 @@ Out of scope:
   True/false losing its text; and at their foot Remove cell, in the danger colour, asking
   "Remove cell n, its label?" with where it stops writing (its sheet and address, and its
   label's address while it has one), Remove in the danger colour, and taking the cell away
-  only on Remove. A cell's place matters: the workbook makes its sheets in the
-  order the cells first name them, a new cell goes under the last, and of two cells
-  writing to one address the later is the problem. Under them Add a cell, a
-  `ColumnSelector` of the same columns drawn as an add button, a column chosen adding a
-  cell of it on the last cell's sheet in the cell under the last cell's, its label in the
-  cell under the last cell's label while that cell has one, or `Sheet1` and `A1` with no
-  label for the first. Then Tables: for each block in order, its table's name, or
+  only on Remove. The cells are written in the order shown, each sheet's together: a form
+  whose cells interleave sheets is shown grouped, and written grouped at its next change of
+  the cells, which leaves the workbook as it was, each sheet then written under the
+  spelling its cells first name it by, its tables' too, as Excel holds two spellings as
+  one sheet. A sheet stays closed or open as it was left, while the editor is open. Then Tables: for each block in order, its table's name, or
   "Missing table", with a cross that takes the block away; its Sheet and its Cell, the
   address of its top-left corner, in text fields as a cell's are; its Header, a select of
   Labels, Names or None; while one of its columns is True/false or it holds True/False text,

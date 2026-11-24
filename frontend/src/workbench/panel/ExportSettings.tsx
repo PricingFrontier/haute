@@ -1,21 +1,25 @@
 /** An Export's panel (specs/workbench). */
-import { GripVertical, SlidersHorizontal, Trash2, TriangleAlert, X } from "lucide-react"
-import { useId, useRef, useState, type KeyboardEvent } from "react"
+import { ChevronDown, ChevronRight, GripVertical, SlidersHorizontal, Trash2, TriangleAlert, X } from "lucide-react"
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import type { CsvExport, ExcelCellsExport, ExportBlock, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable, TrueFalseText } from "../../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow } from "../../components/form"
+import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove } from "../../hooks/useRefocusAfterMove"
 import { useRowKeys } from "../../panels/editors/shared/useRowKeys"
 import { ColumnSelector, type ColumnOption } from "../../panels/modelling/ColumnSelector"
 import { confirmed } from "../../stores/useQuestionStore"
+import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { sheetColumns } from "../../utils/quoteIdentity"
 import {
   addBlockColumn,
   addExportBlock,
-  addExportCell,
+  addExportCellTo,
   cellClashes,
   cellColumns,
+  cellsBySheet,
+  cellSheets,
   excelLayout,
   exportCellsOf,
   LABEL_POSITIONS,
@@ -24,17 +28,20 @@ import {
   type LabelPosition,
   exportFormatShown,
   fieldColumn,
+  groupExportCells,
   moveBlockColumn,
-  moveExportCell,
+  placeExportCell,
   readableName,
   removeBlockColumn,
   removeExportBlock,
   removeExportCell,
+  renameExportSheet,
   setExcelLayout,
   setExportBlockTrueFalse,
   setExportCellColumn,
   setExportCellTrueFalse,
   setExportFormat,
+  sheetNameProblem,
   toggleExportTable,
   trueFalsePreset,
   updateExportBlock,
@@ -154,11 +161,12 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
 }
 
 /**
- * What a workbook of cells writes to one place twice (`cellClashes`), at the foot of the
- * pane and held there as it scrolls, in the warning colour; nothing while there is none.
+ * What a workbook of cells writes to one place twice (`cellClashes`, its cells numbered as
+ * Cells shows them), at the foot of the pane and held there as it scrolls, in the warning
+ * colour; nothing while there is none.
  */
 function CellClashes({ form, target }: { form: FormSpec; target: ExcelCellsExport }) {
-  const clashes = cellClashes(form, target)
+  const clashes = cellClashes(form, { ...target, cells: cellsBySheet(target.cells) })
   if (clashes.length === 0) return null
   // A band to the pane's edges, over the pane's padding, so nothing scrolls past under it.
   return (
@@ -170,7 +178,7 @@ function CellClashes({ form, target }: { form: FormSpec; target: ExcelCellsExpor
         </div>
         <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
           {clashes.map((clash) => (
-            <li key={clash}>{clash}</li>
+            <li key={clash.text}>{clash.text}</li>
           ))}
         </ul>
       </section>
@@ -192,9 +200,9 @@ function cellChoices(tables: readonly SchemaTable[]): { options: ColumnOption[];
   return { options, fields }
 }
 
-/** Where a cell writes, on one line: its sheet and address, its label's address and its True/False text. */
+/** Where a cell writes on its sheet, on one line: its address, its label's address and its True/False text. */
 function cellSummary(cell: ExportCell): string {
-  const parts = [`${cell.sheet}!${cell.cell}`]
+  const parts = [cell.cell]
   if (cell.label_cell.trim() !== "") parts.push(`label ${cell.label_cell}`)
   if (cell.true_false !== null) {
     const preset = TRUE_FALSE_PRESETS.find((held) => held.value === trueFalsePreset(cell.true_false))
@@ -203,106 +211,318 @@ function cellSummary(cell: ExportCell): string {
   return parts.join(" · ")
 }
 
+/** No sheets added to a component. */
+const NO_SHEETS: readonly string[] = []
+/** Two sheet names Excel holds as one. */
+const sameSheet = (one: string, other: string) => one.toLowerCase() === other.toLowerCase()
+
 /**
- * A workbook of cells' Cells: a `CellRow` for each cell, in order, keyed by `useRowKeys` so a
- * cell keeps its key, its open settings and its Custom as it moves, is added or taken away,
- * each write said to it as the store makes it; one cell's settings open at a time; then Add a
- * cell, a `ColumnSelector` of the columns a cell can be given.
+ * A workbook of cells' Cells: a `SheetGroup` for each sheet its cells name (`cellSheets`),
+ * then each added in the view store's `exportSheets` that holds none yet, each closed while
+ * the view store's `exportCollapsed` holds it; the cells in
+ * `cellsBySheet` order, numbered in it and keyed by `useRowKeys`, so a cell keeps its key,
+ * its open settings and its Custom as it moves, is added or taken away. Every write groups
+ * the cells first (`groupExportCells`), so a row's place is its cell's, and is said to
+ * `useRowKeys` as the store makes it. One cell's settings open at a time. A sheet a move or a
+ * removal leaves with no cells stays, added. Then Add a sheet.
  */
 function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportWidget; target: ExcelCellsExport }) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const addToast = useToastStore((s) => s.addToast)
+  const added = useWorkbenchViewStore((s) => s.exportSheets[widget.id] ?? NO_SHEETS)
+  const setExportSheets = useWorkbenchViewStore((s) => s.setExportSheets)
+  const closed = useWorkbenchViewStore((s) => s.exportCollapsed[widget.id] ?? NO_SHEETS)
+  const setExportCollapsed = useWorkbenchViewStore((s) => s.setExportCollapsed)
+  const isClosed = (sheet: string) => closed.includes(sheet.toLowerCase())
+  const toggle = (sheet: string) =>
+    setExportCollapsed(widget.id, isClosed(sheet) ? closed.filter((held) => held !== sheet.toLowerCase()) : [...closed, sheet.toLowerCase()])
   const tables = form.schema.tables.filter((table) => cellColumns(table).length > 0)
   const { options, fields } = cellChoices(tables)
-  const rowKeys = useRowKeys(target.cells)
+  const cells = cellsBySheet(target.cells)
+  const named = cellSheets(target.cells)
+  const sheets = [...named, ...added.filter((name) => !named.some((sheet) => sameSheet(sheet, name)))]
+  const clashed = new Set(cellClashes(form, { ...target, cells }).map((clash) => clash.sheet))
+  const rowKeys = useRowKeys(cells)
   const [open, setOpen] = useState<number | null>(null)
+  const [fresh, setFresh] = useState<string | null>(null)
   // A cell moved by Alt+arrows takes the focus again in its new place.
   const refocus = useRefocusAfterMove<HTMLDivElement>()
-  /** The list's own write: `edit` made, and the cells it leaves said to `useRowKeys` as `say` takes them. */
+  /** The list's own write: `edit` made on the cells grouped, and the cells it leaves said to `useRowKeys` as `say` takes them. */
   const write = (edit: (spec: FormSpec) => FormSpec, say: (next: ExportCell[]) => void) =>
     change((spec) => {
-      const next = edit(spec)
-      if (next !== spec) say(exportCellsOf(next, widget.id))
+      const grouped = groupExportCells(spec, widget.id)
+      const next = edit(grouped)
+      if (next === grouped) return spec
+      say(exportCellsOf(next, widget.id))
       return next
     })
-  const move = (from: number, to: number) =>
+  /** The sheets added, `sheet` among them while it will hold no cells once `index` leaves it. */
+  const keepIfEmptied = (index: number) => {
+    const sheet = cells[index].sheet
+    const left = cells.filter((cell, at) => at !== index && sameSheet(cell.sheet, sheet)).length
+    if (left === 0 && !added.some((name) => sameSheet(name, sheet))) setExportSheets(widget.id, [...added, sheet])
+  }
+  /** Put the cell at `from` at `to` on `sheet`, its key with it, the sheet it lands on opened. */
+  const place = (from: number, to: number, sheet: string) => {
+    if (!sameSheet(cells[from].sheet, sheet)) keepIfEmptied(from)
+    if (isClosed(sheet)) toggle(sheet)
+    const order = cells.map((cell, index) => ({ index, sheet: cell.sheet }))
+    const [moved] = order.splice(from, 1)
+    order.splice(to, 0, { ...moved, sheet })
+    const was = cellsBySheet(order).map((held) => held.index)
     write(
-      (spec) => moveExportCell(spec, widget.id, from, to),
-      (next) => rowKeys.move(from, to, next),
+      (spec) => placeExportCell(spec, widget.id, from, to, sheet),
+      (next) => rowKeys.expect(next, { kind: "rows", from: was }),
     )
-  const dragFor = useListReorder(move)
+  }
+  const dragFor = useListReorder((from, to) => place(from, to, cells[to].sheet))
+  // The row being dragged, so a sheet's header takes it; a row dropped in another sheet is drawn anew there, never ending its drag.
+  const [dragged, setDragged] = useState<number | null>(null)
+  const dragOf = (index: number): RowDrag => {
+    const drag = dragFor(index)
+    return {
+      ...drag,
+      onStart: (event) => {
+        setDragged(index)
+        drag.onStart(event)
+      },
+      onDrop: (event) => {
+        setDragged(null)
+        drag.onDrop(event)
+      },
+      onEnd: () => {
+        setDragged(null)
+        drag.onEnd()
+      },
+    }
+  }
+  const lastOf = (sheet: string) => cells.reduce((last, cell, index) => (sameSheet(cell.sheet, sheet) ? index : last), -1)
+  /** A cell dropped on a sheet's header goes last in it; on an empty sheet, after every cell. */
+  const dropOn = (sheet: string) => {
+    const from = dragged
+    setDragged(null)
+    if (from === null || cells[from] === undefined) return
+    dragFor(from).onEnd()
+    const last = lastOf(sheet)
+    place(from, last === -1 ? cells.length - 1 : from <= last ? last : last + 1, sheet)
+  }
+  /** Alt+Up and Alt+Down on a row: within its sheet, or past its first or last into the sheet before or after. */
+  const moveKeys = (index: number, key: number) => (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return
+    event.preventDefault()
+    const sheet = cells[index].sheet
+    const at = sheets.findIndex((held) => sameSheet(held, sheet))
+    const up = event.key === "ArrowUp"
+    const neighbour = cells[up ? index - 1 : index + 1]
+    if (neighbour !== undefined && sameSheet(neighbour.sheet, sheet)) {
+      refocus.moved(String(key))
+      place(index, up ? index - 1 : index + 1, sheet)
+      return
+    }
+    const next = sheets[up ? at - 1 : at + 1]
+    if (next === undefined) return
+    refocus.moved(String(key))
+    place(index, index, next)
+  }
+  const addTo = (sheet: string, field: FieldRef) => {
+    const last = lastOf(sheet)
+    const was: (number | null)[] = cells.map((_, index) => index)
+    was.splice(last === -1 ? cells.length : last + 1, 0, null)
+    write(
+      (spec) => addExportCellTo(spec, widget.id, sheet, field),
+      (next) => rowKeys.expect(next, { kind: "rows", from: was }),
+    )
+  }
+  const rename = (sheet: string, typed: string) => {
+    const name = typed.trim()
+    if (name === sheet) return
+    const problem = name === "" ? "is blank" : sheetNameProblem(name)
+    if (problem !== null) return addToast("error", `The sheet name "${name}" ${problem}`)
+    if (sheets.some((other) => !sameSheet(other, sheet) && sameSheet(other, name))) return addToast("error", `Another sheet is named ${name}`)
+    if (added.some((held) => sameSheet(held, sheet))) setExportSheets(widget.id, added.map((held) => (sameSheet(held, sheet) ? name : held)))
+    if (isClosed(sheet)) setExportCollapsed(widget.id, closed.map((held) => (held === sheet.toLowerCase() ? name.toLowerCase() : held)))
+    if (named.some((held) => sameSheet(held, sheet))) write((spec) => renameExportSheet(spec, widget.id, sheet, name), (next) => rowKeys.edit(next))
+  }
+  const addSheet = () => {
+    let number = 1
+    while (sheets.some((sheet) => sameSheet(sheet, `Sheet${number}`))) number += 1
+    setExportSheets(widget.id, [...added, `Sheet${number}`])
+    setFresh(`Sheet${number}`)
+  }
   return (
     <Section title="Cells" aside={`${target.cells.length} written`}>
-      {target.cells.length > 0 && (
-        <div role="list" aria-label="Cells" className="flex flex-col gap-0.5">
-          {target.cells.map((cell, index) => {
-            const key = rowKeys.keys[index]
-            return (
-              <CellRow
-                key={key}
-                form={form}
-                widget={widget}
-                cell={cell}
-                index={index}
-                count={target.cells.length}
-                open={open === key}
-                onToggle={() => setOpen(open === key ? null : key)}
-                drag={dragFor(index)}
-                register={refocus.register(String(key))}
-                onMove={(to) => {
-                  refocus.moved(String(key))
-                  move(index, to)
-                }}
-                options={options}
-                fields={fields}
-                write={(edit) => write(edit, (next) => rowKeys.edit(next))}
-                onRemove={() =>
-                  write(
-                    (spec) => removeExportCell(spec, widget.id, index),
-                    (next) => rowKeys.remove(index, next),
-                  )
-                }
-              />
-            )
-          })}
-        </div>
-      )}
-      <ColumnSelector
-        label="Add a cell"
-        value=""
-        columns={options}
-        compact
-        trigger="add"
-        placeholder="Add a cell"
-        onChange={(name) => {
-          const field = fields.get(name)
-          if (field !== undefined)
-            write(
-              (spec) => addExportCell(spec, widget.id, field),
-              (next) => rowKeys.add(next),
-            )
-        }}
-      />
+      {sheets.map((sheet, place) => {
+        const shut = isClosed(sheet)
+        const held = cells.map((cell, index) => ({ cell, index })).filter(({ cell }) => sameSheet(cell.sheet, sheet))
+        return (
+          // Keyed by its place, so a sheet renamed keeps its header, and the focus with it.
+          <SheetGroup
+            key={place}
+            sheet={sheet}
+            count={held.length}
+            shut={shut}
+            clashes={clashed.has(sheet.toLowerCase())}
+            autoFocus={fresh === sheet}
+            onToggle={() => toggle(sheet)}
+            onRename={(name) => rename(sheet, name)}
+            onRemove={() => setExportSheets(widget.id, added.filter((name) => !sameSheet(name, sheet)))}
+            taking={dragged !== null}
+            onDrop={() => dropOn(sheet)}
+            options={options}
+            onAdd={(name) => {
+              const field = fields.get(name)
+              if (field !== undefined) addTo(sheet, field)
+            }}
+          >
+            {held.map(({ cell, index }) => {
+              const key = rowKeys.keys[index]
+              return (
+                <CellRow
+                  key={key}
+                  form={form}
+                  widget={widget}
+                  cell={cell}
+                  index={index}
+                  open={open === key}
+                  onToggle={() => setOpen(open === key ? null : key)}
+                  drag={dragOf(index)}
+                  register={refocus.register(String(key))}
+                  onMoveKeys={moveKeys(index, key)}
+                  options={options}
+                  fields={fields}
+                  write={(edit) => write(edit, (next) => rowKeys.edit(next))}
+                  onRemove={() => {
+                    keepIfEmptied(index)
+                    write(
+                      (spec) => removeExportCell(spec, widget.id, index),
+                      (next) => rowKeys.remove(index, next),
+                    )
+                  }}
+                />
+              )
+            })}
+          </SheetGroup>
+        )
+      })}
+      <QuietAction onClick={addSheet} className="justify-self-start self-start">
+        Add a sheet
+      </QuietAction>
     </Section>
   )
 }
 
 /**
+ * A sheet of a workbook of cells: its header, a toggle, its name (committed through the
+ * caller, which refuses one Excel would not take or another sheet holds), how many cells it
+ * holds, a mark while one of them clashes and, while it holds none, a cross; a cell's row
+ * dragged onto the header (`taking`) going last in it. While open, its cells' rows and Add a cell to it.
+ */
+function SheetGroup({
+  sheet,
+  count,
+  shut,
+  clashes,
+  autoFocus,
+  onToggle,
+  onRename,
+  onRemove,
+  taking,
+  onDrop,
+  options,
+  onAdd,
+  children,
+}: {
+  sheet: string
+  count: number
+  shut: boolean
+  clashes: boolean
+  autoFocus: boolean
+  onToggle: () => void
+  onRename: (name: string) => void
+  onRemove: () => void
+  /** A cell's row is being dragged, which the header takes. */
+  taking: boolean
+  onDrop: () => void
+  options: readonly ColumnOption[]
+  onAdd: (name: string) => void
+  children: ReactNode
+}) {
+  const [over, setOver] = useState(false)
+  return (
+    <div role="group" aria-label={`Sheet ${sheet}`} className="flex flex-col gap-1">
+      <div
+        onDragOver={(event) => {
+          if (!taking) return
+          event.preventDefault()
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "move"
+          setOver(true)
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(event) => {
+          if (!taking) return
+          event.preventDefault()
+          setOver(false)
+          onDrop()
+        }}
+        data-drop-target={over ? "true" : undefined}
+        className="flex items-center gap-1.5 rounded px-1 py-0.5"
+        style={{ background: "var(--bg-elevated)", boxShadow: over ? "inset 0 0 0 1px var(--accent)" : undefined }}
+      >
+        <IconButton
+          icon={shut ? ChevronRight : ChevronDown}
+          onClick={onToggle}
+          aria-expanded={!shut}
+          aria-label={`${shut ? "Expand" : "Collapse"} sheet ${sheet}`}
+          style={{ color: "var(--text-muted)" }}
+        />
+        <CommittedTextField
+          aria-label={`Sheet ${sheet} name`}
+          value={sheet}
+          onCommit={onRename}
+          autoFocus={autoFocus}
+          className={`${COMPACT_FIELD_CLASS} min-w-0 flex-1 font-medium`}
+          style={INPUT_STYLE}
+        />
+        <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {count === 1 ? "1 cell" : `${count} cells`}
+        </span>
+        {clashes && (
+          <span role="img" aria-label={`Clashes on ${sheet}`} title="Clashes on this sheet" className="flex shrink-0" style={{ color: "var(--warning)" }}>
+            <TriangleAlert size={12} aria-hidden="true" />
+          </span>
+        )}
+        {count === 0 && <IconButton icon={X} onClick={onRemove} aria-label={`Remove sheet ${sheet}`} title="Remove sheet" className="icon-danger-btn" />}
+      </div>
+      {!shut && (
+        <div className="flex flex-col gap-1 pl-3">
+          {count > 0 && (
+            <div role="list" aria-label={`${sheet} cells`} className="flex flex-col gap-0.5">
+              {children}
+            </div>
+          )}
+          <ColumnSelector label={`Add a cell to ${sheet}`} value="" columns={options} compact trigger="add" placeholder="Add a cell" onChange={onAdd} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * A cell's row, as a schema column's is drawn: a grip it is dragged by and Alt+Up and
- * Alt+Down on the row moving it, its column's label or Missing column, where it writes
- * (`cellSummary`), and a settings button opening `CellSettings` under it, which holds its
- * Remove cell.
+ * Alt+Down on the row moving it (`onMoveKeys`), its number, its column's label or Missing
+ * column, where it writes on its sheet (`cellSummary`), and a settings button opening
+ * `CellSettings` under it, which holds its Remove cell.
  */
 function CellRow({
   form,
   widget,
   cell,
   index,
-  count,
   open,
   onToggle,
   drag,
   register,
-  onMove,
+  onMoveKeys,
   options,
   fields,
   write,
@@ -312,12 +532,11 @@ function CellRow({
   widget: ExportWidget
   cell: ExportCell
   index: number
-  count: number
   open: boolean
   onToggle: () => void
   drag: RowDrag
   register: (element: HTMLDivElement | null) => void
-  onMove: (to: number) => void
+  onMoveKeys: (event: KeyboardEvent<HTMLDivElement>) => void
   options: readonly ColumnOption[]
   fields: ReadonlyMap<string, FieldRef>
   write: (edit: (spec: FormSpec) => FormSpec) => void
@@ -329,12 +548,6 @@ function CellRow({
   const label = found === null ? "Missing column" : columnLabel(found.column)
   const number = index + 1
   const summary = cellSummary(cell)
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    // The row's own keys: Alt+arrows in its settings' fields stay theirs.
-    if (event.target !== event.currentTarget) return
-    const to = altArrowMove(event, "vertical", index, count)
-    if (to !== null) onMove(to)
-  }
   return (
     <div
       ref={(element) => {
@@ -345,7 +558,10 @@ function CellRow({
       role="listitem"
       aria-label={`Cell ${number} ${label}`}
       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-      onKeyDown={onKeyDown}
+      onKeyDown={(event) => {
+        // The row's own keys: Alt+arrows in its settings' fields stay theirs.
+        if (event.target === event.currentTarget) onMoveKeys(event)
+      }}
       onDragOver={drag.onOver}
       onDrop={drag.onDrop}
       data-drop-target={drag.target ? "true" : undefined}
@@ -354,6 +570,9 @@ function CellRow({
     >
       <div className="flex items-center gap-1.5 rounded px-1 py-0.5 hover-bg">
         <DragGrip drag={drag} image={row} />
+        <span className="w-6 shrink-0 text-right font-mono text-[10px]" style={{ color: "var(--text-muted)" }} aria-hidden="true">
+          {number}
+        </span>
         <span className="min-w-0 shrink truncate" title={`${cell.table}.${cell.column}`} style={found === null ? { color: "var(--warning)" } : undefined}>
           {label}
         </span>
@@ -366,7 +585,7 @@ function CellRow({
           aria-expanded={open}
           aria-controls={open ? settingsId : undefined}
           aria-label={`Cell ${number} settings`}
-          title="Field, sheet, cell, label cell and True/False"
+          title="Field, cell, label and True/False"
           style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
         />
       </div>
@@ -380,7 +599,7 @@ const LABEL_CUSTOM = "custom"
 type LabelChoice = LabelPosition | "none" | typeof LABEL_CUSTOM
 
 /**
- * A cell's settings, mounted only while open: its Field, Sheet and Cell, its Label (None, a
+ * A cell's settings, mounted only while open: its Field and Cell, its Label (None, a
  * position next to the cell, or Custom showing Label cell), a tick's True/False, and Remove
  * cell, which asks first. A new address for the cell takes a label in a position with it.
  */
@@ -447,15 +666,6 @@ function CellSettings({
             const field = fields.get(name)
             if (field !== undefined) write((spec) => setExportCellColumn(spec, widget.id, index, field))
           }}
-        />
-      </LabelledRow>
-      <LabelledRow label="Sheet">
-        <CommittedTextField
-          aria-label={`Cell ${number} sheet`}
-          value={cell.sheet}
-          onCommit={(sheet) => write((spec) => updateExportCell(spec, widget.id, index, { sheet }))}
-          className={`${FIELD_CLASS} min-w-0 flex-1`}
-          style={INPUT_STYLE}
         />
       </LabelledRow>
       <LabelledRow label="Cell">

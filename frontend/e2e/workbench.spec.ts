@@ -234,7 +234,7 @@ test.describe("workbench", () => {
     expect(readFormFile("sample/policy.json")).toEqual([{ limit: "1000", region: "north" }])
   })
 
-  test("writes an Export's cells in an order dragged or moved with Alt+arrows, each opened for its settings, its label placed beside it, its field searched for, a tick's written as X, one removed once confirmed, and saves the order", async ({ page }) => {
+  test("writes an Export's cells under its sheets, in an order dragged or moved with Alt+arrows, each opened for its settings, its label placed beside it, its field searched for, a tick's written as X, one removed once confirmed, one dragged to a sheet added, and saves them", async ({ page }) => {
     const cell = (field: string, row: number) => ({ field, sheet: "Slip", cell: `B${row}`, label_cell: `A${row}` })
     writeFormFiles({
       "schema/policy.json": {
@@ -264,13 +264,15 @@ test.describe("workbench", () => {
     await page.getByTestId("view-switcher-workbench").click()
     await page.getByRole("group", { name: 'Export "Slip"' }).focus()
 
-    // A row for each cell: its field's label, where it writes beside it, its settings shut.
-    const rows = page.getByRole("list", { name: "Cells" }).getByRole("listitem")
+    // Under its sheet, a row for each cell: its field's label, where it writes beside it, its settings shut.
+    const slip = page.getByRole("group", { name: "Sheet Slip" })
+    await expect(slip).toContainText("3 cells")
+    const rows = page.getByRole("listitem", { name: /^Cell \d+ / })
     const names = async () => rows.evaluateAll((held) => held.map((row) => row.getAttribute("aria-label")))
     await expect(rows).toHaveCount(3)
     expect(await names()).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Premium"])
-    await expect(page.getByTestId("export-cell-1-summary")).toHaveText("Slip!B1 · label A1")
-    await expect(page.getByRole("textbox", { name: "Cell 1 sheet" })).toHaveCount(0)
+    await expect(page.getByTestId("export-cell-1-summary")).toHaveText("B1 · label A1")
+    await expect(page.getByRole("textbox", { name: "Cell 1 address" })).toHaveCount(0)
 
     // Dragged by its grip onto the first, the last cell takes its place.
     await rows.nth(2).hover()
@@ -293,7 +295,7 @@ test.describe("workbench", () => {
     await label.selectOption("right")
     await page.getByRole("textbox", { name: "Cell 2 address" }).fill("b6")
     await page.keyboard.press("Enter")
-    await expect(page.getByTestId("export-cell-2-summary")).toHaveText("Slip!B6 · label C6")
+    await expect(page.getByTestId("export-cell-2-summary")).toHaveText("B6 · label C6")
     // Custom shows its Label cell.
     await label.selectOption("custom")
     await expect(page.getByRole("textbox", { name: "Cell 2 label address" })).toHaveValue("C6")
@@ -304,23 +306,23 @@ test.describe("workbench", () => {
     await page.keyboard.press("Enter")
     await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Region"])
 
-    // Add a cell searched the same way, the new cell under the last.
-    await page.getByRole("button", { name: "Add a cell" }).click()
-    await page.getByRole("combobox", { name: "Search Add a cell" }).fill("prem")
+    // The sheet's Add a cell searched the same way, the new cell under its last.
+    await page.getByRole("button", { name: "Add a cell to Slip" }).click()
+    await page.getByRole("combobox", { name: "Search Add a cell to Slip" }).fill("prem")
     await page.keyboard.press("Enter")
     await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Region", "Cell 4 Premium"])
-    await expect(page.getByTestId("export-cell-4-summary")).toHaveText("Slip!B3 · label A3")
+    await expect(page.getByTestId("export-cell-4-summary")).toHaveText("B3 · label A3")
 
     // A tick's settings hold its True/False, Excel's own to start, written here as X or blank.
-    await page.getByRole("button", { name: "Add a cell" }).click()
-    await page.getByRole("combobox", { name: "Search Add a cell" }).fill("sprink")
+    await page.getByRole("button", { name: "Add a cell to Slip" }).click()
+    await page.getByRole("combobox", { name: "Search Add a cell to Slip" }).fill("sprink")
     await page.keyboard.press("Enter")
     await page.getByRole("button", { name: "Cell 5 settings" }).click()
     const ticks = page.getByRole("combobox", { name: "Cell 5 True/False" })
     await expect(ticks).toHaveValue("excel")
     await ticks.selectOption("custom")
     await ticks.selectOption("x")
-    await expect(page.getByTestId("export-cell-5-summary")).toHaveText("Slip!B4 · label A4 · X / blank")
+    await expect(page.getByTestId("export-cell-5-summary")).toHaveText("B4 · label A4 · X / blank")
 
     // A cell is removed from its settings once the question is answered Remove.
     await page.getByRole("button", { name: "Cell 3 settings" }).click()
@@ -330,14 +332,30 @@ test.describe("workbench", () => {
     await question.getByRole("button", { name: "Remove", exact: true }).click()
     await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Premium", "Cell 4 Sprinklered"])
 
-    // Saved, the cells in their new order.
+    // A sheet added, renamed in its header, and a cell dragged onto that header goes into it.
+    await page.getByTestId("workbench-properties").getByRole("button", { name: "Add a sheet" }).click()
+    const name = page.getByRole("textbox", { name: "Sheet Sheet1 name" })
+    await expect(name).toBeFocused()
+    await name.fill("Summary")
+    await page.keyboard.press("Enter")
+    const summary = page.getByRole("group", { name: "Sheet Summary" })
+    await expect(summary).toContainText("0 cells")
+    await rows.nth(0).hover()
+    await rows.nth(0).getByTitle("Drag to move").dragTo(summary.getByText("0 cells"))
+    await expect.poll(names).toEqual(["Cell 1 Region", "Cell 2 Premium", "Cell 3 Sprinklered", "Cell 4 Limit"])
+    await expect(summary).toContainText("1 cell")
+    // The drag over, no row is left drawn as dragged.
+    for (const held of await rows.all()) await expect(held).toHaveCSS("opacity", "1")
+    await expect(slip).toContainText("3 cells")
+
+    // Saved, each sheet's cells together, in their new order.
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByTestId("toast-notification").filter({ hasText: "Saved → rating/workbench" })).toBeVisible()
     expect(readFormFile("components/export_1.json").target.cells).toEqual([
-      cell("policy.limit", 1),
       { field: "policy.region", sheet: "Slip", cell: "B6", label_cell: "C6" },
       cell("pricing.premium", 3),
       { ...cell("policy.sprinklered", 4), true_false: { true: "X", false: "" } },
+      { ...cell("policy.limit", 1), sheet: "Summary" },
     ])
   })
 })

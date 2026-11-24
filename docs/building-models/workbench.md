@@ -456,22 +456,25 @@ a sheet per table.
   **Headers** (the columns' names or labels) and **Values** (raw, or formatted as the
   sheets show them), and a CSV a **Delimiter**.
 - An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
-  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
-  row is a field of a one-row table, with where it goes beside it, such as `Slip!B3`. Its
-  settings button opens its **Field**, the **Sheet** it goes on, the **Cell** it goes in,
-  such as `B3`, and where its **Label** goes: **None**, **Above**, **Under**, **Left** or
-  **Right** of the cell, or **Custom**, which shows **Label cell** for an address of your
-  own, such as `A3`. A label above, under, left or right moves with the cell when you
-  change the cell's address. The label is the one the schema gives the field, and
-  **Remove cell** at the foot
-  of the settings takes the row away once you confirm. Drag a row by its grip, or use
-  Alt+Up and Alt+Down, to change the order: sheets are made in the order the rows first
-  name them. Under **Add a cell**, type to search the fields, shown as `table.column`, and
-  pick one to add it, on the last row's sheet in the cell below it, its label below the
-  last row's label. When two things would land in one place (two cells, a cell and a
-  label, or a table running over a cell or another table), **Clashes** at the foot of the
-  pane says what clashes and where. A field can go in more than one cell, but a cell holds one field or one
-  label. Sheets are made in the order the rows first name them. Each cell holds the
+  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, fields
+  are grouped by the workbook's sheets: **Add a sheet** adds one, named `Sheet2` and so on
+  until you rename it in its header, and each sheet opens and closes, so a long export stays
+  easy to move around. Under a sheet, each row is a field of a one-row table, numbered, with
+  where it goes beside it, such as `B3`. Its settings button opens its **Field**, the
+  **Cell** it goes in, such as `B3`, and where its **Label** goes: **None**, **Above**,
+  **Under**, **Left** or **Right** of the cell, or **Custom**, which shows **Label cell**
+  for an address of your own, such as `A3`. A label above, under, left or right moves with
+  the cell when you change the cell's address. The label is the one the schema gives the
+  field, and **Remove cell** at the foot of the settings takes the row away once you
+  confirm. Drag a row by its grip, or use Alt+Up and Alt+Down, to change the order or move
+  it to another sheet: past a sheet's first or last row it goes into the sheet before or
+  after. Under a sheet's **Add a cell**, type to search the fields, shown as
+  `table.column`, and pick one to add it in the cell below the sheet's last row, its label
+  below that row's label. A sheet with no rows isn't saved. When two things would land in
+  one place (two cells, a cell and a label, or a table running over a cell or another
+  table), **Clashes** at the foot of the pane says what clashes and where, and the sheet
+  it's on is marked. A field can go in more than one cell, but a cell holds one field or
+  one label. Sheets are made in the order shown. Each cell holds the
   field's value as the sheets hold it: numbers stay numbers in the field's number format,
   dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
   `=`. Under a True/false field, **True/False** chooses what its tick writes instead:

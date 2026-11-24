@@ -9,6 +9,12 @@ import {
   addBlockColumn,
   addExportBlock,
   addExportCell,
+  addExportCellTo,
+  cellsBySheet,
+  cellSheets,
+  groupExportCells,
+  placeExportCell,
+  renameExportSheet,
   cellClashes,
   addPage,
   addSchemaColumn,
@@ -34,7 +40,6 @@ import {
   copyName,
   keptUses,
   moveBlockColumn,
-  moveExportCell,
   LABEL_POSITIONS,
   labelAddress,
   labelPosition,
@@ -2965,24 +2970,55 @@ describe("Imports and Exports", () => {
       expect(() => addExportCell(buttons(), "w_out", insured)).toThrow("which writes no cells")
     })
 
-    it("moves a cell to another place in the order, the form as given while it stays where it is", () => {
-      const spec = addExportCell(cells(), "w_out", insured)
-      const order = (held: FormSpec) => cellsOf(held).map((cell) => `${cell.column}@${cell.cell}`)
-      expect(order(spec)).toEqual(["insured@A1", "total@A2", "insured@A3"])
+    it("groups an Export's cells by sheet, whatever its case, in the order first named, and writes them grouped as it places, adds and renames", () => {
+      const at = (field: FieldRef, sheet: string, cell: string, label_cell = "") => ({ ...field, sheet, cell, label_cell, true_false: null })
+      const holding = (list: ExcelCellsExport["cells"], blocks: ExportBlock[] = []): FormSpec => {
+        const spec = structuredClone(cells())
+        const target = exported(spec).target as ExcelCellsExport
+        target.cells = list
+        target.blocks = blocks
+        return spec
+      }
+      const where = (spec: FormSpec) => cellsOf(spec).map((cell) => `${cell.sheet}!${cell.cell}`)
+      // Slip, Other, then slip again: Slip's two together, first, as Excel makes Slip first.
+      const interleaved = [at(insured, "Slip", "B1", "A1"), at(total, "Other", "C1"), at(total, "slip", "B2", "A2")]
+      expect(cellsBySheet(interleaved).map((cell) => `${cell.sheet}!${cell.cell}`)).toEqual(["Slip!B1", "slip!B2", "Other!C1"])
+      expect(cellSheets(interleaved)).toEqual(["Slip", "Other"])
+      const grouped = holding(cellsBySheet(interleaved).map((cell) => ({ ...cell, sheet: cell.sheet === "slip" ? "Slip" : cell.sheet })))
+      expect(groupExportCells(grouped, "w_out")).toBe(grouped)
+      expect(exportCellsOf(grouped, "w_out")).toBe(cellsOf(grouped))
+      // Grouped, each sheet under the spelling its cells first name it by, a table written to it too.
+      const layers: ExportBlock = { table: "layers", sheet: "SLIP", cell: "D1", header: "labels", columns: ["limit"], true_false: null }
+      const regrouped = groupExportCells(holding(interleaved, [layers]), "w_out")
+      expect(where(regrouped)).toEqual(["Slip!B1", "Slip!B2", "Other!C1"])
+      expect((exported(regrouped).target as ExcelCellsExport).blocks[0].sheet).toBe("Slip")
 
-      expect(moveExportCell(spec, "w_out", 1, 1)).toBe(spec)
-      expect(order(moveExportCell(spec, "w_out", 2, 0))).toEqual(["insured@A3", "insured@A1", "total@A2"])
-      expect(order(moveExportCell(spec, "w_out", 0, 2))).toEqual(["total@A2", "insured@A3", "insured@A1"])
-      expect(exportCellsOf(spec, "w_out")).toBe(cellsOf(spec))
-      expect(() => moveExportCell(spec, "w_out", 3, 0)).toThrow("has no cell 3")
-      expect(() => moveExportCell(buttons(), "w_out", 0, 1)).toThrow("which writes no cells")
+      // Placed within its sheet, into another (the order written grouped), and the form as given while it stays.
+      expect(where(placeExportCell(holding(interleaved), "w_out", 1, 0, "slip"))).toEqual(["Slip!B2", "Slip!B1", "Other!C1"])
+      expect(where(placeExportCell(holding(interleaved), "w_out", 1, 1, "OTHER"))).toEqual(["Slip!B1", "Other!B2", "Other!C1"])
+      expect(where(placeExportCell(holding(interleaved), "w_out", 2, 2, "Slip"))).toEqual(["Slip!B1", "Slip!B2", "Slip!C1"])
+      expect(where(placeExportCell(holding(interleaved), "w_out", 2, 2, "Notes"))).toEqual(["Slip!B1", "Slip!B2", "Notes!C1"])
+      expect(placeExportCell(grouped, "w_out", 2, 2, "Other")).toBe(grouped)
+      expect(() => placeExportCell(grouped, "w_out", 3, 0, "Slip")).toThrow("has no cell 3")
+
+      // Added under the sheet's last cell and its label, or at A1 with no label on a sheet with none, last.
+      expect(cellsOf(addExportCellTo(holding(interleaved), "w_out", "SLIP", insured))[2]).toEqual(at(insured, "Slip", "B3", "A3"))
+      expect(cellsOf(addExportCellTo(holding(interleaved), "w_out", "Other", insured))[3]).toEqual(at(insured, "Other", "C2"))
+      expect(cellsOf(addExportCellTo(holding(interleaved), "w_out", "Notes", insured))[3]).toEqual(at(insured, "Notes", "A1"))
+
+      // Renamed on its cells and its tables, whatever their case; the form as given while nothing changes.
+      const renamed = renameExportSheet(holding(interleaved, [layers]), "w_out", "slip", "Summary")
+      expect(where(renamed)).toEqual(["Summary!B1", "Other!C1", "Summary!B2"])
+      expect((exported(renamed).target as ExcelCellsExport).blocks[0].sheet).toBe("Summary")
+      expect(renameExportSheet(grouped, "w_out", "Notes", "Summary")).toBe(grouped)
     })
 
     it("says what a workbook of cells writes to one place twice: cells, labels, a sheet in another case, and tables running over them", () => {
       const spec = cells()
       const at = (field: FieldRef, sheet: string, cell: string, label_cell = "") => ({ ...field, sheet, cell, label_cell, true_false: null })
       const block = (sheet: string, cell: string, columns: string[]): ExportBlock => ({ table: "layers", sheet, cell, header: "labels", columns, true_false: null })
-      const clashes = (cells: ExcelCellsExport["cells"], blocks: ExportBlock[] = []) => cellClashes(spec, { ...(exported(spec).target as ExcelCellsExport), cells, blocks })
+      const found = (cells: ExcelCellsExport["cells"], blocks: ExportBlock[] = []) => cellClashes(spec, { ...(exported(spec).target as ExcelCellsExport), cells, blocks })
+      const clashes = (cells: ExcelCellsExport["cells"], blocks: ExportBlock[] = []) => found(cells, blocks).map((clash) => clash.text)
 
       expect(clashes([at(insured, "Slip", "B1", "A1"), at(total, "Slip", "B2", "A2")])).toEqual([])
       // A cell over a cell, and a label over a cell, a sheet matched whatever its case.
@@ -2991,6 +3027,8 @@ describe("Imports and Exports", () => {
         "Slip!B2 is written by the label of cell 1 (Insured) and cell 2 (Total)",
         "slip!A2 is written by the label of cell 2 (Total) and the label of cell 3 (Total)",
       ])
+      // Each with its sheet, in lower case, so the sheet can be marked.
+      expect(found([at(insured, "Slip", "B1"), at(total, "SLIP", "B1")]).map((clash) => clash.sheet)).toEqual(["slip"])
       // An address that is not a cell clashes with nothing; its problem is its own.
       expect(clashes([at(insured, "Slip", "b 1"), at(total, "Slip", "b 1")])).toEqual([])
       // A table runs down from its address over its columns: over a cell, and over an earlier table.

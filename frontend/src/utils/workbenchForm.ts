@@ -2228,17 +2228,103 @@ export function updateExportCell(spec: FormSpec, id: string, index: number, patc
 }
 
 /**
- * Move an Export's cell to another place in its order, which is the order the workbook
- * makes its sheets in and the order its addresses are checked in; the form as given while
- * it stays where it is.
+ * Things written to sheets, each sheet's together: the sheets in the order they are first
+ * named, a name matched whatever its case (as Excel matches it), each sheet's in their order.
+ * The order an Export's cells are shown in and written in by the panel; it leaves the
+ * workbook as it was, its sheets made in the same order and each sheet's cells in theirs.
  */
-export function moveExportCell(spec: FormSpec, id: string, from: number, to: number): FormSpec {
-  cellAt(cellsExportOf(spec, id), id, from)
-  if (from === to) return spec
+export function cellsBySheet<T extends { sheet: string }>(cells: readonly T[]): T[] {
+  const sheets = new Map<string, number>()
+  for (const cell of cells) if (!sheets.has(cell.sheet.toLowerCase())) sheets.set(cell.sheet.toLowerCase(), sheets.size)
+  const place = (cell: T) => sheets.get(cell.sheet.toLowerCase()) ?? 0
+  return cells.map((cell, index) => ({ cell, index })).sort((a, b) => place(a.cell) - place(b.cell) || a.index - b.index).map(({ cell }) => cell)
+}
+
+/** The sheets an Export's cells name, in the order first named, each as first spelled. */
+export function cellSheets(cells: readonly ExportCell[]): string[] {
+  const sheets = new Map<string, string>()
+  for (const cell of cells) if (!sheets.has(cell.sheet.toLowerCase())) sheets.set(cell.sheet.toLowerCase(), cell.sheet)
+  return [...sheets.values()]
+}
+
+/**
+ * The form with an Export's cells each sheet's together (`cellsBySheet`), each cell, and each
+ * table written to one of their sheets, under the spelling the cells first name that sheet
+ * by, as Excel holds two spellings as one sheet; the form as given while they are.
+ */
+export function groupExportCells(spec: FormSpec, id: string): FormSpec {
+  const { cells, blocks } = cellsExportOf(spec, id)
+  const spelled = new Map(cellSheets(cells).map((sheet) => [sheet.toLowerCase(), sheet]))
+  const as = (sheet: string) => spelled.get(sheet.toLowerCase()) ?? sheet
+  const grouped = cellsBySheet(cells)
+  if (grouped.every((cell, index) => cell === cells[index] && cell.sheet === as(cell.sheet)) && blocks.every((block) => block.sheet === as(block.sheet))) return spec
   return edit(spec, (draft) => {
-    const held = cellsExportOf(draft, id).cells
-    const [cell] = held.splice(from, 1)
-    held.splice(to, 0, cell)
+    const target = cellsExportOf(draft, id)
+    target.cells = cellsBySheet(target.cells)
+    for (const written of [...target.cells, ...target.blocks]) written.sheet = as(written.sheet)
+  })
+}
+
+/**
+ * Put the cell at `from` of an Export's cells, each sheet's together, at `to` of them on
+ * `sheet`, as its cells spell it, the cells written each sheet's together
+ * (`groupExportCells`); the form as given while it stays where it is.
+ */
+export function placeExportCell(spec: FormSpec, id: string, from: number, to: number, sheet: string): FormSpec {
+  const grouped = groupExportCells(spec, id)
+  const cell = cellAt(cellsExportOf(grouped, id), id, from)
+  if (from === to && cell.sheet.toLowerCase() === sheet.toLowerCase()) return spec
+  // The sheet as its cells spell it, while it has any.
+  const spelled = cellSheets(cellsExportOf(grouped, id).cells).find((held) => held.toLowerCase() === sheet.toLowerCase()) ?? sheet
+  return edit(grouped, (draft) => {
+    const target = cellsExportOf(draft, id)
+    const [moved] = target.cells.splice(from, 1)
+    moved.sheet = spelled
+    target.cells.splice(to, 0, moved)
+    target.cells = cellsBySheet(target.cells)
+  })
+}
+
+/**
+ * Add a cell writing a column to `sheet` of an Export's workbook of cells, the cells written
+ * each sheet's together: under the sheet's last cell, in the cell under that cell's (`A1`
+ * while that is no cell, or on the last row), its label under that cell's label (none while
+ * it has none, or its label's address is no cell or on the last row), or at `A1` with no
+ * label on a sheet holding none, after every other cell.
+ */
+export function addExportCellTo(spec: FormSpec, id: string, sheet: string, field: FieldRef): FormSpec {
+  const grouped = groupExportCells(spec, id)
+  const cells = cellsExportOf(grouped, id).cells
+  let last = -1
+  cells.forEach((cell, index) => {
+    if (cell.sheet.toLowerCase() === sheet.toLowerCase()) last = index
+  })
+  const above = last === -1 ? undefined : cells[last]
+  const added: ExportCell = {
+    table: field.table,
+    column: field.column,
+    sheet: above?.sheet ?? sheet,
+    cell: (above === undefined ? null : nextCellAddress(above.cell)) ?? "A1",
+    label_cell: (above === undefined ? null : nextCellAddress(above.label_cell)) ?? "",
+    true_false: null,
+  }
+  return edit(grouped, (draft) => {
+    cellsExportOf(draft, id).cells.splice(last === -1 ? cells.length : last + 1, 0, added)
+  })
+}
+
+/**
+ * Give `sheet` of an Export's workbook of cells, whatever its case, a new name: on each of its
+ * cells and each table written to it, so the workbook still makes one sheet of them; the form
+ * as given while nothing changes.
+ */
+export function renameExportSheet(spec: FormSpec, id: string, sheet: string, name: string): FormSpec {
+  const target = cellsExportOf(spec, id)
+  const on = (held: { sheet: string }) => held.sheet.toLowerCase() === sheet.toLowerCase() && held.sheet !== name
+  if (!target.cells.some(on) && !target.blocks.some(on)) return spec
+  return edit(spec, (draft) => {
+    const held = cellsExportOf(draft, id)
+    for (const written of [...held.cells, ...held.blocks]) if (written.sheet.toLowerCase() === sheet.toLowerCase()) written.sheet = name
   })
 }
 
@@ -2778,9 +2864,10 @@ const listed = (names: readonly string[]): string => (names.length < 2 ? names.j
  * already, or a block over an earlier block on its sheet (a block runs down from its address
  * over its columns, its rows not known until it is written), as `cellsProblems` finds them.
  * A cell is named by its number and its field's label, a block by its number, its table and
- * where it starts; a sheet is matched whatever its case, as Excel matches it.
+ * where it starts; a sheet is matched whatever its case, as Excel matches it. Each is given
+ * with its sheet, in lower case.
  */
-export function cellClashes(spec: FormSpec, target: ExcelCellsExport): string[] {
+export function cellClashes(spec: FormSpec, target: ExcelCellsExport): { sheet: string; text: string }[] {
   const cellName = (cell: ExportCell, index: number) => {
     const found = fieldColumn(spec, cell)
     return `cell ${index + 1} (${found === null ? "Missing column" : found.column.label || readableName(found.column.name)})`
@@ -2797,7 +2884,9 @@ export function cellClashes(spec: FormSpec, target: ExcelCellsExport): string[] 
     if (cellAddress(cell.cell) !== null) write(cell.sheet, cell.cell, cellName(cell, index))
     if (cell.label_cell.trim() !== "" && cellAddress(cell.label_cell) !== null) write(cell.sheet, cell.label_cell, `the label of ${cellName(cell, index)}`)
   })
-  const clashes = [...written.values()].filter((held) => held.by.length > 1).map((held) => `${held.sheet}!${held.address} is written by ${listed(held.by)}`)
+  const clashes = [...written.values()]
+    .filter((held) => held.by.length > 1)
+    .map((held) => ({ sheet: held.sheet.toLowerCase(), text: `${held.sheet}!${held.address} is written by ${listed(held.by)}` }))
   const placed: { sheet: string; first: number; last: number; name: string }[] = []
   target.blocks.forEach((block, index) => {
     const start = cellAddress(block.cell)
@@ -2811,11 +2900,11 @@ export function cellClashes(spec: FormSpec, target: ExcelCellsExport): string[] 
     for (const held of written.values()) {
       const spot = held.sheet.toLowerCase() === sheet ? cellAddress(held.address) : null
       if (spot !== null && first <= spot.column && spot.column <= last && spot.row >= start.row) {
-        clashes.push(`Table ${where} runs over ${held.sheet}!${held.address}, written by ${listed(held.by)}`)
+        clashes.push({ sheet, text: `Table ${where} runs over ${held.sheet}!${held.address}, written by ${listed(held.by)}` })
       }
     }
     for (const other of placed) {
-      if (other.sheet === sheet && other.first <= last && first <= other.last) clashes.push(`Table ${where} runs over ${other.name}`)
+      if (other.sheet === sheet && other.first <= last && first <= other.last) clashes.push({ sheet, text: `Table ${where} runs over ${other.name}` })
     }
     placed.push({ sheet, first, last, name })
   })
