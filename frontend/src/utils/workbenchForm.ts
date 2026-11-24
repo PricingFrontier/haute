@@ -20,6 +20,7 @@ import type {
   FormSchema,
   FormSpec,
   HeadingWidget,
+  TextBoxWidget,
   ImportWidget,
   Page,
   SchemaColumn,
@@ -29,6 +30,7 @@ import type {
   HttpImport,
   SqlImport,
   Theme,
+  TrueFalseText,
 } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
@@ -116,8 +118,8 @@ export type WidgetType = Widget["type"]
 export type PaletteType = WidgetType | "section"
 /** A button on a sheet: an Import or an Export. Neither shows schema columns nor takes anything typed. */
 export type ButtonWidget = ImportWidget | ExportWidget
-/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading and a button show none. */
-export type FieldsWidget = Exclude<Widget, HeadingWidget | ButtonWidget>
+/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading and a button show none; a Text Box shows one, as its own. */
+export type FieldsWidget = Exclude<Widget, HeadingWidget | ButtonWidget | TextBoxWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /**
@@ -208,10 +210,10 @@ export const COLLECTION_COLUMNS_MAX = 12
 const PART_ID_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 /** What a sheet's part is, as its id starts: a component's kind, `table` for a Table. */
-export type PartKind = "sheet" | "section" | "table" | Exclude<WidgetType, "tableInput">
+export type PartKind = "sheet" | "section" | "table" | "text_box" | Exclude<WidgetType, "tableInput" | "textBox">
 
 /** The kind a component of `type`'s id starts with. */
-export const partKind = (type: WidgetType): PartKind => (type === "tableInput" ? "table" : type)
+export const partKind = (type: WidgetType): PartKind => (type === "tableInput" ? "table" : type === "textBox" ? "text_box" : type)
 
 /**
  * A sheet's, a section's or a component's id, the editor's own, which no file holds
@@ -276,6 +278,9 @@ export const allWidgets = (spec: FormSpec): Widget[] => spec.pages.flatMap(pageW
 /** Whether a component shows schema columns: a Table, a Collection or a Chart, not a Heading or a button. */
 export const showsFields = (widget: Widget): widget is FieldsWidget =>
   widget.type === "tableInput" || widget.type === "collection" || widget.type === "chart"
+
+/** Whether a component holds schema columns: one that shows them (`showsFields`), or a Text Box, whose one column it types into. */
+export const holdsFields = (widget: Widget): widget is FieldsWidget | TextBoxWidget => showsFields(widget) || widget.type === "textBox"
 
 /** Whether a component is a button: an Import or an Export. */
 export const isButton = (widget: Widget): widget is ButtonWidget => widget.type === "import" || widget.type === "export"
@@ -439,7 +444,7 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
   const renamed = (name: string): string => (name === from ? to : name)
   const field = (ref: FieldRef): FieldRef => ({ ...ref, table: renamed(ref.table) })
   for (const widget of allWidgets(draft)) {
-    if (showsFields(widget)) widget.fields = widget.fields.map(field)
+    if (holdsFields(widget)) widget.fields = widget.fields.map(field)
     if (widget.type === "chart" && widget.category !== null) widget.category = field(widget.category)
     if (widget.type === "tableInput" || widget.type === "collection") {
       widget.column_looks = widget.column_looks.map((look) => ({ ...look, table: renamed(look.table) }))
@@ -477,7 +482,7 @@ function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: 
   const own = (name: string): string => (name === from ? to : name)
   const field = <T extends FieldRef>(ref: T): T => (ref.table === tableName && ref.column === from ? { ...ref, column: to } : ref)
   for (const widget of allWidgets(draft)) {
-    if (showsFields(widget)) widget.fields = widget.fields.map(field)
+    if (holdsFields(widget)) widget.fields = widget.fields.map(field)
     if (widget.type === "chart" && widget.category !== null) widget.category = field(widget.category)
     if (widget.type === "tableInput" || widget.type === "collection") widget.column_looks = widget.column_looks.map(field)
     if (widget.type === "import") {
@@ -535,6 +540,10 @@ export function moveSchemaTable(spec: FormSpec, from: number, to: number): FormS
  * that one of them labelled.
  */
 const dropShown = (widget: Widget, drop: (field: FieldRef) => boolean): void => {
+  if (widget.type === "textBox") {
+    widget.fields = widget.fields.filter((field) => !drop(field))
+    return
+  }
   if (!showsFields(widget)) return
   setOrder(widget, orderItems(widget).filter((item) => item.kind === "spacer" || !drop(item.field)))
   if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
@@ -825,7 +834,7 @@ export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: st
 
 /** Whether a component shows a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
 const showsColumn = (widget: Widget, tableId: string, columnId: string | undefined): boolean =>
-  showsFields(widget) &&
+  holdsFields(widget) &&
   [...widget.fields, ...(widget.type === "chart" && widget.category !== null ? [widget.category] : [])].some(
     (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
   )
@@ -926,9 +935,9 @@ export interface ShownField {
   found: { table: SchemaTable; column: SchemaColumn } | null
 }
 
-/** The fields a component shows, each with its column in `schema`, in the component's order; a Heading shows none. */
+/** The fields a component shows, each with its column in `schema`, in the component's order, a Text Box its one; a Heading shows none. */
 export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
-  showsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
+  holdsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
 
 /**
  * The input tables a Table's grid takes rows of, in its order: those of the many-row inputs
@@ -1356,6 +1365,8 @@ export function createWidget(type: WidgetType, rect: Rect, spec: FormSpec): Widg
       return { ...placed, type, ...showing, rows: 3, ...TABLE_OPTIONS, column_looks: [] }
     case "heading":
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
+    case "textBox":
+      return { ...placed, type, fields: [], show_when: alwaysShown() }
     case "import":
       return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [], lookup: null }
     case "export":
@@ -1388,6 +1399,7 @@ const NAME_WORDS: Record<WidgetType, string> = {
   collection: "collection",
   chart: "chart",
   heading: "heading",
+  textBox: "text_box",
   import: "import",
   export: "export",
 }
@@ -1829,7 +1841,7 @@ export const IMPORT_SOURCES: { readonly [F in ImportFormat]: Readonly<Extract<Im
 export const EXPORT_TARGETS: { readonly [F in ExportFormat]: Readonly<Extract<ExportWidget["target"], { format: F }>> } = {
   csv: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "csv", delimiter: "comma" },
   excel: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "excel" },
-  excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, cells: [], blocks: [] },
+  excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, values: "formatted", cells: [], blocks: [] },
 }
 
 /** The sheet a workbook's first cell is written to, as Excel names a new workbook's first sheet. */
@@ -2026,7 +2038,8 @@ export const excelLayout = (target: ExcelExport | ExcelCellsExport): ExcelLayout
 
 /**
  * An Export's Excel workbook laid out the other way, its file name kept and the other
- * layout's settings started afresh; a workbook of cells exports no tables, so they go.
+ * layout's settings started afresh, a workbook of cells' values formatted; a workbook of
+ * cells exports no tables, so they go.
  */
 export function setExcelLayout(spec: FormSpec, id: string, layout: ExcelLayout): FormSpec {
   const { target } = exportOf(spec, id)
@@ -2045,7 +2058,7 @@ export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" 
 const TARGET_KEYS: Record<ExportFormat, readonly string[]> = {
   csv: ["file_name", "headers", "values", "delimiter"],
   excel: ["file_name", "headers", "values"],
-  excel_cells: ["file_name"],
+  excel_cells: ["file_name", "values"],
 }
 
 /** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter. */
@@ -2080,6 +2093,9 @@ function cellsExportOf(spec: FormSpec, id: string): ExcelCellsExport {
   return target
 }
 
+/** The cells an Export's workbook of cells writes, in order. */
+export const exportCellsOf = (spec: FormSpec, id: string): ExportCell[] => cellsExportOf(spec, id).cells
+
 /** The columns an Export's cell can be given: a one-row table's, as a sheet shows them (as a Collection's fields are offered). */
 export const cellColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? sheetColumns(table) : [])
 
@@ -2096,6 +2112,44 @@ export function cellAddress(address: string): { column: number; row: number } | 
   const column = [...found[1]].reduce((number, letter) => number * 26 + letter.charCodeAt(0) - 64, 0)
   const row = Number(found[2])
   return column <= LAST_CELL_COLUMN && row <= LAST_CELL_ROW ? { column, row } : null
+}
+
+/** A column's letters from its number from 1: 1 is A, 27 is AA, `LAST_CELL_COLUMN` is XFD. */
+function columnLetters(column: number): string {
+  let letters = ""
+  for (let left = column; left > 0; left = Math.floor((left - 1) / 26)) letters = String.fromCharCode(65 + ((left - 1) % 26)) + letters
+  return letters
+}
+
+/** The four cells next to a cell a label can be put in. */
+export type LabelPosition = "above" | "under" | "left" | "right"
+export const LABEL_POSITIONS: ReadonlyArray<{ value: LabelPosition; label: string }> = [
+  { value: "above", label: "Above" },
+  { value: "under", label: "Under" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+]
+const LABEL_STEPS: Record<LabelPosition, { column: number; row: number }> = {
+  above: { column: 0, row: -1 },
+  under: { column: 0, row: 1 },
+  left: { column: -1, row: 0 },
+  right: { column: 1, row: 0 },
+}
+
+/** The address of the cell `position` of `address`; null past the sheet's edge, or when `address` is not a cell. */
+export function labelAddress(address: string, position: LabelPosition): string | null {
+  const found = cellAddress(address)
+  if (found === null) return null
+  const column = found.column + LABEL_STEPS[position].column
+  const row = found.row + LABEL_STEPS[position].row
+  if (column < 1 || column > LAST_CELL_COLUMN || row < 1 || row > LAST_CELL_ROW) return null
+  return `${columnLetters(column)}${row}`
+}
+
+/** Where a cell's label is: "none" while it has none, the position of the cell next to it that holds it, or null for anywhere else. */
+export function labelPosition(cell: Pick<ExportCell, "cell" | "label_cell">): LabelPosition | "none" | null {
+  if (cell.label_cell.trim() === "") return "none"
+  return LABEL_POSITIONS.find((position) => labelAddress(cell.cell, position.value) === cell.label_cell)?.value ?? null
 }
 
 /** The address of the cell under `address`; null when `address` is not a cell or is on the last row. */
@@ -2132,7 +2186,7 @@ export function addExportCell(spec: FormSpec, id: string, field: FieldRef): Form
   const cell = (last === undefined ? null : nextCellAddress(last.cell)) ?? "A1"
   const label_cell = (last === undefined ? null : nextCellAddress(last.label_cell)) ?? ""
   return edit(spec, (draft) => {
-    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell, label_cell })
+    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell, label_cell, true_false: null })
   })
 }
 
@@ -2142,12 +2196,36 @@ function cellAt(target: ExcelCellsExport, id: string, index: number): ExportCell
   return cell
 }
 
-/** The column an Export's cell writes. */
+/** The column an Export's cell writes; its True/False text taken away while that column is not True/false. */
 export function setExportCellColumn(spec: FormSpec, id: string, index: number, field: FieldRef): FormSpec {
   const cell = cellAt(cellsExportOf(spec, id), id, index)
   if (cell.table === field.table && cell.column === field.column) return spec
+  const keepsText = fieldColumn(spec, field)?.column.type === "bool"
   return edit(spec, (draft) => {
-    Object.assign(cellAt(cellsExportOf(draft, id), id, index), { table: field.table, column: field.column })
+    Object.assign(cellAt(cellsExportOf(draft, id), id, index), { table: field.table, column: field.column, ...(keepsText ? {} : { true_false: null }) })
+  })
+}
+
+/** What a True/false column is written as in place of TRUE and FALSE, by name: Excel's own (null), X / blank, blank / X, or Yes / No. */
+export const TRUE_FALSE_PRESETS: ReadonlyArray<{ value: string; label: string; text: TrueFalseText | null }> = [
+  { value: "excel", label: "TRUE / FALSE", text: null },
+  { value: "x", label: "X / blank", text: { true: "X", false: "" } },
+  { value: "blank_x", label: "blank / X", text: { true: "", false: "X" } },
+  { value: "yes_no", label: "Yes / No", text: { true: "Yes", false: "No" } },
+]
+
+const sameTrueFalse = (a: TrueFalseText | null, b: TrueFalseText | null): boolean => (a === null || b === null ? a === b : a.true === b.true && a.false === b.false)
+
+/** The preset a True/False text is, by its `value`; null for a text of its own. */
+export function trueFalsePreset(text: TrueFalseText | null): string | null {
+  return TRUE_FALSE_PRESETS.find((preset) => sameTrueFalse(preset.text, text))?.value ?? null
+}
+
+/** The text an Export's cell writes for a True/false column, null for TRUE and FALSE; the form as given while it holds that text. */
+export function setExportCellTrueFalse(spec: FormSpec, id: string, index: number, text: TrueFalseText | null): FormSpec {
+  if (sameTrueFalse(cellAt(cellsExportOf(spec, id), id, index).true_false, text)) return spec
+  return edit(spec, (draft) => {
+    cellAt(cellsExportOf(draft, id), id, index).true_false = text === null ? null : { ...text }
   })
 }
 
@@ -2158,6 +2236,107 @@ export function updateExportCell(spec: FormSpec, id: string, index: number, patc
   if (keys.every((key) => patch[key] === undefined || patch[key] === cell[key])) return spec
   return edit(spec, (draft) => {
     Object.assign(cellAt(cellsExportOf(draft, id), id, index), patch)
+  })
+}
+
+/**
+ * Things written to sheets, each sheet's together: the sheets in the order they are first
+ * named, a name matched whatever its case (as Excel matches it), each sheet's in their order.
+ * The order an Export's cells are shown in and written in by the panel; it leaves the
+ * workbook as it was, its sheets made in the same order and each sheet's cells in theirs.
+ */
+export function cellsBySheet<T extends { sheet: string }>(cells: readonly T[]): T[] {
+  const sheets = new Map<string, number>()
+  for (const cell of cells) if (!sheets.has(cell.sheet.toLowerCase())) sheets.set(cell.sheet.toLowerCase(), sheets.size)
+  const place = (cell: T) => sheets.get(cell.sheet.toLowerCase()) ?? 0
+  return cells.map((cell, index) => ({ cell, index })).sort((a, b) => place(a.cell) - place(b.cell) || a.index - b.index).map(({ cell }) => cell)
+}
+
+/** The sheets an Export's cells name, in the order first named, each as first spelled. */
+export function cellSheets(cells: readonly ExportCell[]): string[] {
+  const sheets = new Map<string, string>()
+  for (const cell of cells) if (!sheets.has(cell.sheet.toLowerCase())) sheets.set(cell.sheet.toLowerCase(), cell.sheet)
+  return [...sheets.values()]
+}
+
+/**
+ * The form with an Export's cells each sheet's together (`cellsBySheet`), each cell, and each
+ * table written to one of their sheets, under the spelling the cells first name that sheet
+ * by, as Excel holds two spellings as one sheet; the form as given while they are.
+ */
+export function groupExportCells(spec: FormSpec, id: string): FormSpec {
+  const { cells, blocks } = cellsExportOf(spec, id)
+  const spelled = new Map(cellSheets(cells).map((sheet) => [sheet.toLowerCase(), sheet]))
+  const as = (sheet: string) => spelled.get(sheet.toLowerCase()) ?? sheet
+  const grouped = cellsBySheet(cells)
+  if (grouped.every((cell, index) => cell === cells[index] && cell.sheet === as(cell.sheet)) && blocks.every((block) => block.sheet === as(block.sheet))) return spec
+  return edit(spec, (draft) => {
+    const target = cellsExportOf(draft, id)
+    target.cells = cellsBySheet(target.cells)
+    for (const written of [...target.cells, ...target.blocks]) written.sheet = as(written.sheet)
+  })
+}
+
+/**
+ * Put the cell at `from` of an Export's cells, each sheet's together, at `to` of them on
+ * `sheet`, as its cells spell it, the cells written each sheet's together
+ * (`groupExportCells`); the form as given while it stays where it is.
+ */
+export function placeExportCell(spec: FormSpec, id: string, from: number, to: number, sheet: string): FormSpec {
+  const grouped = groupExportCells(spec, id)
+  const cell = cellAt(cellsExportOf(grouped, id), id, from)
+  if (from === to && cell.sheet.toLowerCase() === sheet.toLowerCase()) return spec
+  // The sheet as its cells spell it, while it has any.
+  const spelled = cellSheets(cellsExportOf(grouped, id).cells).find((held) => held.toLowerCase() === sheet.toLowerCase()) ?? sheet
+  return edit(grouped, (draft) => {
+    const target = cellsExportOf(draft, id)
+    const [moved] = target.cells.splice(from, 1)
+    moved.sheet = spelled
+    target.cells.splice(to, 0, moved)
+    target.cells = cellsBySheet(target.cells)
+  })
+}
+
+/**
+ * Add a cell writing a column to `sheet` of an Export's workbook of cells, the cells written
+ * each sheet's together: under the sheet's last cell, in the cell under that cell's (`A1`
+ * while that is no cell, or on the last row), its label under that cell's label (none while
+ * it has none, or its label's address is no cell or on the last row), or at `A1` with no
+ * label on a sheet holding none, after every other cell.
+ */
+export function addExportCellTo(spec: FormSpec, id: string, sheet: string, field: FieldRef): FormSpec {
+  const grouped = groupExportCells(spec, id)
+  const cells = cellsExportOf(grouped, id).cells
+  let last = -1
+  cells.forEach((cell, index) => {
+    if (cell.sheet.toLowerCase() === sheet.toLowerCase()) last = index
+  })
+  const above = last === -1 ? undefined : cells[last]
+  const added: ExportCell = {
+    table: field.table,
+    column: field.column,
+    sheet: above?.sheet ?? sheet,
+    cell: (above === undefined ? null : nextCellAddress(above.cell)) ?? "A1",
+    label_cell: (above === undefined ? null : nextCellAddress(above.label_cell)) ?? "",
+    true_false: null,
+  }
+  return edit(grouped, (draft) => {
+    cellsExportOf(draft, id).cells.splice(last === -1 ? cells.length : last + 1, 0, added)
+  })
+}
+
+/**
+ * Give `sheet` of an Export's workbook of cells, whatever its case, a new name: on each of its
+ * cells and each table written to it, so the workbook still makes one sheet of them; the form
+ * as given while nothing changes.
+ */
+export function renameExportSheet(spec: FormSpec, id: string, sheet: string, name: string): FormSpec {
+  const target = cellsExportOf(spec, id)
+  const on = (held: { sheet: string }) => held.sheet.toLowerCase() === sheet.toLowerCase() && held.sheet !== name
+  if (!target.cells.some(on) && !target.blocks.some(on)) return spec
+  return edit(spec, (draft) => {
+    const held = cellsExportOf(draft, id)
+    for (const written of [...held.cells, ...held.blocks]) if (written.sheet.toLowerCase() === sheet.toLowerCase()) written.sheet = name
   })
 }
 
@@ -2175,7 +2354,7 @@ export type ExportHeader = ExportBlock["header"]
 /** Add a block of a table to an Export's workbook of cells: no columns yet, headed by their labels, at `A1` of a sheet named by the table. */
 export const addExportBlock = (spec: FormSpec, id: string, table: string): FormSpec =>
   edit(spec, (draft) => {
-    cellsExportOf(draft, id).blocks.push({ table, columns: [], sheet: table, cell: "A1", header: "labels" })
+    cellsExportOf(draft, id).blocks.push({ table, columns: [], sheet: table, cell: "A1", header: "labels", true_false: null })
   })
 
 function blockAt(target: ExcelCellsExport, id: string, index: number): ExportBlock {
@@ -2191,6 +2370,14 @@ export function updateExportBlock(spec: FormSpec, id: string, index: number, pat
   if (keys.every((key) => patch[key] === undefined || patch[key] === block[key])) return spec
   return edit(spec, (draft) => {
     Object.assign(blockAt(cellsExportOf(draft, id), id, index), patch)
+  })
+}
+
+/** The text an Export's block writes for each of its True/false columns, null for TRUE and FALSE; the form as given while it holds that text. */
+export function setExportBlockTrueFalse(spec: FormSpec, id: string, index: number, text: TrueFalseText | null): FormSpec {
+  if (sameTrueFalse(blockAt(cellsExportOf(spec, id), id, index).true_false, text)) return spec
+  return edit(spec, (draft) => {
+    blockAt(cellsExportOf(draft, id), id, index).true_false = text === null ? null : { ...text }
   })
 }
 
@@ -2402,6 +2589,33 @@ export function answeredOutputs(
   return lined
 }
 
+/** Whether a column takes a Text Box's text: a Text input of a one-row table, not one the underwriter app sets. */
+export const takesText = (table: SchemaTable, column: SchemaColumn): boolean =>
+  table.rows === "one" &&
+  column.type === "str" &&
+  !isOutputColumn(table, column) &&
+  !(isQuoteDetails(table) && QUOTE_DETAILS_MANAGED.has(column.name))
+
+/** The columns a Text Box can be given, by table: each one-row table's Text inputs as a sheet shows them (`takesText`). */
+export const textBoxColumns = (schema: FormSchema): { table: SchemaTable; columns: SchemaColumn[] }[] =>
+  schema.tables.flatMap((table) => {
+    const columns = sheetColumns(table).filter((column) => takesText(table, column))
+    return columns.length === 0 ? [] : [{ table, columns }]
+  })
+
+/** A Text Box given its column, or none; the form as given while it holds that one already. */
+export function setTextBoxField(spec: FormSpec, id: string, field: FieldRef | null): FormSpec {
+  const found = findWidget(spec, id)
+  if (found === null) throw new Error(`No component ${id}`)
+  if (found.widget.type !== "textBox") throw new Error("Only a Text Box takes one column of its own")
+  const held = found.widget.fields[0] ?? null
+  if (held?.table === field?.table && held?.column === field?.column) return spec
+  return edit(spec, (draft) => {
+    const widget = findWidget(draft, id)!.widget as TextBoxWidget
+    widget.fields = field === null ? [] : [{ table: field.table, column: field.column }]
+  })
+}
+
 /** What stops a component showing what it should, by the component it is about. */
 export interface WidgetProblem {
   widgetId: string
@@ -2413,6 +2627,7 @@ const KIND_NAMES: Record<WidgetType, string> = {
   collection: "Collection",
   chart: "Chart",
   heading: "Heading",
+  textBox: "Text Box",
   import: "Import",
   export: "Export",
 }
@@ -2422,7 +2637,8 @@ const kindArticle = (type: WidgetType): string => (/^[AEIOU]/.test(KIND_NAMES[ty
 
 /** `Table "Layers"`, a Heading by its text, `Heading "Cover"`, a button by its label, `Import "Schedule"`, or `A Table` and `An Import` while it has none. */
 export const widgetName = (widget: Widget): string => {
-  const name = widget.type === "heading" ? widget.text.trim() : isButton(widget) ? widget.label.trim() : widget.title
+  const name =
+    widget.type === "heading" ? widget.text.trim() : widget.type === "textBox" ? (widget.fields[0]?.column ?? "") : isButton(widget) ? widget.label.trim() : widget.title
   return name ? `${KIND_NAMES[widget.type]} "${name}"` : `${kindArticle(widget.type)} ${KIND_NAMES[widget.type]}`
 }
 
@@ -2443,6 +2659,12 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
     const problem = (message: string) => problems.push({ widgetId: widget.id, message: `${name} ${message}` })
     if (widget.type === "heading") {
       if (widget.text.trim() === "") problem("has no text")
+    } else if (widget.type === "textBox") {
+      const field = widget.fields[0]
+      const found = field === undefined ? null : fieldColumn(spec, field)
+      if (field === undefined) problem("has no field")
+      else if (found === null) problem("shows a column that is no longer in the schema")
+      else if (!takesText(found.table, found.column)) problem("shows a column that is not a Text input of a one-row table")
     } else if (isButton(widget)) {
       if (widget.label.trim() === "") problem("has no label")
       for (const message of widget.type === "import" ? importProblems(spec, widget) : exportProblems(spec, widget)) problem(message)
@@ -2604,66 +2826,152 @@ function blockColumnProblems(spec: FormSpec, block: ExportBlock): string[] {
   })
 }
 
+/** True/False text on a block none of whose columns is True/false, while it has columns the schema holds (the server's `_block_true_false_problems`). */
+function blockTrueFalseProblems(spec: FormSpec, block: ExportBlock): string[] {
+  if (block.true_false === null || block.columns.length === 0) return []
+  const table = spec.schema.tables.find((held) => held.name === block.table)
+  if (table === undefined) return []
+  const shown = new Map(sheetColumns(table).map((column) => [column.name, column]))
+  const columns = block.columns.map((name) => shown.get(name))
+  if (columns.some((column) => column === undefined) || columns.some((column) => column?.type === "bool")) return []
+  return [`writes the table ${block.table} with True/False text, but none of its columns is True/false`]
+}
+
 /**
  * What stops an Excel workbook of cells being written, worded as the server's
  * `cells_problems` words it, each once in its order: the file name's problems, no cells or
  * blocks, and each cell's: a column no longer in the schema or of a many-row table, a sheet
  * with no name, one Excel refuses or one named as another in another case, an address that
- * is not a cell, and a cell already written; then its label's, while its label's address is
+ * is not a cell, and a cell already written, True/False text on a column the schema holds
+ * that is not True/false coming after its column's own; then its label's, while its label's address is
  * not blank: one that is not a cell, and a cell already written. A cell already written is
  * one any value or label before it on its sheet took. Then each block's: its table's and its
- * columns' (`blockColumnProblems`), its sheet's, an address that is not a cell, its columns
+ * columns' (`blockColumnProblems`), True/False text where none of its columns is True/false
+ * (`blockTrueFalseProblems`), its sheet's, an address that is not a cell, its columns
  * past XFD, and the first value or label, else the first block, it lies over, a block
  * taking its columns from its top-left cell's row to the sheet's last.
  */
 export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[] {
   const problems = fileNameProblems(spec, target.file_name)
   if (target.cells.length === 0 && target.blocks.length === 0) problems.push("writes no cells or tables")
-  // The addresses taken, in the order taken, each by its sheet in lower case.
-  const taken = new Map<string, { sheet: string; address: string }>()
-  const take = (sheet: string, address: string) => taken.set(`${sheet.toLowerCase()}!${address}`, { sheet: sheet.toLowerCase(), address })
+  const { written, blocks: placed } = cellsPlaces(target)
+  /** Whether something wrote `address` on `sheet` before `writer`. */
+  const taken = (sheet: string, address: string, writer: CellWriter) => {
+    const first = written.get(`${sheet.toLowerCase()}!${address}`)?.by[0]
+    return first !== undefined && (first.cell !== writer.cell || first.label !== writer.label)
+  }
   const sheets = new Map<string, string>()
-  for (const cell of target.cells) {
+  target.cells.forEach((cell, index) => {
     const found = cellColumn(spec, cell)
     const field = `${cell.table}.${cell.column}`
     if (found === null) problems.push(`writes ${field}, which is no longer in the schema`)
     else if (found.table.rows === "many") problems.push(`writes ${field}, a column of a many-row table`)
+    if (found !== null && cell.true_false !== null && found.column.type !== "bool") problems.push(`writes ${field} with True/False text, but it is not a True/false column`)
     problems.push(...sheetProblems(cell.sheet, sheets))
     if (cellAddress(cell.cell) === null) problems.push(`writes to "${cell.cell}" on "${cell.sheet}", which is not a cell like B3`)
-    else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.cell}`)) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
-    else take(cell.sheet, cell.cell)
-    if (cell.label_cell.trim() === "") continue
+    else if (taken(cell.sheet, cell.cell, { cell: index, label: false })) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
+    if (cell.label_cell.trim() === "") return
     if (cellAddress(cell.label_cell) === null) problems.push(`writes the label of ${field} to "${cell.label_cell}" on "${cell.sheet}", which is not a cell like B3`)
-    else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.label_cell}`)) problems.push(`writes more than once to ${cell.label_cell} on "${cell.sheet}"`)
-    else take(cell.sheet, cell.label_cell)
-  }
-  // The blocks placed, each by its sheet in lower case, its first and last column.
-  const placed: { sheet: string; first: number; last: number; block: ExportBlock }[] = []
-  for (const block of target.blocks) {
-    problems.push(...blockColumnProblems(spec, block), ...sheetProblems(block.sheet, sheets))
+    else if (taken(cell.sheet, cell.label_cell, { cell: index, label: true })) problems.push(`writes more than once to ${cell.label_cell} on "${cell.sheet}"`)
+  })
+  target.blocks.forEach((block, index) => {
+    problems.push(...blockColumnProblems(spec, block), ...blockTrueFalseProblems(spec, block), ...sheetProblems(block.sheet, sheets))
     const address = cellAddress(block.cell)
     if (address === null) {
       problems.push(`writes the table ${block.table} to "${block.cell}" on "${block.sheet}", which is not a cell like B3`)
-      continue
+      return
     }
-    const { column: first, row: top } = address
-    const last = first + block.columns.length - 1
-    if (last > LAST_CELL_COLUMN) {
+    if (address.column + block.columns.length - 1 > LAST_CELL_COLUMN) {
       problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" past XFD, the last column`)
-      continue
+      return
     }
-    if (block.columns.length === 0) continue
-    const sheet = block.sheet.toLowerCase()
-    const under = [...taken.values()].find((written) => {
-      const spot = written.sheet === sheet ? cellAddress(written.address) : null
-      return spot !== null && first <= spot.column && spot.column <= last && spot.row >= top
-    })
-    const over = placed.find((other) => other.sheet === sheet && other.first <= last && first <= other.last)
+    const at = placed.get(index)
+    if (at === undefined) return
+    const under = at.under[0]
+    const over = at.over[0] === undefined ? undefined : target.blocks[at.over[0]]
     if (under !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over ${under.address}, which is written already`)
-    else if (over !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over the table ${over.block.table} from ${over.block.cell}`)
-    placed.push({ sheet, first, last, block })
-  }
+    else if (over !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over the table ${over.table} from ${over.cell}`)
+  })
   return [...new Set(problems)]
+}
+
+/** What writes an address of a workbook of cells: a cell's value, or its label. */
+type CellWriter = { cell: number; label: boolean }
+/** An address of a sheet a workbook of cells writes: the sheet as first named, and what writes it, in order. */
+type WrittenPlace = { sheet: string; address: string; by: CellWriter[] }
+/** A block placed on its sheet, in lower case: its columns' span, and what it runs over, the addresses written and the earlier blocks placed (by place), in order. */
+type PlacedBlock = { sheet: string; first: number; last: number; under: WrittenPlace[]; over: number[] }
+
+/**
+ * Where a workbook of cells writes, the one reading `cellsProblems` and `cellClashes` both
+ * take, so the two find the same clashes: each address its cells and labels write (a cell's
+ * value before its label), by its sheet whatever its case, and each block placed (by its
+ * place) with the addresses it runs over and the earlier blocks it overlaps, a block running
+ * down from its address over its columns. An address that is not a cell takes no place, nor
+ * a block at one, with no columns, or past XFD.
+ */
+function cellsPlaces(target: ExcelCellsExport): { written: Map<string, WrittenPlace>; blocks: Map<number, PlacedBlock> } {
+  const written = new Map<string, WrittenPlace>()
+  const write = (sheet: string, address: string, by: CellWriter) => {
+    const key = `${sheet.toLowerCase()}!${address}`
+    const held = written.get(key)
+    if (held === undefined) written.set(key, { sheet, address, by: [by] })
+    else held.by.push(by)
+  }
+  target.cells.forEach((cell, index) => {
+    if (cellAddress(cell.cell) !== null) write(cell.sheet, cell.cell, { cell: index, label: false })
+    if (cell.label_cell.trim() !== "" && cellAddress(cell.label_cell) !== null) write(cell.sheet, cell.label_cell, { cell: index, label: true })
+  })
+  const blocks = new Map<number, PlacedBlock>()
+  target.blocks.forEach((block, index) => {
+    const start = cellAddress(block.cell)
+    if (start === null || block.columns.length === 0) return
+    const first = start.column
+    const last = first + block.columns.length - 1
+    if (last > LAST_CELL_COLUMN) return
+    const sheet = block.sheet.toLowerCase()
+    const under = [...written.values()].filter((held) => {
+      const spot = held.sheet.toLowerCase() === sheet ? cellAddress(held.address) : null
+      return spot !== null && first <= spot.column && spot.column <= last && spot.row >= start.row
+    })
+    const over = [...blocks].filter(([, other]) => other.sheet === sheet && other.first <= last && first <= other.last).map(([at]) => at)
+    blocks.set(index, { sheet, first, last, under, over })
+  })
+  return { written, blocks }
+}
+
+/** Names in a list: "a", "a and b", "a, b and c". */
+const listed = (names: readonly string[]): string => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`)
+
+/**
+ * Each place a workbook of cells writes two things to, said with what clashes: an address of
+ * a sheet written by more than one cell or label, a block running over an address written
+ * already, or a block over an earlier block on its sheet (a block runs down from its address
+ * over its columns, its rows not known until it is written), from the reading `cellsProblems`
+ * takes (`cellsPlaces`).
+ * A cell is named by its number and its field's label, a block by its number, its table and
+ * where it starts; a sheet is matched whatever its case, as Excel matches it. Each is given
+ * with its sheet, in lower case.
+ */
+export function cellClashes(spec: FormSpec, target: ExcelCellsExport): { sheet: string; text: string }[] {
+  const cellName = (index: number) => {
+    const found = fieldColumn(spec, target.cells[index])
+    return `cell ${index + 1} (${found === null ? "Missing column" : found.column.label || readableName(found.column.name)})`
+  }
+  const writerName = (writer: CellWriter) => (writer.label ? `the label of ${cellName(writer.cell)}` : cellName(writer.cell))
+  const where = (index: number) => {
+    const block = target.blocks[index]
+    return `${index + 1} (${block.table}) from ${block.sheet}!${block.cell}`
+  }
+  const { written, blocks } = cellsPlaces(target)
+  const clashes = [...written.values()]
+    .filter((held) => held.by.length > 1)
+    .map((held) => ({ sheet: held.sheet.toLowerCase(), text: `${held.sheet}!${held.address} is written by ${listed(held.by.map(writerName))}` }))
+  for (const [index, placed] of blocks) {
+    for (const held of placed.under) clashes.push({ sheet: placed.sheet, text: `Table ${where(index)} runs over ${held.sheet}!${held.address}, written by ${listed(held.by.map(writerName))}` })
+    for (const other of placed.over) clashes.push({ sheet: placed.sheet, text: `Table ${where(index)} runs over table ${where(other)}` })
+  }
+  return clashes
 }
 
 /**

@@ -564,6 +564,18 @@ class HeadingWidget(_Placed):
     align: HeadingAlign = "left"
 
 
+class TextBoxWidget(_Placed):
+    """A Text Box: a box an underwriter types free text into, over as many lines as they
+    like, under its column's label. Its column is one Text input of a one-row schema table,
+    ``fields`` holding it, none until chosen; a column of another kind is the component's
+    problem, as a Collection's is. What is typed is the column's value, saved, priced and
+    stored as any input's."""
+
+    type: Literal["textBox"]
+    fields: list[FieldRef] = Field(default_factory=list, max_length=1)
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
+
+
 def _check_once(widget_id: str, things: str, keys: list[str]) -> None:
     """Refuse a key a button's list holds twice: one name per column, one per table."""
     seen: set[str] = set()
@@ -691,6 +703,15 @@ class ExcelExport(_FileExport):
     format: Literal["excel"]
 
 
+class TrueFalseText(_Strict):
+    """What an Excel workbook of cells writes for a True/false column in place of Excel's
+    TRUE and FALSE: ``true`` for a ticked box, ``false`` for one unticked or empty, each as
+    text, a blank one leaving the cell empty."""
+
+    true: str
+    false: str
+
+
 class ExportCell(_Strict):
     """A cell an Excel workbook of cells holds: the value of a one-row table's column, by
     ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
@@ -704,6 +725,8 @@ class ExportCell(_Strict):
     cell: str
     #: Where the column's label is written, an address such as ``A3``; blank for none.
     label_cell: str
+    #: The text a True/false column is written as; None for TRUE and FALSE.
+    true_false: TrueFalseText | None = None
 
 
 class ExportBlock(_Strict):
@@ -720,6 +743,8 @@ class ExportBlock(_Strict):
     sheet: str
     cell: str
     header: ExportHeader
+    #: The text each of its True/false columns is written as; None for TRUE and FALSE.
+    true_false: TrueFalseText | None = None
 
 
 class ExcelCellsExport(_Strict):
@@ -730,6 +755,9 @@ class ExcelCellsExport(_Strict):
 
     format: Literal["excel_cells"]
     file_name: str
+    #: ``formatted`` writes a number in its column's format, as the sheets show it; ``raw``
+    #: as it is, in Excel's General format, for a system that reads the workbook.
+    values: ExportValues = "formatted"
     #: In the order chosen; a column may be written into more than one cell.
     cells: list[ExportCell]
     #: In the order chosen; a table may be written as more than one block.
@@ -762,7 +790,13 @@ class ExportWidget(_Placed):
 
 
 Widget = Annotated[
-    TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget,
+    TableInputWidget
+    | CollectionWidget
+    | ChartWidget
+    | HeadingWidget
+    | TextBoxWidget
+    | ImportWidget
+    | ExportWidget,
     Field(discriminator="type"),
 ]
 
@@ -1420,6 +1454,7 @@ _KINDS = {
     "collection": "Collection",
     "chart": "Chart",
     "heading": "Heading",
+    "textBox": "Text Box",
     "import": "Import",
     "export": "Export",
 }

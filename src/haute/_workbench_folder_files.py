@@ -47,8 +47,10 @@ from haute._workbench_form import (
     SchemaColumn,
     SqlImport,
     TableInputWidget,
+    TextBoxWidget,
     Theme,
     TotalKind,
+    TrueFalseText,
     _condition_kind,
 )
 
@@ -123,12 +125,13 @@ def _derived(
 class ExportCellFile(_File):
     """A cell of an Excel workbook of cells: its column, as ``table.column``, the sheet and
     the address it is written to, and the address its label is written to, blank for none,
-    as typed."""
+    as typed, and the text a True/false column is written as, left out for TRUE and FALSE."""
 
     field: Dotted
     sheet: str
     cell: str
     label_cell: str
+    true_false: TrueFalseText | None = None
 
 
 class ConditionFile(_File):
@@ -252,6 +255,7 @@ if TYPE_CHECKING:
     CollectionComponentFile = Any
     ChartComponentFile = Any
     HeadingComponentFile = Any
+    TextBoxComponentFile = Any
     SqlImportFile = Any
     HttpImportFile = Any
     ColumnNameFile = Any
@@ -314,6 +318,15 @@ else:
         drop=NOT_IN_COMPONENT_FILE,
         replace={"show_when": _SHOW_WHEN},
     )
+    TextBoxComponentFile = _derived(
+        "TextBoxComponentFile",
+        TextBoxWidget,
+        drop=NOT_IN_COMPONENT_FILE,
+        replace={
+            "fields": (list[Dotted], Field(default_factory=list, max_length=1)),
+            "show_when": _SHOW_WHEN,
+        },
+    )
     SqlImportFile = _derived(
         "SqlImportFile", SqlImport, replace={"parameters": (list[QueryParameterFile], ...)}
     )
@@ -363,6 +376,7 @@ else:
         | CollectionComponentFile
         | ChartComponentFile
         | HeadingComponentFile
+        | TextBoxComponentFile
         | ImportComponentFile
         | ExportComponentFile,
         Field(discriminator="type"),
@@ -387,6 +401,7 @@ COMPONENT_FILES: tuple[type[BaseModel], ...] = (
     CollectionComponentFile,
     ChartComponentFile,
     HeadingComponentFile,
+    TextBoxComponentFile,
     ImportComponentFile,
     ExportComponentFile,
 )

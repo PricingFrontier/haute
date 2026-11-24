@@ -5409,11 +5409,21 @@
           "const": "excel_cells",
           "title": "Format",
           "type": "string"
+        },
+        "values": {
+          "default": "formatted",
+          "enum": [
+            "raw",
+            "formatted"
+          ],
+          "title": "Values",
+          "type": "string"
         }
       },
       "required": [
         "format",
         "file_name",
+        "values",
         "cells",
         "blocks"
       ],
@@ -10100,6 +10110,17 @@
         "table": {
           "title": "Table",
           "type": "string"
+        },
+        "true_false": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrueFalseText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -10107,7 +10128,8 @@
         "columns",
         "sheet",
         "cell",
-        "header"
+        "header",
+        "true_false"
       ],
       "title": "ExportBlock",
       "type": "object"
@@ -10135,6 +10157,17 @@
         "table": {
           "title": "Table",
           "type": "string"
+        },
+        "true_false": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrueFalseText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -10142,7 +10175,8 @@
         "column",
         "sheet",
         "cell",
-        "label_cell"
+        "label_cell",
+        "true_false"
       ],
       "title": "ExportCell",
       "type": "object"
@@ -24031,6 +24065,9 @@
                 "$ref": "#/$defs/HeadingWidget"
               },
               {
+                "$ref": "#/$defs/TextBoxWidget"
+              },
+              {
                 "$ref": "#/$defs/ImportWidget"
               },
               {
@@ -25110,6 +25147,69 @@
         }
       },
       "title": "TableV2",
+      "type": "object"
+    },
+    "TextBoxWidget": {
+      "additionalProperties": false,
+      "description": "A Text Box: a box an underwriter types free text into, over as many lines as they\nlike, under its column's label. Its column is one Text input of a one-row schema table,\n``fields`` holding it, none until chosen; a column of another kind is the component's\nproblem, as a Collection's is. What is typed is the column's value, saved, priced and\nstored as any input's.",
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "maxItems": 1,
+          "title": "Fields",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "type": {
+          "const": "textBox",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "fields",
+        "show_when"
+      ],
+      "title": "TextBoxWidget",
       "type": "object"
     },
     "Theme": {
@@ -27327,6 +27427,26 @@
         }
       },
       "title": "TransformConfig",
+      "type": "object"
+    },
+    "TrueFalseText": {
+      "additionalProperties": false,
+      "description": "What an Excel workbook of cells writes for a True/false column in place of Excel's\nTRUE and FALSE: ``true`` for a ticked box, ``false`` for one unticked or empty, each as\ntext, a blank one leaving the cell empty.",
+      "properties": {
+        "false": {
+          "title": "False",
+          "type": "string"
+        },
+        "true": {
+          "title": "True",
+          "type": "string"
+        }
+      },
+      "required": [
+        "true",
+        "false"
+      ],
+      "title": "TrueFalseText",
       "type": "object"
     },
     "TuningReportPayload": {

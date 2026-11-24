@@ -733,6 +733,24 @@ def test_a_quote_opens_with_what_it_holds(page: Page) -> None:
     assert missing.json()["detail"]["error_code"] == "quote_not_found"
 
 
+def test_text_over_many_lines_and_many_characters_is_stored_and_reopens_as_typed(
+    page: Page, path: Path
+) -> None:
+    """A Text Box's comment: lines, tabs and quotes kept inside, its typed spaces trimmed
+    from its ends alone, however long."""
+    typed = '  Risk seen on site.\n\tSprinklered; "no" hot work.\r\n' + "x" * 10_000 + "\n"
+    kept = typed.strip()
+    quote = page.create().json()["quote"]
+    values = {**VALUES, "quote_details": [{**DETAILS, "insured": typed}]}
+
+    saved = page.save(quote, values=values)
+
+    assert saved.status_code == 200, saved.text
+    assert sql(path, "SELECT insured FROM quote_details") == [(kept,)]
+    opened = page.client.get(address(saved.json()["quote"]), headers=ANA).json()
+    assert opened["values"]["quote_details"][0]["insured"] == kept
+
+
 # ── Versions and operation keys ───────────────────────────────────────────
 
 
@@ -1073,7 +1091,13 @@ def test_a_store_the_app_cannot_write_to_is_reported_closed_naming_why(
 def _slip_id(client: TestClient) -> str:
     """The Export's id as the app's form holds it, which the page names it by."""
     form = client.get("/api/app/form", headers=ANA).json()["form"]
-    (widget,) = [w for page in form["pages"] for s in page["sections"] for w in s["widgets"]]
+    (widget,) = [
+        w
+        for page in form["pages"]
+        for s in page["sections"]
+        for w in s["widgets"]
+        if w["type"] == "export"
+    ]
     return str(widget["id"])
 
 
@@ -1082,16 +1106,43 @@ def _slip_form() -> dict[str, Any]:
     and the quote's reference, under a file name made of the quote's details."""
     spec = json.loads(json.dumps(FORM))
 
-    def cell(table: str, column: str, address: str) -> dict[str, str]:
+    def cell(
+        table: str, column: str, address: str, true_false: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         return {
             "table": table,
             "column": column,
             "sheet": "Slip",
             "cell": address,
             "label_cell": "",
+            "true_false": true_false,
         }
 
+    # A tick the sheets hide, its box showing only for a state the quote is not in, so the
+    # saved quote holds it empty, as a hidden cover's box is.
+    policy = next(table for table in spec["schema"]["tables"] if table["name"] == "policy_details")
+    policy["inputs"].append({"name": "sprinklered", "type": "bool"})
     spec["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_hidden",
+            "name": "hidden",
+            "type": "collection",
+            "x": 200,
+            "y": 0,
+            "w": 160,
+            "h": 40,
+            "fields": [{"table": "policy_details", "column": "sprinklered"}],
+            "show_when": {
+                "conditions": [
+                    {
+                        "table": "policy_details",
+                        "column": "state",
+                        "op": "equals",
+                        "values": ["ZZ"],
+                    }
+                ]
+            },
+        },
         {
             "id": "w_slip",
             "name": "slip",
@@ -1110,10 +1161,13 @@ def _slip_form() -> dict[str, Any]:
                     cell("quote_details", "quote_reference", "B2"),
                     cell("policy_details", "state", "B3"),
                     cell("pricing_output", "premium", "B4"),
+                    cell("policy_details", "sprinklered", "B5", {"true": "", "false": "X"}),
+                    cell("policy_details", "sprinklered", "B6", {"true": "X", "false": ""}),
+                    cell("policy_details", "sprinklered", "B7"),
                 ],
                 "blocks": [],
             },
-        }
+        },
     ]
     return spec
 
@@ -1142,7 +1196,17 @@ def test_a_final_quote_exports_its_values_and_prices_naming_the_release(tmp_path
     assert 'filename="Acme Q-000001.xlsx"' in exported.headers["content-disposition"]
     workbook = load_workbook(BytesIO(exported.content))
     slip = workbook["Slip"]
-    assert [slip[f"B{row}"].value for row in range(1, 5)] == ["Acme", "Q-000001", "NY", 500]
+    # The empty tick writes its False text: X for "blank / X", nothing for "X / blank"; with
+    # no text, nothing at all.
+    assert [slip[f"B{row}"].value for row in range(1, 8)] == [
+        "Acme",
+        "Q-000001",
+        "NY",
+        500,
+        "X",
+        None,
+        None,
+    ]
     properties = {held.name: held.value for held in workbook.custom_doc_props.props}
     assert properties == {"Haute release": page.release}
     assert (entries[-1]["action"], entries[-1]["actor"]) == ("exported", "jo@example.com")

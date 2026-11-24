@@ -5775,7 +5775,9 @@ export interface Section {
   id: string;
   show_when: ShowWhen;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget)[];
+  widgets: (
+    TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | TextBoxWidget | ImportWidget | ExportWidget
+  )[];
 }
 /**
  * When a sheet, a section, a widget or a widget's field shows: always, without
@@ -6041,6 +6043,27 @@ export interface HeadingWidget {
   y: number;
 }
 /**
+ * A Text Box: a box an underwriter types free text into, over as many lines as they
+ * like, under its column's label. Its column is one Text input of a one-row schema table,
+ * ``fields`` holding it, none until chosen; a column of another kind is the component's
+ * problem, as a Collection's is. What is typed is the column's value, saved, priced and
+ * stored as any input's.
+ */
+export interface TextBoxWidget {
+  /**
+   * @maxItems 1
+   */
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  name: string;
+  show_when: ShowWhen;
+  type: 'textBox';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
  * An Import: a button an underwriter presses to fill an input table from a file or a
  * database. It shows no schema columns and takes nothing typed; nothing runs it yet, so
  * it is drawn disabled where the sheets are used.
@@ -6167,6 +6190,7 @@ export interface ExcelCellsExport {
   cells: ExportCell[];
   file_name: string;
   format: 'excel_cells';
+  values: 'raw' | 'formatted';
 }
 /**
  * A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of
@@ -6183,6 +6207,16 @@ export interface ExportBlock {
   header: 'labels' | 'names' | 'none';
   sheet: string;
   table: string;
+  true_false: TrueFalseText | null;
+}
+/**
+ * What an Excel workbook of cells writes for a True/false column in place of Excel's
+ * TRUE and FALSE: ``true`` for a ticked box, ``false`` for one unticked or empty, each as
+ * text, a blank one leaving the cell empty.
+ */
+export interface TrueFalseText {
+  false: string;
+  true: string;
 }
 /**
  * A cell an Excel workbook of cells holds: the value of a one-row table's column, by
@@ -6197,6 +6231,7 @@ export interface ExportCell {
   label_cell: string;
   sheet: string;
   table: string;
+  true_false: TrueFalseText | null;
 }
 /**
  * The data the sheets work with: tables of named, typed columns.

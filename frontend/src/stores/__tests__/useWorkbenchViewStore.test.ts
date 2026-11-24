@@ -240,13 +240,19 @@ describe("useWorkbenchViewStore", () => {
     expect(store().zoom).toBe(1)
   })
 
-  it("forgets the pane remembered for a component the form no longer has", () => {
+  it("forgets the pane remembered, and an Export's sheets added and closed, for a component the form no longer has", () => {
     const view = useWorkbenchViewStore.getState
     view().setWidgetPane("w_grid", "display")
     view().setWidgetPane("w_boxes", "display")
+    view().setExportSheets("w_grid", ["Sheet1"])
+    view().setExportSheets("w_boxes", ["Slip"])
+    view().setExportCollapsed("w_grid", ["sheet1"])
+    view().setExportCollapsed("w_boxes", ["slip"])
 
     useWorkbenchFormStore.getState().change((form) => removeWidget(form, "w_grid"))
     expect(view().widgetPanes).toEqual({ w_boxes: "display" })
+    expect(view().exportSheets).toEqual({ w_boxes: ["Slip"] })
+    expect(view().exportCollapsed).toEqual({ w_boxes: ["slip"] })
   })
 
   it("keeps the properties panel's width between openings", () => {

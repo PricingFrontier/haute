@@ -1353,7 +1353,7 @@ Out of scope:
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Section and a
-  Heading, in the structure colour, a Collection and a Table, in the entry colour, a Chart,
+  Heading, in the structure colour, a Collection, a Table and a Text Box, in the entry colour, a Chart,
   in Explore's colour, an Import and an Export, in the data colour the Data Input and the
   Data Output have, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
@@ -1372,7 +1372,8 @@ Out of scope:
   dragged component moves (a Table 720 by 200 with 3 rows, numbered, compact,
   lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns
   across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
-  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, an
+  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, a
+  Text Box 480 by 120 holding no column, an
   Import 160 by 40 labelled "Import", from a CSV whose delimiter is found from the file,
   filling no table and replacing a many-row table's rows, an Export 160 by 40 labelled
   "Export", of no tables, to a CSV named `{quote_reference}-{quote_option}`, headed by the
@@ -1468,13 +1469,16 @@ Out of scope:
   layout and its look; the tabs are drawn in the component's colour, Config first,
   and the pane chosen for a component is kept for it while the editor is open. A Chart's
   panel stays one list. Every component's panel starts with its **Component name**, at
-  the top of its Config pane, or of its one list for a Chart and a Heading: a text field
+  the top of its Config pane, or of its one list for a Chart, a Heading and a Text Box: a text field
   committed on blur or Enter as one undo step, a name that is not an identifier or that
   another component has, whatever its case, refused at the field saying which, the
   component keeping its name. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
-  also move between. An Import's and an Export's panels are in the two panes too:
+  also move between. A Text Box's panel has its Field, a select of every one-row table's
+  Text inputs, grouped by table and each by its label, but those the underwriter app sets
+  ("Choose a Text column" for none, a column it holds that it can no longer take shown
+  first, disabled), and its Show when. An Import's and an Export's panels are in the two panes too:
   **Config**, what it does, and **Display**, its Label, committed on blur or Enter, and its
   Show when. Config starts with its Format, CSV, Excel or SQL, three toggles the arrow keys
   also move between, a format chosen starting with a new component's settings for it but
@@ -1502,27 +1506,81 @@ Out of scope:
   cross that takes the name away. An Export's then
   holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
   the file name and starting the other's settings afresh; a file's File name, a CSV's
-  Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
-  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: under a
-  heading row naming Field, Sheet, Cell and Label cell, a row for each cell in order, with
-  a select of the columns of the one-row tables, by table, each by its label (as a
-  Collection's fields are offered), the sheet's name, the cell's address and its label's
-  address, each in a text field committed on blur or Enter, each address trimmed and taken
-  in capitals, and a cross that takes the cell away; a
-  cell whose column is no longer in the schema, or no longer of a one-row table, shows it
-  first, as "Missing column" or the column's label, disabled. Under them Add a cell, a
-  select of the same columns, a column chosen adding a cell of it on the last cell's sheet
-  in the cell under the last cell's, its label in the cell under the last cell's label
-  while that cell has one, or `Sheet1` and `A1` with no label for the first, the select
-  showing Add a cell again. Then Tables: for each block in order, its table's name, or
+  Delimiter (Comma, Semicolon or Tab), but for Cells Headers (Names or Labels), and
+  Values (Raw or Formatted, a workbook of cells Formatted until Raw is chosen); or a
+  database's Connection. Then, of Cells, Cells: the workbook's sheets, as the
+  workbook makes them, those its cells name in the order first named, then those only its
+  tables are written to, then those added and holding nothing yet (a name matched whatever
+  its case, as Excel matches it, shown as first spelled), each a group that is opened and
+  closed, open to start: its header, a toggle, its name in a text field committed on blur
+  or Enter (a new name, refused while blank, while Excel would refuse it or while another
+  sheet, one a table alone is written to included, holds it, renaming the sheet of each of
+  its cells and of each table written to it, in one change, whether or not it holds cells,
+  the focus staying in the name while it was there), how many cells it holds and, while
+  any table is written to it, how many tables, and a warning mark while one of its cells or
+  tables clashes; under it, while
+  open, a row for each of its cells in order, as a schema column's row is drawn: a grip it
+  is dragged by, and Alt+Up and Alt+Down moving it, the order the cells of every sheet in
+  turn, a cell moved past its sheet's first or last going to the sheet before or after,
+  dropped on another sheet's cell taking its place in that sheet, or on another sheet's
+  header going last in that sheet; its number in that order; its column's label, or
+  "Missing column" for one the schema no longer holds; on one line after it, its address
+  (`B3`), its label's address and its True/False text while it has them; a settings
+  button opening its settings under it, one cell's at a time, the open cell staying open
+  as it or another moves, is added or is taken away, and none open after a change from
+  outside the list (an undo's); and, under its cells, Add a cell to the sheet, a
+  `ColumnSelector` of the columns a cell can be given drawn as a quiet "+ Add a cell" text
+  action, a column chosen
+  adding a cell of it under the sheet's last cell, in the cell under that cell's, its label
+  in the cell under that cell's label while that cell has one, or in `A1` with no label in
+  a sheet with none. A sheet keeps what its rows hold (a cell's open Custom) while the
+  sheets around it change. Under the sheets Add a sheet, a dashed add button as wide as the
+  pane, a sheet named `SheetN` (the first such
+  name no sheet holds) shown last, open and holding no cells until a cell is added to it
+  or moved into it, with a cross while it holds no cells and no table is written to it,
+  that takes it away and forgets it was closed; a sheet holding no cells is not saved. A cell's settings: Field, a searchable
+  `ColumnSelector` of the one-row tables' columns as a sheet shows them, each as
+  `table.column` with its label and its type, searched by any of them, a column the schema
+  no longer holds, or no longer of a
+  one-row table, shown and marked but never offered; Cell, in a text field committed on
+  blur or Enter, the address trimmed and taken in capitals; Label, a select of
+  None, Above, Under, Left, Right and Custom, read from where the label is (None while it
+  has none, one of the four while it is that cell next to the cell, Custom anywhere else),
+  a position past the sheet's edge, or any while the cell's address is not a cell,
+  disabled; a position chosen puts the label in that cell, None takes it away, and Custom
+  shows Label cell, its address in a text field committed on blur or Enter, trimmed and
+  taken in capitals, staying shown until another choice; while the label is in a position,
+  a new address for the cell takes its label with it to the same position, in one change,
+  the label left where it is when the new address has no such cell; and, while its column
+  is True/false or it holds True/False text, True/False: a select of
+  TRUE / FALSE (Excel's own), X / blank, blank / X, Yes / No and Custom, Custom showing a
+  True and a False text field committed on blur or Enter, Custom chosen from TRUE / FALSE
+  writing the blank True and False its fields show, a cell given a column that is not
+  True/false losing its text; and at their foot Remove cell, in the danger colour, asking
+  "Remove cell n, its label?" with where it stops writing (its sheet and address, and its
+  label's address while it has one), Remove in the danger colour, and taking the cell away
+  only on Remove. The cells are written in the order shown, each sheet's together: a form
+  whose cells interleave sheets is shown grouped, and written grouped at its next change of
+  the cells, which leaves the workbook as it was, each sheet then written under the
+  spelling its cells first name it by, its tables' too, as Excel holds two spellings as
+  one sheet. A sheet stays closed or open as it was left, while the editor is open. Then Tables: for each block in order, its table's name, or
   "Missing table", with a cross that takes the block away; its Sheet and its Cell, the
   address of its top-left corner, in text fields as a cell's are; its Header, a select of
-  Labels, Names or None; its columns in order, each by its label, or "Missing column",
+  Labels, Names or None; while one of its columns is True/false or it holds True/False text,
+  its True/False, as a cell's, for every True/false column it writes; its columns in order, each by its label, or "Missing column",
   with a cross that takes it out, dragged or moved with Alt+Up and Alt+Down into a new
   order; and Add a column, a select of its table's columns as a sheet shows them (the
   index among them) that it does not hold yet. Under them Add a table, a select of the
   schema's tables, a table chosen adding a block of it with no columns, headed by labels,
-  at `A1` of a sheet named by the table. Otherwise Tables, a
+  at `A1` of a sheet named by the table. At the pane's foot, held there as the pane scrolls,
+  while a workbook of cells writes two things to one place, Clashes, in the warning colour:
+  how many, and a line for each, saying what clashes: an address written by more than one
+  cell or label (`Slip!B2 is written by cell 1 (Limit) and the label of cell 2 (Region)`),
+  a table running over an address written already, or a table running over another table
+  on its sheet (a table runs down from its address over its columns, as its rows are not
+  known until it is written), each cell by its number and its field's label, each table by
+  its number, its table and where it starts, a sheet's name matched whatever its case, as
+  Excel matches it; these are the clashes the export's problems name. Otherwise Tables, a
   checkbox per schema table, ticked in order; and a table it exports that is no longer
   in the schema a row of its own, "Missing table", with a cross. Each change is one undo
   step. While building, the showing sheet's tab has a settings
@@ -1818,6 +1876,22 @@ Out of scope:
   typed. While building, a Heading with no text says "Type its text in the panel on the
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
+- **Text Boxes.** A Text Box is a box an underwriter types free text into, such as their
+  comments on the risk, over as many lines as they like. It holds one column, a Text input
+  of a one-row table, chosen in its panel, and is drawn as that column's label, with its
+  required mark and help as a Collection's field has them, over a box filling the rest of
+  the component, in the sheets' colours as a Collection's box is (the input cells' fill, the
+  borders' colour and the font's), which wraps what is typed and scrolls past its height.
+  A draft is kept to its column: given another column while typing, the box starts afresh. What is typed is the column's value, committed as the box is left, as a
+  Collection's box commits it: saved, priced and stored as any input's, so a comment goes
+  to the quote store as Text (`NVARCHAR(max)` on SQL Server), however long, and breaks the
+  column's rules (required, its options) as a box's value does, marked the same way. The
+  box is read only while the values are or the app sets the column, and while the column
+  it holds is no longer a Text input of a one-row table. Hidden, its column is left out of
+  the quote, as a Collection's field is. While building, a Text Box with no column says
+  "Choose its field in the panel on the right"; in Preview it shows nothing, only the
+  dashed frame any component with a problem has. A Text Box with no column, a column no
+  longer in the schema, or one that is not a Text input of a one-row table is a problem.
 - **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
   box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
   Import, a database's or an API's, a globe), with no label its mark alone, in a frame of the sheets' border colour on the
@@ -1851,7 +1925,9 @@ Out of scope:
   `quote_details`, held whole; an output as priced; and nothing for one holding no value
   or one only the app sets, which Preview's sample holds none of (the quote's reference
   and option are Preview's stand-in, `PREVIEW` and 1). A number
-  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, and text is always
+  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, or, where its cell
+  or block gives True/False text, that text, as text: the True text for a ticked box and the
+  False text for one unticked or empty, a blank text leaving the cell empty; and text is always
   text, never read as a formula or an error value, whatever it starts with; a whole number
   past 2^53, which Excel cannot hold exactly as a number, is written as its digits, as text,
   so no digit is lost. A cell's label cell holds its column's label as the sheets label
@@ -1863,7 +1939,10 @@ Out of scope:
   sample, the rows the sheets hold anything typed in, in their order, or, for a table with
   a row for each value, every value's row in the values' order, each output that of the
   priced row of the same index; a table of outputs alone its priced rows in their order. A many-row table with no rows writes its header alone. A block whose rows would
-  run past row 1,048,576 is refused, naming it. A number cell
+  run past row 1,048,576 is refused, naming it. While its Values are Raw, a number is
+  written as it is in Excel's General format, with no currency sign, grouping or fixed
+  places (10000, a percent as its fraction, 0.175), for a system that reads the workbook;
+  a date is still shown `yyyy-mm-dd`. While they are Formatted, a number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped
   unless the column says not), the value itself written unrounded; where the sheets trim

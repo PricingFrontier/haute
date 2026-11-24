@@ -345,6 +345,12 @@ one:
   optional description under it saying what the section is for, aligned left, centre or
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
+- A **Text Box** is a box the underwriter types free text into, such as their comments,
+  over as many lines as they like. It holds one Text column of a one-row table, shown as
+  the column's label over the box; what is typed is that column's value, saved and stored
+  as any input's, so the comment reaches the quote store with the rest of the quote. Add
+  the column to the schema first (a Text input, such as `uw_comments`), then choose it in
+  the Text Box's **Field**.
 - An **Import** is a button that fills an input table from a CSV or an Excel workbook the
   underwriter picks, from a database, or from an API.
 - An **Export** is a button that takes the quote's tables out to a CSV or an Excel
@@ -416,7 +422,8 @@ and a spacer's cross removes it. A
 Table's and a Collection's properties are in two
 panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
 shows, its layout and its look. A Heading's properties are its **Text** and
-**Description**, when it shows, its **Size** and its **Align**ment.
+**Description**, when it shows, its **Size** and its **Align**ment. A Text Box's are its
+**Field**, a Text input of a one-row table, and when it shows.
 
 An Import's and an Export's properties are in the same two panes: **Display** holds its
 **Label**, the text on the button, and when it shows; **Config** starts with its
@@ -456,16 +463,33 @@ a sheet per table.
   **Headers** (the columns' names or labels) and **Values** (raw, or formatted as the
   sheets show them), and a CSV a **Delimiter**.
 - An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
-  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
-  row is a field of a one-row table, the **Sheet** it goes on, the **Cell** it goes in,
-  such as `B3`, and the **Label cell** its label goes in, such as `A3`, or blank for no
-  label. The label is the one the schema gives the field. Pick a field under **Add a cell**
-  to add one, which goes on the last row's sheet in the cell below it, its label below the
-  last row's label. A field can go in more than one cell, but a cell holds one field or one
-  label. Sheets are made in the order the rows first name them. Each cell holds the
-  field's value as the sheets hold it: numbers stay numbers in the field's number format,
-  dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
-  `=`. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
+  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, fields
+  are grouped by the workbook's sheets: **Add a sheet** adds one, named `Sheet2` and so on
+  until you rename it in its header, and each sheet opens and closes, so a long export stays
+  easy to move around. Under a sheet, each row is a field of a one-row table, numbered, with
+  where it goes beside it, such as `B3`. Its settings button opens its **Field**, the
+  **Cell** it goes in, such as `B3`, and where its **Label** goes: **None**, **Above**,
+  **Under**, **Left** or **Right** of the cell, or **Custom**, which shows **Label cell**
+  for an address of your own, such as `A3`. A label above, under, left or right moves with
+  the cell when you change the cell's address. The label is the one the schema gives the
+  field, and **Remove cell** at the foot of the settings takes the row away once you
+  confirm. Drag a row by its grip, or use Alt+Up and Alt+Down, to change the order or move
+  it to another sheet: past a sheet's first or last row it goes into the sheet before or
+  after. Under a sheet's **Add a cell**, type to search the fields by
+  `table.column` or label, and pick one to add it in the cell below the sheet's last row, its label
+  below that row's label. A sheet with no rows isn't saved. When two things would land in
+  one place (two cells, a cell and a label, or a table running over a cell or another
+  table), **Clashes** at the foot of the pane says what clashes and where, and the sheet
+  it's on is marked. A field can go in more than one cell, but a cell holds one field or
+  one label. Sheets are made in the order shown. Each cell holds the
+  field's value as the sheets hold it: numbers stay numbers, in the field's number format
+  while **Values** is **Formatted**, or plain while it is **Raw** (10000 rather than
+  US$10,000, for a system that reads the workbook), dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
+  `=`. Under a True/false field, **True/False** chooses what its tick writes instead:
+  **X / blank**, **blank / X** (an X when the box is not ticked, for a "not provided" box),
+  **Yes / No**, or **Custom**, a **True** and a **False** text of your own. A box that is
+  empty, such as one on a hidden cover, writes the False text. A blank text leaves the cell
+  empty. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
   written as its digits, as text, so none is lost. A field that holds nothing, or that only the underwriter app sets, leaves its cell
   empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
   name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
@@ -473,7 +497,8 @@ a sheet per table.
   quote. Pick a table under **Add a table**: it goes at `A1` of a sheet named after it.
   Set its **Sheet**, its **Cell**, the top-left corner it starts from, and its
   **Header**: the columns' **Labels**, their **Names**, or **None**, which starts the rows
-  at that cell. Pick its columns under **Add a column**, the index among them, and drag
+  at that cell. A table with a True/false column has a **True/False** too, as a cell's,
+  for every True/false column it writes. Pick its columns under **Add a column**, the index among them, and drag
   them, or use Alt+Up and Alt+Down, into the order they go in, left to right. A table of
   many rows writes the rows the quote has (a table with a row for each value, every
   value's row), each output beside the inputs of its row; a one-row table writes its one
@@ -503,7 +528,8 @@ sheet's first), where the original sat, moved down and right past one already th
 selected so you can drag it into place; a column deleted from the schema since you copied
 it is left out of the copy, but for an Export of cells, which keeps it as a problem. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
-Heading with no text, a column no longer in the schema, a table of the other kind, a
+Heading with no text, a Text Box with no field or one that is not a Text input of a
+one-row table, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is a numbered index, tables whose rows do not line up, a pie
 of many rows with more than one field, an Import or an Export with no label or missing
 what its format needs — gets a dashed frame that names the problem. Tab,

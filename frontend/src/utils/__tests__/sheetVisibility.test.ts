@@ -325,6 +325,16 @@ describe("sheetVisibility", () => {
     expect([unticked.pages.has("p_bi"), unticked.sections.has("s_p_bi"), unticked.widgets.has("w_bi")]).toEqual([false, false, false])
     expect([...unticked.hidden]).toEqual([columnKey("policy", "class")])
   })
+
+  it("keeps a Text Box's column in the quote while the box shows, and leaves it out while it is hidden", () => {
+    const box: Widget = { ...createWidget("textBox", { x: 0, y: 0, w: 480, h: 120 }, formOf([])), id: "w_box", fields: [{ table: "policy", column: "class" }] }
+    const boxed = formOf([page("p_main", [collection("w_main", [["policy", "bi"]])]), page("p_bi", [box], when(ticked("policy", "bi")))])
+
+    const shown = sheetVisibility(boxed, { policy: [{ bi: true }] })
+    expect(shown.fields.has(fieldKey("w_box", "policy", "class"))).toBe(true)
+    expect(shown.hidden.has(columnKey("policy", "class"))).toBe(false)
+    expect([...sheetVisibility(boxed, { policy: [{ bi: false }] }).hidden]).toEqual([columnKey("policy", "class")])
+  })
 })
 
 describe("quotedSchema", () => {

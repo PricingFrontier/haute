@@ -1,7 +1,8 @@
 /**
  * How a component looks on a sheet (specs/workbench): a Collection's fields as labelled
  * boxes and a Table's as the columns of a grid, drawn as its options say, a Chart's
- * plotted (`ChartBody`), a Heading as its text, and an Import or an Export as a button
+ * plotted (`ChartBody`), a Heading as its text, a Text Box as its column's label over a box
+ * taking lines of text (`TextBoxBody`), and an Import or an Export as a button
  * (`ButtonBody`). An input column takes the values the
  * sheet holds, none while building, as a new quote holds none, and the sample or the
  * underwriter app's quote in Preview, through the control its type calls for, marked when
@@ -18,12 +19,14 @@ import { FieldBoxes } from "./sheet/FieldBoxes"
 import { LINE_WIDTH, type DrawnFields } from "./sheet/fieldCells"
 import { FieldGrid } from "./sheet/FieldGrid"
 import { HeadingBody } from "./sheet/HeadingBody"
+import { TextBoxBody } from "./sheet/TextBoxBody"
 import { sheetColours } from "./sheet/sheetColours"
 
 export default function WidgetBody({ widget, drawn, problem = null }: { widget: Widget; drawn: DrawnFields; problem?: string | null }) {
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const colours = sheetColours(useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME))
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
+  if (widget.type === "textBox") return <TextBoxBody fields={drawn.fields} colours={colours} previewing={previewing} />
   if (isButton(widget)) return <ButtonBody widget={widget} colours={colours} previewing={previewing} problem={problem} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.
   const framed = widget.type === "chart" || widget.frame
