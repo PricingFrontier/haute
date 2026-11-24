@@ -190,8 +190,9 @@ selected canvas nodes the next message will carry as context (the first three la
 count of the rest; at most 20 are sent), so the analyst points the assistant at nodes by
 selecting them. With nothing selected there is no selection chip.
 
-**Ask the assistant to fix a run error.** When a top-level node's preview fails, the error
-offers "Ask the assistant to fix". It selects that node alone on the canvas and opens the
+**Ask the assistant to fix a run error.** When a top-level node raises an error as its
+preview runs, the error offers "Ask the assistant to fix". A preview whose request failed,
+or got no answer of Haute's, raised nothing of the node's and offers nothing. It selects that node alone on the canvas and opens the
 panel: on a new chat when the panel would show the chat list, in the open chat otherwise.
 An empty composer is filled with a fix request, and an error chip names the node: the next
 message carries it as the preview-error node, whose error the backend reproduces for the

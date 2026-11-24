@@ -201,6 +201,13 @@ import {
 } from "../types/pipelineDocument"
 
 import { validateApiResponse } from "./responseValidation"
+import {
+  ApiTimeoutError,
+  ForeignAnswerError,
+  ServerUnreachableError,
+  isGatewayAnswer,
+  readJsonAnswer,
+} from "./transportErrors"
 
 export class ApiError extends Error {
   status: number
@@ -230,25 +237,7 @@ export class ApiError extends Error {
   }
 }
 
-function formatTimeoutDuration(timeoutMs: number): string {
-  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
-    const seconds = timeoutMs / 1000
-    return `${seconds} second${seconds === 1 ? "" : "s"}`
-  }
-  return `${timeoutMs} ms`
-}
-
-export class ApiTimeoutError extends Error {
-  timeoutMs: number
-  url: string
-
-  constructor(url: string, timeoutMs: number) {
-    super(`Request timed out after ${formatTimeoutDuration(timeoutMs)}.`)
-    this.name = "ApiTimeoutError"
-    this.timeoutMs = timeoutMs
-    this.url = url
-  }
-}
+export { ApiTimeoutError, ForeignAnswerError, ServerUnreachableError } from "./transportErrors"
 
 export const HAUTE_SESSION_EXPIRED_EVENT = "haute:session-expired"
 export const HAUTE_SESSION_EXPIRED_REASON = "Missing or invalid Haute session token"
@@ -349,7 +338,7 @@ function requestHeaders(headers: HeadersInit | undefined): Record<string, string
 }
 
 /** Throw the `ApiError` a failed response maps to, as every request does. Exported for split endpoint modules. */
-export async function throwApiError(response: Response): Promise<never> {
+export async function throwApiError(response: Response, url: string = response.url): Promise<never> {
   let detail: string | undefined
   let body: unknown
   let rawDetail: unknown
@@ -361,6 +350,10 @@ export async function throwApiError(response: Response): Promise<never> {
   } catch {
     detail = response.statusText
     rawDetail = detail
+  }
+  // A gateway's page in Haute's place says nothing of Haute's: what it says goes to the console.
+  if (isGatewayAnswer(response.status, body)) {
+    throw new ForeignAnswerError(url, response.status, body ?? detail)
   }
   if (response.status === 403 && isHauteSessionExpiredReason(detail)) {
     notifyHauteSessionExpired(detail)
@@ -378,17 +371,18 @@ export const SESSION_BOOTSTRAP_TIMEOUT_MS = 15_000
 function performSessionBootstrap(): Promise<void> {
   const deadline = new AbortController()
   const timeoutId = setTimeout(() => deadline.abort(), SESSION_BOOTSTRAP_TIMEOUT_MS)
-  return fetch("/api/session/bootstrap", {
+  const url = "/api/session/bootstrap"
+  return fetchAnswer(url, {
     method: "POST",
     credentials: "same-origin",
     cache: "no-store",
     signal: deadline.signal,
   }).then(async (response) => {
-    if (!response.ok) await throwApiError(response)
+    if (!response.ok) await throwApiError(response, url)
     sessionBootstrapped = true
   }).catch((error: unknown) => {
     if (deadline.signal.aborted && isAbortError(error)) {
-      throw new ApiTimeoutError("/api/session/bootstrap", SESSION_BOOTSTRAP_TIMEOUT_MS)
+      throw new ApiTimeoutError(url, SESSION_BOOTSTRAP_TIMEOUT_MS)
     }
     throw error
   }).finally(() => clearTimeout(timeoutId))
@@ -475,8 +469,9 @@ function shouldRetry(method: string | undefined, err: unknown): boolean {
   if (!isRead(method)) return false
   // User-initiated cancel: propagate immediately.
   if (isAbortError(err)) return false
-  // Network-layer failure (fetch throws TypeError on connection issues).
-  if (err instanceof TypeError) return true
+  // No answer at all, or a gateway's in Haute's place, may be gone on the next attempt.
+  if (err instanceof ServerUnreachableError) return true
+  if (err instanceof ForeignAnswerError && err.status >= 500) return true
   // Server-side transient failure (5xx).
   if (err instanceof ApiError && err.status >= 500 && err.status < 600) return true
   return false
@@ -543,7 +538,7 @@ async function attemptFetch<T>(
   fetchOptions: RequestInit,
   timeout: number | null,
   externalSignal: AbortSignal | undefined,
-  read: (response: Response) => Promise<T>,
+  read: (url: string, response: Response) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController()
   let abortSource: "timeout" | "external" | undefined
@@ -575,16 +570,16 @@ async function attemptFetch<T>(
   }
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchAnswer(url, {
       ...fetchOptions,
       credentials: fetchOptions.credentials ?? "same-origin",
       headers: requestHeaders(fetchOptions.headers),
       signal: controller.signal,
     })
     if (!res.ok) {
-      await throwApiError(res)
+      await throwApiError(res, url)
     }
-    return await read(res)
+    return await read(url, res)
   } catch (err) {
     // Only a timer can abort with "timeout", so a timeout is set here.
     if (abortSource === "timeout" && timeout !== null && isAbortError(err)) {
@@ -606,15 +601,37 @@ export function request<T>(url: string, options: RequestOptions = {}): Promise<T
   return requestWith(url, options, jsonOf<T>)
 }
 
-function jsonOf<T>(response: Response): Promise<T> {
-  return response.json() as Promise<T>
+function jsonOf<T>(url: string, response: Response): Promise<T> {
+  return readJsonAnswer(url, response) as Promise<T>
+}
+
+/**
+ * The status a static file of the page's (a lazily loaded chunk) is answered with now, asked
+ * past every cache; a request that gets no answer rejects as `ServerUnreachableError`, and
+ * *signal* aborts it. No API call, so no session or retry.
+ */
+export async function staticFileStatus(url: string, signal: AbortSignal): Promise<number> {
+  return (await fetchAnswer(url, { cache: "no-store", signal })).status
+}
+
+/**
+ * The browser's `fetch`, the one the transport sends through: a request that gets no answer
+ * at all rejects as `ServerUnreachableError`, and an abort stays the `AbortError` it is.
+ */
+async function fetchAnswer(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    if (isAbortError(error)) throw error
+    throw new ServerUnreachableError(url, error)
+  }
 }
 
 /** `request` with a caller-supplied reader for a successful response (e.g. to read its headers). */
 async function requestWith<T>(
   url: string,
   options: RequestOptions,
-  read: (response: Response) => Promise<T>,
+  read: (url: string, response: Response) => Promise<T>,
   bodyCheck: BodyCheck = "unchecked",
 ): Promise<T> {
   const { timeout = 30_000, signal: rawSignal, retry, ...fetchOptions } = options
@@ -698,7 +715,7 @@ export async function postRawStream(
   if (namesOperationKey(body)) {
     throw new Error(`${url} names an operation key: a keyed write is sent through sendHeld.`)
   }
-  const response = await fetch(url, {
+  const response = await fetchAnswer(url, {
     method: "POST",
     credentials: "same-origin",
     headers: requestHeaders({ "Content-Type": "application/json" }),
@@ -706,7 +723,7 @@ export async function postRawStream(
     signal: options.signal,
   })
   if (!response.ok) {
-    await throwApiError(response)
+    await throwApiError(response, url)
   }
   return response
 }
@@ -731,12 +748,13 @@ export interface LoadedPipeline {
 
 /** The response body with the document fingerprint its header names; a response without one breaks its contract. */
 function readNamedDocument(caller: string) {
-  return async (response: Response): Promise<{ body: unknown; documentFingerprint: string }> => {
+  return async (url: string, response: Response): Promise<{ body: unknown; documentFingerprint: string }> => {
+    const body = await readJsonAnswer(url, response)
     const documentFingerprint = response.headers.get(DOCUMENT_FINGERPRINT_HEADER)?.trim() ?? ""
     if (!documentFingerprint) {
       throw new Error(`${caller}: response has no ${DOCUMENT_FINGERPRINT_HEADER} header`)
     }
-    return { body: await response.json() as unknown, documentFingerprint }
+    return { body, documentFingerprint }
   }
 }
 

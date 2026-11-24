@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { isChunkLoadError } from "../utils/chunkLoadError";
-import { ERROR_FALLBACK_BUTTON_STYLE, UpdatedNotice } from "./UpdatedNotice";
+import { answer, newest, requestKind } from "../utils/answers";
+import { chunkLoadVerdict, isChunkLoadError, type ChunkLoadVerdict } from "../utils/chunkLoadError";
+import { ERROR_FALLBACK_BUTTON_STYLE, ReloadNotice } from "./ReloadNotice";
 
 interface Props {
   children: ReactNode;
@@ -11,16 +12,39 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  /** For a part of the page that could not be loaded, why, once the server is asked. */
+  chunk: ChunkLoadVerdict | "asking" | null;
 }
 
+/**
+ * What the fallback says for a part of the page that could not be loaded, by why. While the
+ * server is asked, and when why is not known, it says only that, and still offers the Reload.
+ */
+const CHUNK_NOTICES: Record<ChunkLoadVerdict | "asking", { title: string; reason: string }> = {
+  asking: { title: "This part of the page could not be loaded", reason: "Reload to load it." },
+  unknown: { title: "This part of the page could not be loaded", reason: "Reload to load it." },
+  gone: {
+    title: "Haute has been updated",
+    reason: "This page was opened before the update and cannot load this part of it. Reload to use the new version.",
+  },
+  unanswered: {
+    title: "Haute's server did not answer",
+    reason: "This part of the page could not be loaded while the server was away. Reload to load it once the server answers.",
+  },
+};
+
 export class ErrorBoundary extends Component<Props, State> {
+  // The question of why a part of the page could not be loaded: only the one asked for the
+  // error the boundary holds is answered (`utils/answers.ts`).
+  private readonly verdicts = requestKind();
+
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, chunk: null };
   }
 
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return { hasError: true, error, chunk: isChunkLoadError(error) ? "asking" : null };
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
@@ -29,14 +53,28 @@ export class ErrorBoundary extends Component<Props, State> {
       error,
       errorInfo.componentStack
     );
+    if (!isChunkLoadError(error)) return;
+    void answer([newest(this.verdicts)], chunkLoadVerdict(error), {
+      ok: (chunk) => this.setState({ chunk }),
+    });
   }
+
+  componentWillUnmount(): void {
+    this.verdicts.bump();
+  }
+
+  private reset = (): void => {
+    this.verdicts.bump();
+    this.setState({ hasError: false, error: null, chunk: null });
+  };
 
   render(): ReactNode {
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback;
-      // A retry cannot load a chunk the rebuilt server no longer has (and the
-      // lazy import's rejection is cached), so only a reload recovers.
-      const updated = isChunkLoadError(this.state.error);
+      // A part of the page that could not be loaded stays failed in this page (the browser
+      // keeps the failure of the chunk and of what it preloaded), so only a reload recovers.
+      const { chunk } = this.state;
+      const notice = chunk === null ? null : CHUNK_NOTICES[chunk];
       return (
         <div
           style={{
@@ -49,16 +87,16 @@ export class ErrorBoundary extends Component<Props, State> {
           }}
         >
           <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-primary)" }}>
-            {updated ? "Haute has been updated" : "Something went wrong"}
+            {notice ? notice.title : "Something went wrong"}
           </p>
-          {updated ? (
-            <UpdatedNotice />
+          {notice ? (
+            <ReloadNotice reason={notice.reason} />
           ) : (
             <>
               <p style={{ margin: "0 0 12px", fontFamily: "var(--font-code)", fontSize: "11px" }}>
                 {this.state.error?.message}
               </p>
-              <button onClick={() => this.setState({ hasError: false, error: null })} style={ERROR_FALLBACK_BUTTON_STYLE}>
+              <button onClick={this.reset} style={ERROR_FALLBACK_BUTTON_STYLE}>
                 Try again
               </button>
             </>

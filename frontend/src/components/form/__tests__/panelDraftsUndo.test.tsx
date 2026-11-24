@@ -27,6 +27,13 @@ import { SplitAndMetricsConfig } from "../../../panels/modelling/SplitAndMetrics
 import { TargetAndTaskConfig } from "../../../panels/modelling/TargetAndTaskConfig"
 import { useHyperparameterDrafts } from "../../../panels/modelling/useHyperparameterDrafts"
 import type { BandingFactor } from "../../../types/banding"
+import type { EditorView } from "@codemirror/view"
+import CodeMirrorEditor from "../../../panels/editors/CodeMirrorEditor"
+import ColourSwatches from "../ColourSwatches"
+import ColumnsTab from "../../../panels/editors/ColumnsTab"
+import EdgeJoinEditor from "../../../panels/editors/EdgeJoinEditor"
+import { GraphProvider } from "../../../panels/GraphContext"
+import { documentRequestScope } from "../../../utils/requestGateway"
 
 type Config = Record<string, unknown>
 
@@ -73,11 +80,22 @@ type Entry = {
   /** The config a change from outside brings, holding another value for the field. */
   moved: Config
   view: (config: Config, onUpdate: OnUpdateConfig) => ReactElement
-  field: () => HTMLInputElement | HTMLTextAreaElement
+  field: () => HTMLElement
   typed: string
   /** What the field shows for a stored config. */
   shows: (config: Config) => string
   commit?: "blur" | "enter"
+  /** For a field that is no `<input>` (a code editor): how it is typed in, read and left. */
+  type?: (text: string) => void
+  read?: () => string
+  leave?: () => void
+}
+
+/** The code editor's view while one is rendered, to type in it as CodeMirror is typed in. */
+let codeView: EditorView | null = null
+const codeViewOf = (): EditorView => {
+  if (codeView === null) throw new Error("No code editor is rendered")
+  return codeView
 }
 
 const factorRules = (config: Config) => (config.factor as BandingFactor).rules as Record<string, string>[]
@@ -134,6 +152,53 @@ const CLASSIFICATION_COLUMNS = [{ name: "outcome", dtype: "String" }, { name: "e
 const tuning = (searchSpace: Record<string, unknown>) => ({ schema_version: 1, trial_count: 20, seed: 42, metric: "gini", search_space: searchSpace })
 
 const ENTRIES: Entry[] = [
+  {
+    name: "a code editor's text",
+    initial: { code: "df = df" },
+    moved: { code: "df = df.head()" },
+    view: (config, onUpdate) => (
+      <CodeMirrorEditor defaultValue={String(config.code)} onChange={(v) => onUpdate("code", v)} onEditorView={(view) => { codeView = view }} />
+    ),
+    field: () => codeViewOf().contentDOM,
+    typed: "df = df.tail()",
+    shows: (config) => String(config.code),
+    type: (text) => {
+      const view = codeViewOf()
+      for (let i = 1; i <= text.length; i++) {
+        act(() => { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text.slice(0, i) } }) })
+      }
+    },
+    read: () => codeViewOf().state.doc.toString(),
+    leave: () => act(() => { codeViewOf().contentDOM.dispatchEvent(new Event("blur")) }),
+  },
+  {
+    name: "the colour picker",
+    initial: { colour: "#112233" },
+    moved: { colour: "#445566" },
+    view: (config, onUpdate) => (
+      <ColourSwatches name="Series" value={config.colour as string | null} onCommit={(v) => onUpdate("colour", v)} />
+    ),
+    field: () => screen.getByLabelText("Custom colour for Series"),
+    // The picker's value is a colour, lower case: each step of the pick is one.
+    typed: "#aa0000",
+    shows: (config) => String(config.colour).toLowerCase(),
+    type: (text) => fireEvent.change(screen.getByLabelText("Custom colour for Series"), { target: { value: text } }),
+  },
+  {
+    // A key box of a list: the box at the place of a row the change from outside removed
+    // holds the same text, which a draft kept by position would be carried over.
+    name: "an Edge Join key box",
+    initial: { on: ["policy_id", "region", "region"] },
+    moved: { on: ["region", "region"] },
+    view: (config, onUpdate) => (
+      <GraphProvider allNodes={[]} edges={[]} requestScope={documentRequestScope}>
+        <EdgeJoinEditor config={config} onUpdate={onUpdate} nodeId="join_1" accentColor="#22d3ee" />
+      </GraphProvider>
+    ),
+    field: () => screen.getByRole("textbox", { name: "Same-name key 2" }),
+    typed: "region_code",
+    shows: (config) => (config.on as string[])[1],
+  },
   {
     name: "a committed text field",
     initial: { suffix: "_left" },
@@ -318,19 +383,24 @@ function typeInto(field: () => HTMLElement, text: string) {
 }
 
 describe.each(ENTRIES)("$name", (entry) => {
-  const leave = (field: HTMLElement) =>
-    entry.commit === "enter" ? fireEvent.keyDown(field, { key: "Enter" }) : fireEvent.blur(field)
+  const leave = (field: HTMLElement) => {
+    if (entry.leave) entry.leave()
+    else if (entry.commit === "enter") fireEvent.keyDown(field, { key: "Enter" })
+    else fireEvent.blur(field)
+  }
+  const type = (text: string) => (entry.type ? entry.type(text) : typeInto(entry.field, text))
+  const shown = () => (entry.read ? entry.read() : (entry.field() as HTMLInputElement).value)
 
   it("shows the store's value when it moves under what is being typed, and writes nothing of it", () => {
     const stored = storedConfig(entry.initial)
     render(<Panel stored={stored} view={entry.view} />)
-    typeInto(entry.field, entry.typed)
-    expect(entry.field().value).toBe(entry.typed)
+    type(entry.typed)
+    expect(shown()).toBe(entry.typed)
     expect(stored.writes()).toBe(0)
 
     act(() => stored.moveTo(entry.moved))
 
-    expect(entry.field().value).toBe(entry.shows(entry.moved))
+    expect(shown()).toBe(entry.shows(entry.moved))
     leave(entry.field())
     expect(stored.get()).toEqual(entry.moved)
   })
@@ -338,13 +408,96 @@ describe.each(ENTRIES)("$name", (entry) => {
   it("commits what was typed once, and one Undo puts the earlier value back", () => {
     const stored = storedConfig(entry.initial)
     render(<Panel stored={stored} view={entry.view} />)
-    typeInto(entry.field, entry.typed)
+    type(entry.typed)
     leave(entry.field())
     expect(stored.writes()).toBe(1)
 
     act(() => stored.undo())
 
     expect(stored.get()).toEqual(entry.initial)
-    expect(entry.field().value).toBe(entry.shows(entry.initial))
+    expect(shown()).toBe(entry.shows(entry.initial))
+  })
+})
+
+describe("the Columns tab's empty selection", () => {
+  const view = (config: Config, onUpdate: OnUpdateConfig) => (
+    <ColumnsTab
+      config={config}
+      onUpdate={onUpdate}
+      availableColumns={[{ name: "policy_id", dtype: "Int64" }, { name: "region", dtype: "String" }, { name: "premium", dtype: "Float64" }]}
+      columns={[]}
+    />
+  )
+  const none = () => screen.queryByText("Select at least one column to apply.")
+  const ticked = () => screen.getAllByRole("checkbox").filter((box) => (box as HTMLInputElement).checked).length
+
+  it("lets None go when the selection moves under it, and writes nothing of it", () => {
+    const stored = storedConfig({ selected_columns: ["policy_id"] })
+    render(<Panel stored={stored} view={view} />)
+    fireEvent.click(screen.getByRole("button", { name: "None" }))
+    expect(none()).not.toBeNull()
+    expect(ticked()).toBe(0)
+
+    act(() => stored.moveTo({ selected_columns: ["region", "premium"] }))
+
+    expect(none()).toBeNull()
+    expect(ticked()).toBe(2)
+    expect(stored.writes()).toBe(0)
+  })
+
+  it("commits the column chosen after None once, and one Undo puts the selection back", () => {
+    const stored = storedConfig({ selected_columns: ["policy_id"] })
+    render(<Panel stored={stored} view={view} />)
+    fireEvent.click(screen.getByRole("button", { name: "None" }))
+    fireEvent.click(screen.getAllByRole("checkbox")[1])
+    expect(stored.writes()).toBe(1)
+    expect(stored.get()).toEqual({ selected_columns: ["region"] })
+
+    act(() => stored.undo())
+
+    expect(none()).toBeNull()
+    expect(stored.get()).toEqual({ selected_columns: ["policy_id"] })
+    expect(ticked()).toBe(1)
+  })
+})
+
+describe("the colour picker, while each step of a pick is previewed", () => {
+  // The owner shows each step in the store without recording it, as the workbench's
+  // sheets do, and commits the pick as the picker is left.
+  function Previewed({ stored }: { stored: Stored }) {
+    const config = useSyncExternalStore(stored.subscribe, stored.get)
+    return (
+      <ColourSwatches
+        name="Fill"
+        value={config.colour as string | null}
+        onCommit={(v) => stored.update("colour", v)}
+        onPreview={(v) => stored.moveTo({ ...stored.get(), colour: v })}
+      />
+    )
+  }
+  const picker = () => screen.getByLabelText("Custom colour for Fill") as HTMLInputElement
+
+  it("lets the pick go when the colour moves under it from outside, and commits nothing of it", () => {
+    const stored = storedConfig({ colour: "#112233" })
+    render(<Previewed stored={stored} />)
+    fireEvent.change(picker(), { target: { value: "#aa0000" } })
+    expect(stored.get()).toEqual({ colour: "#AA0000" })
+
+    act(() => stored.moveTo({ colour: "#445566" }))
+
+    expect(picker().value).toBe("#445566")
+    fireEvent.blur(picker())
+    expect(stored.get()).toEqual({ colour: "#445566" })
+    expect(stored.writes()).toBe(0)
+  })
+
+  it("commits the previewed pick once as the picker is left", () => {
+    const stored = storedConfig({ colour: "#112233" })
+    render(<Previewed stored={stored} />)
+    fireEvent.change(picker(), { target: { value: "#aa0000" } })
+    fireEvent.change(picker(), { target: { value: "#bb0000" } })
+    fireEvent.blur(picker())
+    expect(stored.writes()).toBe(1)
+    expect(stored.get()).toEqual({ colour: "#BB0000" })
   })
 })

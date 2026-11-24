@@ -486,6 +486,30 @@ describe("RatingStepEditor", () => {
     expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toHaveAttribute("aria-pressed", "true")
   })
 
+  it("lets a grid cell's draft go when another table takes the selected table's place, the same rates and all", () => {
+    const allNodes = [makeBandingNode("age_band", ["young", "mid", "old"])]
+    const table = (output: string) => ({
+      factors: ["age_band"], output_column: output, default_value: "1.0",
+      entries: ["young", "mid", "old"].map((level) => ({ age_band: level, value: 1 })),
+    })
+    const onUpdate = vi.fn()
+    const editor = (tables: unknown[]) => (
+      <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={[]}>
+        <RatingStepEditor section="tables" config={{ tables }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+      </GraphProvider>
+    )
+    const view = rtlRender(editor([table("age_factor"), table("other_factor")]))
+    const cell = () => screen.getByLabelText("Relativity for age_band young") as HTMLInputElement
+    fireEvent.change(cell(), { target: { value: "2.5" } })
+
+    // An undo (or a broadcast) removes the first table: the second, alike in every cell, is shown.
+    view.rerender(editor([table("other_factor")]))
+
+    expect(cell().value).toBe("1")
+    fireEvent.blur(cell())
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
   it("shows Default as undo leaves it, and a blur then commits nothing", () => {
     const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: value, entries: [] })
     const onUpdate = vi.fn()

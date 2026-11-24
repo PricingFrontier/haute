@@ -5,6 +5,7 @@ import type { OnUpdateConfig } from "./_shared"
 import type { ColumnInfo } from "../../types/node"
 import ColumnTable from "../../components/ColumnTable"
 import { EditorLabel } from "../../components/form"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 
 interface ColumnsTabProps {
   config: Record<string, unknown>
@@ -14,6 +15,10 @@ interface ColumnsTabProps {
   /** Current output columns (post-filter) */
   columns: ColumnInfo[]
 }
+
+/** No column ticked: a choice not yet made, which the store cannot hold (none stored is every column). */
+const NO_COLUMN = "none"
+type Selection = string[] | typeof NO_COLUMN
 
 function sameSelection(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false
@@ -26,19 +31,7 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
   const [search, setSearch] = useState("")
 
   const selectedColumns = configField<string[]>(config, "selected_columns", [])
-  const committedKey = JSON.stringify(selectedColumns)
-  const [draftState, setDraftState] = useState<{
-    committedKey: string
-    columns: string[]
-  } | null>(null)
-  // Associate a local zero-selection draft with the committed config it was
-  // derived from. An external config change immediately makes an old draft
-  // inapplicable without setting state during render.
-  const draft =
-    draftState?.committedKey === committedKey ? draftState.columns : null
-  const setDraft = (columns: string[] | null) => {
-    setDraftState(columns === null ? null : { committedKey, columns })
-  }
+
 
   // Use available columns if we have them, else fall back to current columns
   const allColumns = availableColumns.length > 0 ? availableColumns : columns
@@ -60,52 +53,50 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
     return [...base, ...staleFiltered]
   }, [allColumns, staleColumns, search])
 
-  // When selected_columns is empty, all columns are kept unless the editor is
-  // holding the deliberately uncommitted zero-selection draft.
-  const isAllSelected = draft === null && selectedColumns.length === 0
+  // The selection as ticked, on the shared draft: every toggle commits at once, and none
+  // ticked stays a draft, refused by the store until a column is chosen. A save leaves it on
+  // screen; a change from outside (an Undo, a sync frame) lets it go.
+  const selection = useCommittedDraft<Selection>(
+    selectedColumns,
+    (next) => {
+      if (next === NO_COLUMN) return { ok: false }
+      // Exactly the available columns is every column, stored as none; a stale
+      // name beside them is kept, so it stays visible to be removed.
+      const selectsEveryAvailableColumn =
+        next.length === allColumns.length &&
+        allColumns.every((column) => next.includes(column.name))
+      const normalized = selectsEveryAvailableColumn ? [] : next
+      if (sameSelection(normalized, selectedColumns)) return
+      onUpdate("selected_columns", normalized)
+    },
+    { equals: (a, b) => a === b || (a !== NO_COLUMN && b !== NO_COLUMN && sameSelection(a, b)) },
+  )
+  const noColumn = selection.shown === NO_COLUMN
+
+  // When selected_columns is empty, all columns are kept unless none is ticked.
+  const isAllSelected = !noColumn && selectedColumns.length === 0
 
   const isSelected = (col: string) =>
-    draft !== null
-      ? draft.includes(col)
-      : isAllSelected || selectedColumns.includes(col)
-
-  const commit = (next: string[]) => {
-    // Exactly the available columns is every column, stored as none; a stale
-    // name beside them is kept, so it stays visible to be removed.
-    const selectsEveryAvailableColumn =
-      next.length === allColumns.length &&
-      allColumns.every((column) => next.includes(column.name))
-    const normalized = selectsEveryAvailableColumn ? [] : next
-    setDraft(null)
-    if (sameSelection(normalized, selectedColumns)) return
-    onUpdate("selected_columns", normalized)
-  }
+    !noColumn && (isAllSelected || selectedColumns.includes(col))
 
   const toggleColumn = (col: string) => {
-    const base =
-      draft ??
-      (isAllSelected ? allColumns.map((column) => column.name) : selectedColumns)
+    const base = noColumn ? [] : isAllSelected ? allColumns.map((column) => column.name) : selectedColumns
     const next = base.includes(col)
       ? base.filter((candidate) => candidate !== col)
       : [...base, col]
     // Unticking the last real column waits for a choice; removing the last,
     // stale name leaves no selection, which is every column.
     if (next.length === 0 && allColumnNames.has(col)) {
-      setDraft([])
+      selection.edit(NO_COLUMN)
       return
     }
-    commit(next)
+    selection.commit(next)
   }
 
-  const selectAll = () => commit([])
-  const selectNone = () => setDraft([])
+  const selectAll = () => selection.commit([])
+  const selectNone = () => selection.edit(NO_COLUMN)
 
-  const selectedCount =
-    draft !== null
-      ? draft.length
-      : isAllSelected
-        ? allColumns.length
-        : selectedColumns.length
+  const selectedCount = noColumn ? 0 : isAllSelected ? allColumns.length : selectedColumns.length
 
   if (allColumns.length === 0) {
     return (
@@ -151,13 +142,13 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
           onClick={selectNone}
           className="text-[10px] font-medium px-1.5 py-0.5 rounded"
           style={{ color: "var(--accent)" }}
-          disabled={draft !== null && draft.length === 0}
+          disabled={noColumn}
         >
           None
         </button>
       </div>
 
-      {draft !== null && (
+      {noColumn && (
         <p
           role="status"
           className="text-[10px]"

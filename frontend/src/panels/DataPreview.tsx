@@ -41,6 +41,11 @@ export interface PreviewData {
   preview_row_limit?: number | null
   preview_truncated?: boolean
   error: string | null
+  /**
+   * Whether `error` is one the node raised when it ran, as the server answered: a request
+   * that failed, or got no answer of Haute's, raised nothing of the node's.
+   */
+  errorRaisedByNode?: boolean
   error_line?: number | null
   timing_ms?: number
   memory_bytes?: number

@@ -34,6 +34,7 @@ import {
   cancelInputCacheJob,
   request,
 } from "../client"
+import { ServerUnreachableError } from "../transportErrors"
 import { sentHeld } from "../../testSupport/keyedWrites"
 
 // ---------------------------------------------------------------------------
@@ -363,7 +364,7 @@ describe("retry: max attempts cap", () => {
     try {
       mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
 
-      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ServerUnreachableError)
 
       // 1 initial attempt + 3 retries
       expect(mockFetch).toHaveBeenCalledTimes(4)
@@ -438,7 +439,7 @@ describe("retry: caller supplied policy", () => {
     try {
       mockFetch.mockRejectedValue(new TypeError("still starting"))
 
-      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ServerUnreachableError)
 
       expect(mockFetch).toHaveBeenCalledTimes(4)
       expect(stub.capturedDelays).toHaveLength(3)
@@ -540,7 +541,7 @@ describe("retry: exponential backoff with jitter", () => {
     try {
       mockFetch.mockRejectedValue(new TypeError("boom"))
 
-      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
+      await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ServerUnreachableError)
 
       // All backoff delays must be finite and < 1s (3 retries × exponential
       // base ~100ms with jitter should fit comfortably below this).
@@ -596,7 +597,7 @@ describe("retry: total backoff budget", () => {
 
       const stub = stubBackoffTimers()
       try {
-        await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(TypeError)
+        await expect(getMlflowDestinations(false)).rejects.toBeInstanceOf(ServerUnreachableError)
         const total = stub.capturedDelays.reduce((a, b) => a + b, 0)
         totals.push(total)
       } finally {
@@ -638,7 +639,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           operation: "save-test-operation",
           working_branch: null,
         }, ticket)),
-      ).rejects.toBeInstanceOf(TypeError)
+      ).rejects.toBeInstanceOf(ServerUnreachableError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(stub.capturedDelays).toHaveLength(0)
@@ -683,7 +684,7 @@ describe("retry: POST idempotency-key opt-in (optional feature)", () => {
       // implementer adds one, this assertion should be updated to call it;
       // for now, we assert that commitMilestone without any opt-in does not
       // retry — matching the "non-idempotent POST does not retry" contract.
-      await expect(commitMilestone("msg", null)).rejects.toBeInstanceOf(TypeError)
+      await expect(commitMilestone("msg", null)).rejects.toBeInstanceOf(ServerUnreachableError)
       expect(mockFetch).toHaveBeenCalledTimes(1)
     } finally {
       stub.restore()
@@ -701,7 +702,7 @@ describe("retry: preserves request headers and body", () => {
     try {
       mockFetch.mockRejectedValueOnce(new TypeError("boom"))
 
-      await expect(cancelInputCacheJob("job-1")).rejects.toBeInstanceOf(TypeError)
+      await expect(cancelInputCacheJob("job-1")).rejects.toBeInstanceOf(ServerUnreachableError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(mockFetch.mock.calls[0][1].method).toBe("DELETE")

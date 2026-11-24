@@ -29,6 +29,7 @@ import { navigate, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
 import useNewQuoteStore, { windowFields, windowProblems } from "../useNewQuoteStore"
 import { answer, MISFIT, release, storeRefusal } from "./fixtures"
+import { ServerUnreachableError } from "../../api/transportErrors"
 
 const store = () => useNewQuoteStore.getState()
 const KEPT = keptCreationKey("motor", "ana@example.com")
@@ -348,7 +349,7 @@ describe("NewQuoteWindow", () => {
 
   it("keeps a creation whose answer is lost and sends it again exactly as it was, after a reload too", async () => {
     vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockRejectedValueOnce(new ApiError("HTTP 504", 504, "Gateway timeout"))
       .mockResolvedValue(made())
     shown()
@@ -386,7 +387,7 @@ describe("NewQuoteWindow", () => {
 
   it("keeps a creation sent again that the store refuses, as its first send may have made it", async () => {
     vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockRejectedValueOnce(storeRefusal(MISFIT))
     shown()
     act(() => store().openNew())
@@ -405,7 +406,7 @@ describe("NewQuoteWindow", () => {
   })
 
   it("lets a kept creation go on Discard, and the next New quote starts afresh", async () => {
-    vi.mocked(createAppQuote).mockRejectedValue(new TypeError("Failed to fetch"))
+    vi.mocked(createAppQuote).mockRejectedValue(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
     shown()
     act(() => store().openNew())
     key("Quote reference", "ABC-1")

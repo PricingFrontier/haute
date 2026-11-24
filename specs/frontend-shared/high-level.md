@@ -142,10 +142,13 @@ consistent formatting and classification contracts.
 
 **API client.** Every backend call goes through the transport in
 `api/client.ts`, which returns typed data or throws `ApiError` (HTTP
-non-2xx, carrying `status`/`detail`/`body`) or `ApiTimeoutError` (the request
-was aborted by its own timeout guard, distinct from a caller-initiated
-abort). A read (GET, HEAD, OPTIONS) retries transient failures (network errors,
-5xx) with exponential backoff and jitter. A write is sent by its kind, and no caller
+non-2xx, carrying `status`/`detail`/`body`) or one of the three ways a request gets no
+answer of Haute's: `ApiTimeoutError` (the request was aborted by its own timeout guard,
+distinct from a caller-initiated abort), `ServerUnreachableError` (no answer at all) or
+`ForeignAnswerError` (an answer that is not Haute's: a page where JSON was due, such as a
+proxy's sign-in page sent with 200, or a gateway's 502, 503 or 504 without a detail of
+Haute's). A read (GET, HEAD, OPTIONS) retries transient failures (no answer, 5xx) with
+exponential backoff and jitter. A write is sent by its kind, and no caller
 chooses: a write that names a revision it replaces, or none, is sent once, since its
 answer can be lost after it landed and a repeat would name a revision that is gone; a
 keyed write, whose body names an operation key the server keeps an answer for, is sent
@@ -302,14 +305,20 @@ graph-backed configuration cannot create one undo entry per character.
 
 **Panel values and Undo.** A value being edited in a panel or a node, whatever its kind (a
 line of text, a number, a JSON text, a grid cell, a list of rows), is held by one shared
-draft, `useCommittedDraft`. The few still held another way (a code editor's typing, the
-colour picker's preview, the Columns tab's empty selection, and the fields of lists still keyed
-by position) are listed under
-[FES-07](../roadmap/frontend-shared.md#fes-07--the-last-panel-values-outside-the-shared-draft). The field shows the stored value until the
+draft, `useCommittedDraft`: a code editor's typing not yet flushed, a colour being picked and
+the Columns tab's empty selection among them. The field shows the stored value until the
 analyst types; the typed draft commits once, on blur or Enter (a text area: on blur), as one
 undo step, and a commit whose value is unchanged commits nothing. When the stored value moves
 under an open draft, by an Undo, a Redo, a live-sync frame or any other change from outside
-the field, the draft lets go and the field shows what the store holds. A draft belongs to the
+the field, the draft lets go and the field shows what the store holds. A code editor follows
+the same rule: a change from outside replaces its text and drops typing not yet flushed,
+while the echo of its own last flush leaves typing since then alone, every owner storing
+exactly the text it is sent; its typing not yet flushed is an open draft, which a save
+commits first and a late answer waits for. A colour picked with each step previewed in the
+store keeps its draft through those previews, as a commit that stays does, and lets it go on
+any other change. A list's row, and the selected item of a list, keep their fields' drafts
+by the row's identity from `useRowKeys`, never by position, so a change from outside that
+leaves the same text at the same place gives the row a new identity and its draft goes. A draft belongs to the
 item it edits: a value in a list's row is keyed by that row's identity rather than its
 position, and a row keeps its identity only through the list's own edits, additions,
 removals and moves; a list replaced from outside, as by an Undo, gives every row a new
@@ -597,6 +606,15 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - A request that exceeds its timeout becomes `ApiTimeoutError`, distinguished
   from a caller-cancelled `AbortError` so UI can show "timed out" instead of
   silently doing nothing.
+- A request that got no answer, or an answer that is not Haute's, says so in words, never
+  in the browser's ("Failed to fetch") or the JSON parser's (`Unexpected token '<'`):
+  "Haute's server could not be reached.", "Haute's server did not answer within 30
+  seconds." or "Something between this page and Haute's server answered in its place
+  (HTTP 502).", the status left out for a 2xx. `apiErrorMessage` gives these words
+  wherever a failure is shown, a preview, an editor save ("Failed to save pipeline: ...")
+  and the underwriter app's save among them; the original text goes to the console. A
+  detail Haute sends is shown as it is. A preview that got no answer raised nothing of the
+  node's, so it offers no "Ask the assistant to fix" (frontend-assistant-ui).
 - A response that parses as JSON but doesn't match the expected shape throws
   a descriptive `Error` from the relevant `parse*` guard (e.g. "expected
   object, got string") — this is a contract violation between frontend and
@@ -632,10 +650,15 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable
   without reloading the whole app. The exception is a lazily loaded chunk
-  that fails to load: a page names the chunk files of the build it was
-  served from, a rebuild replaces them, and retrying in that page cannot
-  succeed, so the fallback says "Haute has been updated" and offers a Reload
-  that reloads the page. A reload loses unsaved canvas changes and the app has
+  that fails to load: retrying in that page cannot succeed, since the browser keeps the
+  failure of the chunk and of what was preloaded for it for the page's life. The fallback
+  asks the server for the chunk and tells the two causes apart: a page names the chunk
+  files of the build it was served from and a rebuild replaces them, so a file the server
+  answers 404 for says "Haute has been updated"; any other answer, or none, says "Haute's
+  server did not answer", the part having been asked for while the server was away. A
+  failure that names no file (Safari's) says neither, only that the part could not be
+  loaded. The question is bounded by a deadline, and the Reload is offered while it is
+  asked as well as after. A reload loses unsaved canvas changes and the app has
   no unload guard, so while the graph has unsaved changes the fallback asks for
   a save first (Ctrl+S) and its button reads "Reload without saving". Vite's `vite:preloadError` failures are recorded at
   start-up and surface through that same fallback.
