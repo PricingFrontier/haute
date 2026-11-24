@@ -315,8 +315,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // settings and reordered, a cell's label placed beside it, the clashes named at the pane's
 // foot, the cells grouped under the workbook's sheets, and the shared field picker showing
 // and searching each column's label) brings it to 1,836.4 KiB (initial 307.9 KiB);
-// 1,838 KiB (approved, 24 November 2026) restores about 1.6 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1838
+// 1,838 KiB (approved, 24 November 2026) restores about 1.6 KiB headroom. An Export's raw
+// values setting and a Text Box component bring it to 1,838.0 KiB (initial 308.0 KiB);
+// 1,840 KiB (approved, 24 November 2026) restores about 2.0 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1840
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
