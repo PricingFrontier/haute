@@ -41,6 +41,22 @@ describe("ColumnSelector", () => {
     expect(onChange).toHaveBeenCalledWith("policy.br_period")
   })
 
+  it("keeps a compact menu open through a scroll that moved nothing since it opened, and closes it once a scroll moves its trigger", () => {
+    render(<ColumnSelector compact trigger="add" label="Add a cell" value="" placeholder="Add a cell" columns={columns} onChange={vi.fn()} />)
+    const trigger = screen.getByRole("button", { name: "Add a cell" })
+    fireEvent.click(trigger)
+    const search = () => screen.queryByRole("combobox", { name: "Search Add a cell" })
+
+    // A scroll told just after the menu opened, one that finished before it: nothing moved.
+    fireEvent.scroll(document)
+    expect(search()).toBeInTheDocument()
+
+    const moved = { x: 0, y: -40, top: -40, left: 0, bottom: -16, right: 120, width: 120, height: 24, toJSON: () => ({}) }
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(moved as DOMRect)
+    fireEvent.scroll(document)
+    expect(search()).toBeNull()
+  })
+
   it("keeps a saved unavailable value visible without making it selectable", () => {
     render(<ColumnSelector label="Offset column" value="removed_column" columns={columns} onChange={vi.fn()} optional />)
     expect(screen.getByRole("button", { name: "Offset column" })).toHaveTextContent("removed_column")

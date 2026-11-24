@@ -64,6 +64,8 @@ export function ColumnSelector({
   const menuRef = useRef<HTMLDivElement>(null)
   const optionRefs = useRef<Array<HTMLLIElement | null>>([])
   const animationFrame = useRef<number | null>(null)
+  /** Where the trigger was as the compact menu was placed under or over it. */
+  const placedBy = useRef<{ top: number; left: number } | null>(null)
   const known = columns.some((column) => column.name === value)
   // A saved value is only flagged once the columns have arrived.
   const unavailable = value !== "" && columns.length > 0 && !known
@@ -131,6 +133,7 @@ export function ColumnSelector({
   useLayoutEffect(() => {
     if (!compact || !open || triggerRef.current === null) return
     const trigger = triggerRef.current.getBoundingClientRect()
+    placedBy.current = { top: trigger.top, left: trigger.left }
     const width = Math.max(trigger.width, COMPACT_MENU_MIN_WIDTH)
     const left = Math.max(EDGE, Math.min(trigger.left, window.innerWidth - EDGE - width))
     const height = menuRef.current?.offsetHeight ?? 0
@@ -143,8 +146,10 @@ export function ColumnSelector({
     )
   }, [compact, open])
 
-  // It closes on a press outside it or its trigger, and as anything scrolls or
-  // the window changes, which would leave it away from its trigger.
+  // It closes on a press outside it or its trigger, as a scroll moves its trigger
+  // and as the window changes, any of which would leave it away from its trigger.
+  // A scroll that moved nothing since it was placed, such as one that finished
+  // just before it opened and is told just after, leaves it open.
   useEffect(() => {
     if (!compact || !open) return
     const inside = (target: EventTarget | null) =>
@@ -154,7 +159,10 @@ export function ColumnSelector({
       if (!inside(event.target)) closeMenu()
     }
     const scrolled = (event: Event) => {
-      if (!(event.target instanceof Node && menuRef.current?.contains(event.target))) closeMenu()
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return
+      const trigger = triggerRef.current?.getBoundingClientRect()
+      const placed = placedBy.current
+      if (trigger === undefined || placed === null || trigger.top !== placed.top || trigger.left !== placed.left) closeMenu()
     }
     const away = () => closeMenu()
     document.addEventListener("pointerdown", outside, true)
