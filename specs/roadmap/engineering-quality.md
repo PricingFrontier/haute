@@ -15,45 +15,13 @@ the main session ran the gate of `EQ-05` itself and the two tests of
 
 ## Priorities
 
-**Start with:** `EQ-05`
+**Start with:** `EQ-06`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EQ-05 | Planned | P3 | The changed-coverage gate counts a change made on any line of a statement, not only on its first. |
 | EQ-06 | Planned | P3 | The two Windows-only tests that no CI job selects run in the Windows job, and a test keeps the next one from being left out. |
 
 ## Planned improvements
-
-### EQ-05 — The changed-coverage gate counts a change on any line of a statement
-**Why:** Reproduced on 13 November 2026 by running the gate itself on a
-small git copy of the checkout. In `src/haute/_rating.py` the statement
-that turns a duration key into seconds spans five lines. On its third line
-"hours times 3,600" was changed to "hours times 3,000", and Coverage.py,
-with the repository's own settings, measured a run in which the statement
-never ran. The gate printed "Changed coverage gate passed: no changed
-safety-critical targets." and exited 0. With the same statement changed on
-its first line instead, the gate failed and named line 902.
-
-Coverage.py records a statement on its first line. The gate takes the
-lines a pull request changed and keeps those the coverage file names, so a
-change that touches only the later lines of a statement counts as no
-change. In the 35 files the gate holds to full coverage of changed code,
-4,170 of the 9,783 lines of simple statements are such later lines: an
-argument of a call, a term of a sum, an entry of a mapping.
-
-**Plan:** Before the changed lines are matched with the coverage file, move
-each one to the first line of the statement that holds it, read from the
-file's syntax tree, and treat the branches that leave that statement the
-same way.
-
-**Acceptance:** In the run above the gate fails and names the statement's
-first line. A test holds a change on a later line of a statement that is
-not covered, and one of a statement that is.
-
-**Dependencies:** None.
-
-**Evidence:** `scripts/check_changed_coverage.py::evaluate_changed_coverage`;
-`.github/workflows/ci.yml`; `pyproject.toml`.
 
 ### EQ-06 — The Windows job runs the tests only Windows can run
 **Why:** Read and run on 13 November 2026. CI's Windows job runs a list of

@@ -265,6 +265,26 @@ def _git(repo: Path, args: Sequence[str]) -> str:
     return completed.stdout
 
 
+def statement_lines(source: Path, lines: set[int]) -> set[int]:
+    """*lines* of the file *source*, each moved to the first line of the statement holding it.
+
+    Coverage.py records a statement on its first line, so a change to a later line of a
+    statement (an argument of a call, a term of a sum, an entry of a mapping, a line of a
+    condition) is that statement's change, and a branch leaving it is the statement's
+    branch. Coverage.py's own reporter maps the lines, as it maps what it recorded; a line
+    in no statement (a comment, a blank) stays itself and is no target.
+    """
+    from coverage import Coverage
+    from coverage.exceptions import NoSource, NotPython
+    from coverage.python import PythonFileReporter
+
+    reporter = PythonFileReporter(str(source), coverage=Coverage(config_file=False))
+    try:
+        return set(reporter.translate_lines(lines))
+    except (NoSource, NotPython) as exc:
+        raise ChangedCoverageError(f"Cannot read the statements of {source}: {exc}") from exc
+
+
 def collect_changed_lines(
     config: ChangedCoverageConfig, repo: Path, base_ref: str | None
 ) -> tuple[dict[str, set[int]], set[str]]:
@@ -280,6 +300,7 @@ def collect_changed_lines(
         for path, lines in parse_unified_zero_diff(output).items():
             if config.in_scope(path):
                 changed.setdefault(path, set()).update(lines)
+    changed = {path: statement_lines(repo / path, lines) for path, lines in changed.items()}
     untracked = {
         _path(line)
         for line in _git(

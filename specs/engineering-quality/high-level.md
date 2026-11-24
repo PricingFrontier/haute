@@ -407,7 +407,8 @@ by, a scripted result.
 - Coverage merge/gate fails when shard data cannot satisfy the 90% global floor,
   `scripts/check_critical_coverage.py` finds a safety-critical file below its
   statement/branch thresholds, or the changed-code gate finds an uncovered changed
-  statement/branch arc in a safety-critical module. Uncovered changed code
+  statement/branch arc in a safety-critical module. A statement is changed when any
+  of its lines is, not only the first, where Coverage.py records it. Uncovered changed code
   elsewhere is reported in the job summary and does not fail the job.
 - E2E failures retain Playwright trace/screenshots/video according to its
   configuration. Benchmark/performance failures retain their workflow artifacts
