@@ -1,5 +1,5 @@
 /** An Export's panel (specs/workbench). */
-import { GripVertical, SlidersHorizontal, Trash2, X } from "lucide-react"
+import { GripVertical, SlidersHorizontal, Trash2, TriangleAlert, X } from "lucide-react"
 import { useId, useRef, useState, type KeyboardEvent } from "react"
 import type { CsvExport, ExcelCellsExport, ExportBlock, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable, TrueFalseText } from "../../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow } from "../../components/form"
@@ -14,6 +14,7 @@ import {
   addBlockColumn,
   addExportBlock,
   addExportCell,
+  cellClashes,
   cellColumns,
   excelLayout,
   exportCellsOf,
@@ -122,6 +123,7 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
         <>
           <ExportCells form={form} widget={widget} target={target} />
           <ExportBlocks form={form} widget={widget} target={target} />
+          <CellClashes form={form} target={target} />
         </>
       ) : (
         <Section title="Tables" aside={`${widget.tables.length} exported`}>
@@ -148,6 +150,31 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
         </Section>
       )}
     </ButtonPanes>
+  )
+}
+
+/**
+ * What a workbook of cells writes to one place twice (`cellClashes`), at the foot of the
+ * pane and held there as it scrolls, in the warning colour; nothing while there is none.
+ */
+function CellClashes({ form, target }: { form: FormSpec; target: ExcelCellsExport }) {
+  const clashes = cellClashes(form, target)
+  if (clashes.length === 0) return null
+  // A band to the pane's edges, over the pane's padding, so nothing scrolls past under it.
+  return (
+    <div className="sticky -bottom-3 -mx-3 -mb-3 mt-auto shrink-0 px-3 pb-3 pt-2" style={{ background: "var(--bg-panel)" }}>
+      <section aria-label="Clashes" className="max-h-40 overflow-auto rounded-md p-2" style={{ border: "1px solid var(--warning)", background: "var(--warning-soft)" }}>
+        <div className="flex items-center gap-1.5 font-medium" style={{ color: "var(--warning)" }}>
+          <TriangleAlert size={12} aria-hidden="true" className="shrink-0" />
+          {clashes.length === 1 ? "1 clash" : `${clashes.length} clashes`}
+        </div>
+        <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+          {clashes.map((clash) => (
+            <li key={clash}>{clash}</li>
+          ))}
+        </ul>
+      </section>
+    </div>
   )
 }
 

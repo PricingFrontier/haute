@@ -468,7 +468,9 @@ a sheet per table.
   Alt+Up and Alt+Down, to change the order: sheets are made in the order the rows first
   name them. Under **Add a cell**, type to search the fields, shown as `table.column`, and
   pick one to add it, on the last row's sheet in the cell below it, its label below the
-  last row's label. A field can go in more than one cell, but a cell holds one field or one
+  last row's label. When two things would land in one place (two cells, a cell and a
+  label, or a table running over a cell or another table), **Clashes** at the foot of the
+  pane says what clashes and where. A field can go in more than one cell, but a cell holds one field or one
   label. Sheets are made in the order the rows first name them. Each cell holds the
   field's value as the sheets hold it: numbers stay numbers in the field's number format,
   dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with

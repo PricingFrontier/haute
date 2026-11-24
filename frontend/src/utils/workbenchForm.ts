@@ -2769,6 +2769,59 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
   return [...new Set(problems)]
 }
 
+/** Names in a list: "a", "a and b", "a, b and c". */
+const listed = (names: readonly string[]): string => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`)
+
+/**
+ * Each place a workbook of cells writes two things to, said with what clashes: an address of
+ * a sheet written by more than one cell or label, a block running over an address written
+ * already, or a block over an earlier block on its sheet (a block runs down from its address
+ * over its columns, its rows not known until it is written), as `cellsProblems` finds them.
+ * A cell is named by its number and its field's label, a block by its number, its table and
+ * where it starts; a sheet is matched whatever its case, as Excel matches it.
+ */
+export function cellClashes(spec: FormSpec, target: ExcelCellsExport): string[] {
+  const cellName = (cell: ExportCell, index: number) => {
+    const found = fieldColumn(spec, cell)
+    return `cell ${index + 1} (${found === null ? "Missing column" : found.column.label || readableName(found.column.name)})`
+  }
+  // Each address written, by its sheet in lower case: the sheet as first named, and what writes it, in order.
+  const written = new Map<string, { sheet: string; address: string; by: string[] }>()
+  const write = (sheet: string, address: string, by: string) => {
+    const key = `${sheet.toLowerCase()}!${address}`
+    const held = written.get(key)
+    if (held === undefined) written.set(key, { sheet, address, by: [by] })
+    else held.by.push(by)
+  }
+  target.cells.forEach((cell, index) => {
+    if (cellAddress(cell.cell) !== null) write(cell.sheet, cell.cell, cellName(cell, index))
+    if (cell.label_cell.trim() !== "" && cellAddress(cell.label_cell) !== null) write(cell.sheet, cell.label_cell, `the label of ${cellName(cell, index)}`)
+  })
+  const clashes = [...written.values()].filter((held) => held.by.length > 1).map((held) => `${held.sheet}!${held.address} is written by ${listed(held.by)}`)
+  const placed: { sheet: string; first: number; last: number; name: string }[] = []
+  target.blocks.forEach((block, index) => {
+    const start = cellAddress(block.cell)
+    if (start === null || block.columns.length === 0) return
+    const first = start.column
+    const last = first + block.columns.length - 1
+    if (last > LAST_CELL_COLUMN) return
+    const sheet = block.sheet.toLowerCase()
+    const where = `${index + 1} (${block.table}) from ${block.sheet}!${block.cell}`
+    const name = `table ${where}`
+    for (const held of written.values()) {
+      const spot = held.sheet.toLowerCase() === sheet ? cellAddress(held.address) : null
+      if (spot !== null && first <= spot.column && spot.column <= last && spot.row >= start.row) {
+        clashes.push(`Table ${where} runs over ${held.sheet}!${held.address}, written by ${listed(held.by)}`)
+      }
+    }
+    for (const other of placed) {
+      if (other.sheet === sheet && other.first <= last && first <= other.last) clashes.push(`Table ${where} runs over ${other.name}`)
+    }
+    placed.push({ sheet, first, last, name })
+  })
+  return clashes
+}
+
 /**
  * What stops an Export doing what its settings say: no tables, one gone, more than one to
  * a CSV, a file with no name or naming a column quote_details does not have, and to a

@@ -9,6 +9,7 @@ import {
   addBlockColumn,
   addExportBlock,
   addExportCell,
+  cellClashes,
   addPage,
   addSchemaColumn,
   addSchemaTable,
@@ -2975,6 +2976,32 @@ describe("Imports and Exports", () => {
       expect(exportCellsOf(spec, "w_out")).toBe(cellsOf(spec))
       expect(() => moveExportCell(spec, "w_out", 3, 0)).toThrow("has no cell 3")
       expect(() => moveExportCell(buttons(), "w_out", 0, 1)).toThrow("which writes no cells")
+    })
+
+    it("says what a workbook of cells writes to one place twice: cells, labels, a sheet in another case, and tables running over them", () => {
+      const spec = cells()
+      const at = (field: FieldRef, sheet: string, cell: string, label_cell = "") => ({ ...field, sheet, cell, label_cell, true_false: null })
+      const block = (sheet: string, cell: string, columns: string[]): ExportBlock => ({ table: "layers", sheet, cell, header: "labels", columns, true_false: null })
+      const clashes = (cells: ExcelCellsExport["cells"], blocks: ExportBlock[] = []) => cellClashes(spec, { ...(exported(spec).target as ExcelCellsExport), cells, blocks })
+
+      expect(clashes([at(insured, "Slip", "B1", "A1"), at(total, "Slip", "B2", "A2")])).toEqual([])
+      // A cell over a cell, and a label over a cell, a sheet matched whatever its case.
+      expect(clashes([at(insured, "Slip", "B1"), at(total, "Slip", "B1")])).toEqual(["Slip!B1 is written by cell 1 (Insured) and cell 2 (Total)"])
+      expect(clashes([at(insured, "Slip", "B1", "B2"), at(total, "slip", "B2", "A2"), at(total, "Slip", "C9", "A2")])).toEqual([
+        "Slip!B2 is written by the label of cell 1 (Insured) and cell 2 (Total)",
+        "slip!A2 is written by the label of cell 2 (Total) and the label of cell 3 (Total)",
+      ])
+      // An address that is not a cell clashes with nothing; its problem is its own.
+      expect(clashes([at(insured, "Slip", "b 1"), at(total, "Slip", "b 1")])).toEqual([])
+      // A table runs down from its address over its columns: over a cell, and over an earlier table.
+      expect(
+        clashes([at(insured, "Slip", "C9")], [block("Slip", "B3", ["limit", "layer_premium"]), block("SLIP", "C40", ["limit"]), block("Other", "C1", ["limit"]), block("Slip", "A1", [])]),
+      ).toEqual([
+        "Table 1 (layers) from Slip!B3 runs over Slip!C9, written by cell 1 (Insured)",
+        "Table 2 (layers) from SLIP!C40 runs over table 1 (layers) from Slip!B3",
+      ])
+      // A cell above a table's address is clear of it.
+      expect(clashes([at(insured, "Slip", "C1")], [block("Slip", "C2", ["limit"])])).toEqual([])
     })
 
     it("finds the cell above, under, left or right of an address, none past the sheet's edge, and where a cell's label is", () => {

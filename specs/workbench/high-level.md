@@ -1544,7 +1544,15 @@ Out of scope:
   order; and Add a column, a select of its table's columns as a sheet shows them (the
   index among them) that it does not hold yet. Under them Add a table, a select of the
   schema's tables, a table chosen adding a block of it with no columns, headed by labels,
-  at `A1` of a sheet named by the table. Otherwise Tables, a
+  at `A1` of a sheet named by the table. At the pane's foot, held there as the pane scrolls,
+  while a workbook of cells writes two things to one place, Clashes, in the warning colour:
+  how many, and a line for each, saying what clashes: an address written by more than one
+  cell or label (`Slip!B2 is written by cell 1 (Limit) and the label of cell 2 (Region)`),
+  a table running over an address written already, or a table running over another table
+  on its sheet (a table runs down from its address over its columns, as its rows are not
+  known until it is written), each cell by its number and its field's label, each table by
+  its number, its table and where it starts, a sheet's name matched whatever its case, as
+  Excel matches it; these are the clashes the export's problems name. Otherwise Tables, a
   checkbox per schema table, ticked in order; and a table it exports that is no longer
   in the schema a row of its own, "Missing table", with a cross. Each change is one undo
   step. While building, the showing sheet's tab has a settings

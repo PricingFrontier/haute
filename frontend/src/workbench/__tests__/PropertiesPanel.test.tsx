@@ -1413,6 +1413,15 @@ describe("PropertiesPanel", () => {
     fireEvent.click(settings(2))
     expect(settings(2)).toHaveAttribute("aria-expanded", "true")
 
+    // Two cells meeting are named at the pane's foot until they part.
+    expect(screen.queryByRole("region", { name: "Clashes" })).not.toBeInTheDocument()
+    commit("Cell 2 address", "a1")
+    const clashes = screen.getByRole("region", { name: "Clashes" })
+    expect(clashes).toHaveTextContent("1 clash")
+    expect(within(clashes).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Sheet1!A1 is written by cell 1 (State) and cell 2 (Year)"])
+    commit("Cell 2 address", "A2")
+    expect(screen.queryByRole("region", { name: "Clashes" })).not.toBeInTheDocument()
+
     // Label: None to start, a position past the sheet's edge disabled, Label cell only for Custom.
     const label = (number: number) => screen.getByRole("combobox", { name: `Cell ${number} label` })
     const disabled = (select: HTMLElement) => [...select.querySelectorAll("option")].filter((option) => option.disabled).map((option) => option.value)
