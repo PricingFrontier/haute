@@ -47,6 +47,7 @@ from haute._workbench_form import (
     SchemaColumn,
     SqlImport,
     TableInputWidget,
+    TextBoxWidget,
     Theme,
     TotalKind,
     TrueFalseText,
@@ -254,6 +255,7 @@ if TYPE_CHECKING:
     CollectionComponentFile = Any
     ChartComponentFile = Any
     HeadingComponentFile = Any
+    TextBoxComponentFile = Any
     SqlImportFile = Any
     HttpImportFile = Any
     ColumnNameFile = Any
@@ -316,6 +318,15 @@ else:
         drop=NOT_IN_COMPONENT_FILE,
         replace={"show_when": _SHOW_WHEN},
     )
+    TextBoxComponentFile = _derived(
+        "TextBoxComponentFile",
+        TextBoxWidget,
+        drop=NOT_IN_COMPONENT_FILE,
+        replace={
+            "fields": (list[Dotted], Field(default_factory=list, max_length=1)),
+            "show_when": _SHOW_WHEN,
+        },
+    )
     SqlImportFile = _derived(
         "SqlImportFile", SqlImport, replace={"parameters": (list[QueryParameterFile], ...)}
     )
@@ -365,6 +376,7 @@ else:
         | CollectionComponentFile
         | ChartComponentFile
         | HeadingComponentFile
+        | TextBoxComponentFile
         | ImportComponentFile
         | ExportComponentFile,
         Field(discriminator="type"),
@@ -389,6 +401,7 @@ COMPONENT_FILES: tuple[type[BaseModel], ...] = (
     CollectionComponentFile,
     ChartComponentFile,
     HeadingComponentFile,
+    TextBoxComponentFile,
     ImportComponentFile,
     ExportComponentFile,
 )

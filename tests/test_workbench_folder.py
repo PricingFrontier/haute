@@ -711,6 +711,31 @@ def test_a_form_round_trips_through_its_folder_with_the_folder_s_revision(projec
     assert form_files(document.spec, form_folder(project)) == files
 
 
+def test_a_text_box_round_trips_its_one_column_through_its_file(project: Path) -> None:
+    form = copy.deepcopy(FORM)
+    policy = next(held for held in form["schema"]["tables"] if held["name"] == "policy")
+    policy["inputs"].append(column("notes"))
+    form["pages"][0]["sections"][0]["widgets"].append(
+        {
+            "name": "notes_box",
+            "type": "textBox",
+            **place(0, 0, 160, 72),
+            "fields": [{"table": "policy", "column": "notes"}],
+            "show_when": {"match": "all", "conditions": []},
+        }
+    )
+
+    files = write_form(project, form)
+
+    assert json.loads(files["components/notes_box.json"]) == {
+        "type": "textBox",
+        "fields": ["policy.notes"],
+    }
+    document = read_form_document(config(project))
+    assert document.spec == spec_of(form)
+    assert form_files(document.spec, form_folder(project)) == files
+
+
 def test_the_blank_form_round_trips_through_its_folder(project: Path) -> None:
     spec = blank_form("motor")
 

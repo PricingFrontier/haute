@@ -117,6 +117,30 @@ describe("WidgetBody", () => {
     expect(currentForm().sample.policy).toEqual([{ year: "2021" }])
   })
 
+  it("types the sample into a Text Box over many lines, committed as it is left, and takes nothing typed while building", () => {
+    const form = sheetForm()
+    form.schema.tables[0].inputs.push(column("notes"))
+    addTo(form, { ...createWidget("textBox", { x: 16, y: 200, w: 480, h: 120 }, form), id: "w_notes", fields: [{ table: "policy", column: "notes" }] })
+    loadForm(form)
+    renderBody("w_notes")
+
+    const box = screen.getByRole("textbox", { name: "Notes" })
+    expect(box.tagName).toBe("TEXTAREA")
+    fireEvent.change(box, { target: { value: "First line\nSecond line" } })
+    expect(currentForm().sample).toEqual({})
+    fireEvent.blur(box)
+    expect(currentForm().sample.policy).toEqual([{ notes: "First line\nSecond line" }])
+
+    // While building, a new quote's: empty, and what is typed is kept nowhere.
+    cleanup()
+    renderBody("w_notes", "new")
+    const building = screen.getByRole("textbox", { name: "Notes" })
+    expect(building).toHaveValue("")
+    fireEvent.change(building, { target: { value: "Kept nowhere" } })
+    fireEvent.blur(building)
+    expect(currentForm().sample.policy).toEqual([{ notes: "First line\nSecond line" }])
+  })
+
   it("types the sample into a Table's grid row by row, keeping the rows it starts with, inserting and deleting rows in every table it shows", () => {
     renderBody("w_grid")
     expect(screen.getAllByRole("row")).toHaveLength(4)

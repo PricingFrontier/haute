@@ -58,6 +58,7 @@ from haute._workbench_form import (
     ShowWhen,
     SingleCondition,
     TableInputWidget,
+    TextBoxWidget,
     Widget,
 )
 from haute._workbench_tables import _filled, _typed, preset_rows
@@ -209,8 +210,10 @@ _ALWAYS = ShowWhen()
 def _entered(widget: Widget) -> list[tuple[FieldRef, ShowWhen]]:
     """The columns a component has values typed into, each with when it shows with its
     component: a Table's and a Collection's fields, as their looks' ``show_when`` says,
-    always without a look; none of a Chart's, which it only plots, and none of a Heading,
-    which has no fields."""
+    always without a look; a Text Box's one, always; none of a Chart's, which it only plots,
+    and none of a Heading, which has no fields."""
+    if isinstance(widget, TextBoxWidget):
+        return [(field, _ALWAYS) for field in widget.fields]
     if not isinstance(widget, TableInputWidget | CollectionWidget):
         return []
     shows = {(look.table, look.column): look.show_when for look in widget.column_looks}

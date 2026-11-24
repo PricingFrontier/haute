@@ -733,6 +733,24 @@ def test_a_quote_opens_with_what_it_holds(page: Page) -> None:
     assert missing.json()["detail"]["error_code"] == "quote_not_found"
 
 
+def test_text_over_many_lines_and_many_characters_is_stored_and_reopens_as_typed(
+    page: Page, path: Path
+) -> None:
+    """A Text Box's comment: lines, tabs and quotes kept inside, its typed spaces trimmed
+    from its ends alone, however long."""
+    typed = '  Risk seen on site.\n\tSprinklered; "no" hot work.\r\n' + "x" * 10_000 + "\n"
+    kept = typed.strip()
+    quote = page.create().json()["quote"]
+    values = {**VALUES, "quote_details": [{**DETAILS, "insured": typed}]}
+
+    saved = page.save(quote, values=values)
+
+    assert saved.status_code == 200, saved.text
+    assert sql(path, "SELECT insured FROM quote_details") == [(kept,)]
+    opened = page.client.get(address(saved.json()["quote"]), headers=ANA).json()
+    assert opened["values"]["quote_details"][0]["insured"] == kept
+
+
 # ── Versions and operation keys ───────────────────────────────────────────
 
 
@@ -1149,7 +1167,7 @@ def _slip_form() -> dict[str, Any]:
                 ],
                 "blocks": [],
             },
-        }
+        },
     ]
     return spec
 

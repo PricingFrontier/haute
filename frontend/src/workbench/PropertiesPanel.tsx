@@ -30,6 +30,7 @@ import { COMPONENT_COLOR, WIDGET_KINDS } from "./widgetKinds"
 import { ExportSettings } from "./panel/ExportSettings"
 import { FieldsSettings } from "./panel/FieldsSettings"
 import { HeadingSettings } from "./panel/HeadingSettings"
+import { TextBoxSettings } from "./panel/TextBoxSettings"
 import { ImportSettings } from "./panel/ImportSettings"
 import { SectionSettings } from "./panel/SectionSettings"
 import { SheetSettings } from "./panel/SheetSettings"
@@ -76,6 +77,8 @@ export default function PropertiesPanel() {
       {/* Keyed by the component, as a section's settings are by the section, so a value refused for one is never shown, or saved, for the next. */}
       {found.widget.type === "heading" ? (
         <HeadingSettings key={found.widget.id} form={form} widget={found.widget} />
+      ) : found.widget.type === "textBox" ? (
+        <TextBoxSettings key={found.widget.id} form={form} widget={found.widget} />
       ) : found.widget.type === "import" ? (
         <ImportSettings key={found.widget.id} form={form} widget={found.widget} />
       ) : found.widget.type === "export" ? (

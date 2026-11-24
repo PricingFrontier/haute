@@ -4,7 +4,7 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSchema, FormSpec, HttpImport, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
+import type { ChartWidget, TextBoxWidget, CollectionWidget, Condition, ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSchema, FormSpec, HttpImport, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
 import {
   addBlockColumn,
   addExportBlock,
@@ -160,6 +160,8 @@ import {
   type Widget,
   TRUE_FALSE_PRESETS,
   trueFalsePreset,
+  setTextBoxField,
+  textBoxColumns,
 } from "../workbenchForm"
 import { tableIndex, identityCount, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED } from "../quoteIdentity"
 import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
@@ -3307,5 +3309,60 @@ describe("Imports and Exports", () => {
       expect(sheetNameProblem("'Slip")).toBe("starts or ends with '")
       expect(sheetNameProblem("Histories")).toBeNull()
     })
+  })
+})
+
+describe("Text Boxes", () => {
+  const rect = { x: 16, y: 16, w: 480, h: 120 }
+  const details = table(QUOTE_DETAILS_NAME, {
+    inputs: [column("quote_reference"), column("quote_option", { type: "int" }), column("insured"), column("stage")],
+  })
+  const policy = table("policy", {
+    inputs: [column("quote_reference"), column("quote_option", { type: "int" }), column("uw_comments", { label: "Comments" }), column("limit", { type: "int" })],
+    outputs: [column("wording")],
+  })
+  const layers = table("layers", { rows: "many", inputs: [column("table_index", { type: "int", index: "numbered" }), column("note")] })
+  /** A form with quote_details, a one-row table and a many-row one, and a Text Box on its sheet. */
+  const withBox = (): FormSpec => {
+    let spec = blank()
+    for (const added of [details, policy, layers]) spec = addSchemaTable(spec, added)
+    return addWidget(spec, "s", { ...createWidget("textBox", rect, spec), id: "w_box" })
+  }
+  const box = (spec: FormSpec) => findWidget(spec, "w_box")!.widget as TextBoxWidget
+  const problems = (spec: FormSpec) => widgetProblems(spec).flatMap((problem) => (problem.widgetId === "w_box" ? [problem.message] : []))
+
+  it("starts a Text Box holding no column, named by its kind, and offers it the one-row tables' Text inputs alone", () => {
+    const spec = withBox()
+
+    expect(box(spec)).toEqual({ id: "w_box", name: "text_box_1", ...rect, type: "textBox", fields: [], show_when: { match: "all", conditions: [] } })
+    expect(problems(spec)).toEqual(["A Text Box has no field"])
+    // The insured, typed; never the stage the app sets, a number, an output or a many-row table's text.
+    expect(textBoxColumns(spec.schema).map(({ table, columns }) => [table.name, columns.map((held) => held.name)])).toEqual([
+      [QUOTE_DETAILS_NAME, ["insured"]],
+      ["policy", ["uw_comments"]],
+    ])
+  })
+
+  it("holds one column, given and taken away, the form as given while it holds that one already", () => {
+    let spec = setTextBoxField(withBox(), "w_box", { table: "policy", column: "uw_comments" })
+
+    expect(box(spec).fields).toEqual([{ table: "policy", column: "uw_comments" }])
+    expect(setTextBoxField(spec, "w_box", { table: "policy", column: "uw_comments" })).toBe(spec)
+    expect(problems(spec)).toEqual([])
+    expect(widgetName(box(spec))).toBe('Text Box "uw_comments"')
+    expect(fieldUses(spec, "policy", "uw_comments").map((widget) => widget.id)).toEqual(["w_box"])
+    spec = setTextBoxField(spec, "w_box", null)
+    expect(box(spec).fields).toEqual([])
+  })
+
+  it("follows its column's rename, leaves it as the column goes, and names a column that takes no text", () => {
+    let spec = setTextBoxField(withBox(), "w_box", { table: "policy", column: "uw_comments" })
+
+    spec = updateSchemaColumn(spec, "policy", "uw_comments", { name: "comments" })
+    expect(box(spec).fields).toEqual([{ table: "policy", column: "comments" }])
+    expect(removeSchemaColumn(spec, "policy", "comments") === spec).toBe(false)
+    expect(box(removeSchemaColumn(spec, "policy", "comments")).fields).toEqual([])
+    spec = updateSchemaColumn(spec, "policy", "comments", { type: "int" })
+    expect(problems(spec)).toEqual(['Text Box "comments" shows a column that is not a Text input of a one-row table'])
   })
 })

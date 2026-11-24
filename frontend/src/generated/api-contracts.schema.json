@@ -24065,6 +24065,9 @@
                 "$ref": "#/$defs/HeadingWidget"
               },
               {
+                "$ref": "#/$defs/TextBoxWidget"
+              },
+              {
                 "$ref": "#/$defs/ImportWidget"
               },
               {
@@ -25144,6 +25147,69 @@
         }
       },
       "title": "TableV2",
+      "type": "object"
+    },
+    "TextBoxWidget": {
+      "additionalProperties": false,
+      "description": "A Text Box: a box an underwriter types free text into, over as many lines as they\nlike, under its column's label. Its column is one Text input of a one-row schema table,\n``fields`` holding it, none until chosen; a column of another kind is the component's\nproblem, as a Collection's is. What is typed is the column's value, saved, priced and\nstored as any input's.",
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "maxItems": 1,
+          "title": "Fields",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "type": {
+          "const": "textBox",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "fields",
+        "show_when"
+      ],
+      "title": "TextBoxWidget",
       "type": "object"
     },
     "Theme": {

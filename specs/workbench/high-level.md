@@ -1353,7 +1353,7 @@ Out of scope:
   when the sheets first show for a form read (a zoom chosen since is kept across a trip to
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Section and a
-  Heading, in the structure colour, a Collection and a Table, in the entry colour, a Chart,
+  Heading, in the structure colour, a Collection, a Table and a Text Box, in the entry colour, a Chart,
   in Explore's colour, an Import and an Export, in the data colour the Data Input and the
   Data Output have, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
@@ -1372,7 +1372,8 @@ Out of scope:
   dragged component moves (a Table 720 by 200 with 3 rows, numbered, compact,
   lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns
   across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
-  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, an
+  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, a
+  Text Box 480 by 120 holding no column, an
   Import 160 by 40 labelled "Import", from a CSV whose delimiter is found from the file,
   filling no table and replacing a many-row table's rows, an Export 160 by 40 labelled
   "Export", of no tables, to a CSV named `{quote_reference}-{quote_option}`, headed by the
@@ -1468,13 +1469,16 @@ Out of scope:
   layout and its look; the tabs are drawn in the component's colour, Config first,
   and the pane chosen for a component is kept for it while the editor is open. A Chart's
   panel stays one list. Every component's panel starts with its **Component name**, at
-  the top of its Config pane, or of its one list for a Chart and a Heading: a text field
+  the top of its Config pane, or of its one list for a Chart, a Heading and a Text Box: a text field
   committed on blur or Enter as one undo step, a name that is not an identifier or that
   another component has, whatever its case, refused at the field saying which, the
   component keeping its name. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
-  also move between. An Import's and an Export's panels are in the two panes too:
+  also move between. A Text Box's panel has its Field, a select of every one-row table's
+  Text inputs, grouped by table and each by its label, but those the underwriter app sets
+  ("Choose a Text column" for none, a column it holds that it can no longer take shown
+  first, disabled), and its Show when. An Import's and an Export's panels are in the two panes too:
   **Config**, what it does, and **Display**, its Label, committed on blur or Enter, and its
   Show when. Config starts with its Format, CSV, Excel or SQL, three toggles the arrow keys
   also move between, a format chosen starting with a new component's settings for it but
@@ -1872,6 +1876,21 @@ Out of scope:
   typed. While building, a Heading with no text says "Type its text in the panel on the
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
+- **Text Boxes.** A Text Box is a box an underwriter types free text into, such as their
+  comments on the risk, over as many lines as they like. It holds one column, a Text input
+  of a one-row table, chosen in its panel, and is drawn as that column's label, with its
+  required mark and help as a Collection's field has them, over a box of the sheets' input
+  look filling the rest of the component, which wraps what is typed and scrolls past its
+  height. What is typed is the column's value, committed as the box is left, as a
+  Collection's box commits it: saved, priced and stored as any input's, so a comment goes
+  to the quote store as Text (`NVARCHAR(max)` on SQL Server), however long, and breaks the
+  column's rules (required, its options) as a box's value does, marked the same way. The
+  box is read only while the values are or the app sets the column, and while the column
+  it holds is no longer a Text input of a one-row table. Hidden, its column is left out of
+  the quote, as a Collection's field is. While building, a Text Box with no column says
+  "Choose its field in the panel on the right"; in Preview it shows nothing, only the
+  dashed frame any component with a problem has. A Text Box with no column, a column no
+  longer in the schema, or one that is not a Text input of a one-row table is a problem.
 - **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
   box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
   Import, a database's or an API's, a globe), with no label its mark alone, in a frame of the sheets' border colour on the

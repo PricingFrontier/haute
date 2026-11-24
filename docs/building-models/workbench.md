@@ -345,6 +345,12 @@ one:
   optional description under it saying what the section is for, aligned left, centre or
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
+- A **Text Box** is a box the underwriter types free text into, such as their comments,
+  over as many lines as they like. It holds one Text column of a one-row table, shown as
+  the column's label over the box; what is typed is that column's value, saved and stored
+  as any input's, so the comment reaches the quote store with the rest of the quote. Add
+  the column to the schema first (a Text input, such as `uw_comments`), then choose it in
+  the Text Box's **Field**.
 - An **Import** is a button that fills an input table from a CSV or an Excel workbook the
   underwriter picks, from a database, or from an API.
 - An **Export** is a button that takes the quote's tables out to a CSV or an Excel
@@ -416,7 +422,8 @@ and a spacer's cross removes it. A
 Table's and a Collection's properties are in two
 panes: **Config**, the fields it shows and their order, and **Display**, its title, when it
 shows, its layout and its look. A Heading's properties are its **Text** and
-**Description**, when it shows, its **Size** and its **Align**ment.
+**Description**, when it shows, its **Size** and its **Align**ment. A Text Box's are its
+**Field**, a Text input of a one-row table, and when it shows.
 
 An Import's and an Export's properties are in the same two panes: **Display** holds its
 **Label**, the text on the button, and when it shows; **Config** starts with its
@@ -521,7 +528,8 @@ sheet's first), where the original sat, moved down and right past one already th
 selected so you can drag it into place; a column deleted from the schema since you copied
 it is left out of the copy, but for an Export of cells, which keeps it as a problem. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
-Heading with no text, a column no longer in the schema, a table of the other kind, a
+Heading with no text, a Text Box with no field or one that is not a Text input of a
+one-row table, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is a numbered index, tables whose rows do not line up, a pie
 of many rows with more than one field, an Import or an Export with no label or missing
 what its format needs — gets a dashed frame that names the problem. Tab,

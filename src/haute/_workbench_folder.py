@@ -359,7 +359,7 @@ def _component_file(widget: Any) -> BaseModel:
     data["show_when"] = _show_when_file(widget.show_when)
     if widget.type == "tableInput":
         data["type"] = "table"
-    if widget.type == "chart":
+    if widget.type in ("chart", "textBox"):
         data["fields"] = [f"{field.table}.{field.column}" for field in widget.fields]
     if widget.type in ("tableInput", "collection"):
         data["fields"] = _fields_file(widget)
@@ -792,7 +792,7 @@ def _component(component: Any, placed: PlacementFile) -> dict[str, Any]:
     kind = component.type
     if kind == "table":
         data["type"] = "tableInput"
-    if kind == "chart":
+    if kind in ("chart", "textBox"):
         data["fields"] = [_ref(field) for field in component.fields]
     if kind in ("table", "collection"):
         fields: list[dict[str, Any]] = []
@@ -1133,7 +1133,9 @@ def form_from_files(
 
 
 #: The kinds of component, as ``FormSpec`` tells them apart in an error's place.
-_WIDGET_KINDS = frozenset({"tableInput", "collection", "chart", "heading", "import", "export"})
+_WIDGET_KINDS = frozenset(
+    {"tableInput", "collection", "chart", "heading", "textBox", "import", "export"}
+)
 
 
 def _place_in_sheet(name: str, sheet: SheetFile, rest: list[Any]) -> str:

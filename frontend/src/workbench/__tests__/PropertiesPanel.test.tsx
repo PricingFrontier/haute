@@ -13,10 +13,10 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { createWidget, findSection, findWidget, removeSchemaColumn, removeSchemaTable, setExportCellColumn, updateWidget } from "../../utils/workbenchForm"
+import { createWidget, findSection, findWidget, removeSchemaColumn, removeSchemaTable, setExportCellColumn, updateSchemaColumn, updateWidget } from "../../utils/workbenchForm"
 import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
-import type { ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSpec, HttpImport, ImportWidget, Section } from "../../api/types"
+import type { ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSpec, HttpImport, ImportWidget, Section, TextBoxWidget } from "../../api/types"
 import { COMPONENT_COLOR } from "../widgetKinds"
 import { addTo, chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sectionedForm, sheetForm, table, widgetsOf } from "./fixtures"
 
@@ -1696,6 +1696,31 @@ describe("PropertiesPanel", () => {
     fireEvent.change(renamed, { target: { value: "First" } })
     fireEvent.blur(renamed)
     expect(screen.getByRole("button", { name: "Collapse sheet First" })).toHaveAttribute("aria-expanded", "true")
+  })
+
+  it("gives a Text Box one column, a one-row table's Text input, chosen in its panel, and a column it can no longer take shown, disabled", () => {
+    const form = sheetForm()
+    form.schema.tables[0].inputs.push(column("notes"))
+    addTo(form, { ...createWidget("textBox", { x: 16, y: 200, w: 480, h: 120 }, form), id: "w_notes" })
+    loadForm(form)
+    select("w_notes")
+    render(<PropertiesPanel />)
+    const held = () => (findWidget(currentForm(), "w_notes")!.widget as TextBoxWidget).fields
+    const pick = () => screen.getByRole("combobox", { name: "Text Box column" })
+
+    // Text inputs alone: the notes, never the year, a number, or a many-row table's.
+    expect(choices(pick())).toContainEqual(["policy:notes", "Notes"])
+    expect(choices(pick()).map(([value]) => value)).not.toContain("policy:year")
+    fireEvent.change(pick(), { target: { value: "policy:notes" } })
+    expect(held()).toEqual([{ table: "policy", column: "notes" }])
+    expect(pick()).toHaveValue("policy:notes")
+
+    // Made a number, the column is shown first, disabled; choosing none takes it away.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "policy", "notes", { type: "int" })))
+    expect(choices(pick())[1]).toEqual(["policy:notes", "Notes"])
+    expect(pick().querySelectorAll("option")[1]).toBeDisabled()
+    fireEvent.change(pick(), { target: { value: "" } })
+    expect(held()).toEqual([])
   })
 
   it("lays an Export's tables out as blocks, each with its sheet, its top-left cell, its header and its columns in an order of its own", () => {

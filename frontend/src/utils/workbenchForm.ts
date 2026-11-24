@@ -20,6 +20,7 @@ import type {
   FormSchema,
   FormSpec,
   HeadingWidget,
+  TextBoxWidget,
   ImportWidget,
   Page,
   SchemaColumn,
@@ -117,8 +118,8 @@ export type WidgetType = Widget["type"]
 export type PaletteType = WidgetType | "section"
 /** A button on a sheet: an Import or an Export. Neither shows schema columns nor takes anything typed. */
 export type ButtonWidget = ImportWidget | ExportWidget
-/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading and a button show none. */
-export type FieldsWidget = Exclude<Widget, HeadingWidget | ButtonWidget>
+/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading and a button show none; a Text Box shows one, as its own. */
+export type FieldsWidget = Exclude<Widget, HeadingWidget | ButtonWidget | TextBoxWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /**
@@ -209,10 +210,10 @@ export const COLLECTION_COLUMNS_MAX = 12
 const PART_ID_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 /** What a sheet's part is, as its id starts: a component's kind, `table` for a Table. */
-export type PartKind = "sheet" | "section" | "table" | Exclude<WidgetType, "tableInput">
+export type PartKind = "sheet" | "section" | "table" | "text_box" | Exclude<WidgetType, "tableInput" | "textBox">
 
 /** The kind a component of `type`'s id starts with. */
-export const partKind = (type: WidgetType): PartKind => (type === "tableInput" ? "table" : type)
+export const partKind = (type: WidgetType): PartKind => (type === "tableInput" ? "table" : type === "textBox" ? "text_box" : type)
 
 /**
  * A sheet's, a section's or a component's id, the editor's own, which no file holds
@@ -277,6 +278,9 @@ export const allWidgets = (spec: FormSpec): Widget[] => spec.pages.flatMap(pageW
 /** Whether a component shows schema columns: a Table, a Collection or a Chart, not a Heading or a button. */
 export const showsFields = (widget: Widget): widget is FieldsWidget =>
   widget.type === "tableInput" || widget.type === "collection" || widget.type === "chart"
+
+/** Whether a component holds schema columns: one that shows them (`showsFields`), or a Text Box, whose one column it types into. */
+export const holdsFields = (widget: Widget): widget is FieldsWidget | TextBoxWidget => showsFields(widget) || widget.type === "textBox"
 
 /** Whether a component is a button: an Import or an Export. */
 export const isButton = (widget: Widget): widget is ButtonWidget => widget.type === "import" || widget.type === "export"
@@ -440,7 +444,7 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
   const renamed = (name: string): string => (name === from ? to : name)
   const field = (ref: FieldRef): FieldRef => ({ ...ref, table: renamed(ref.table) })
   for (const widget of allWidgets(draft)) {
-    if (showsFields(widget)) widget.fields = widget.fields.map(field)
+    if (holdsFields(widget)) widget.fields = widget.fields.map(field)
     if (widget.type === "chart" && widget.category !== null) widget.category = field(widget.category)
     if (widget.type === "tableInput" || widget.type === "collection") {
       widget.column_looks = widget.column_looks.map((look) => ({ ...look, table: renamed(look.table) }))
@@ -478,7 +482,7 @@ function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: 
   const own = (name: string): string => (name === from ? to : name)
   const field = <T extends FieldRef>(ref: T): T => (ref.table === tableName && ref.column === from ? { ...ref, column: to } : ref)
   for (const widget of allWidgets(draft)) {
-    if (showsFields(widget)) widget.fields = widget.fields.map(field)
+    if (holdsFields(widget)) widget.fields = widget.fields.map(field)
     if (widget.type === "chart" && widget.category !== null) widget.category = field(widget.category)
     if (widget.type === "tableInput" || widget.type === "collection") widget.column_looks = widget.column_looks.map(field)
     if (widget.type === "import") {
@@ -536,6 +540,10 @@ export function moveSchemaTable(spec: FormSpec, from: number, to: number): FormS
  * that one of them labelled.
  */
 const dropShown = (widget: Widget, drop: (field: FieldRef) => boolean): void => {
+  if (widget.type === "textBox") {
+    widget.fields = widget.fields.filter((field) => !drop(field))
+    return
+  }
   if (!showsFields(widget)) return
   setOrder(widget, orderItems(widget).filter((item) => item.kind === "spacer" || !drop(item.field)))
   if (widget.type === "chart" && widget.category !== null && drop(widget.category)) widget.category = null
@@ -826,7 +834,7 @@ export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: st
 
 /** Whether a component shows a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
 const showsColumn = (widget: Widget, tableId: string, columnId: string | undefined): boolean =>
-  showsFields(widget) &&
+  holdsFields(widget) &&
   [...widget.fields, ...(widget.type === "chart" && widget.category !== null ? [widget.category] : [])].some(
     (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
   )
@@ -927,9 +935,9 @@ export interface ShownField {
   found: { table: SchemaTable; column: SchemaColumn } | null
 }
 
-/** The fields a component shows, each with its column in `schema`, in the component's order; a Heading shows none. */
+/** The fields a component shows, each with its column in `schema`, in the component's order, a Text Box its one; a Heading shows none. */
 export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
-  showsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
+  holdsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
 
 /**
  * The input tables a Table's grid takes rows of, in its order: those of the many-row inputs
@@ -1357,6 +1365,8 @@ export function createWidget(type: WidgetType, rect: Rect, spec: FormSpec): Widg
       return { ...placed, type, ...showing, rows: 3, ...TABLE_OPTIONS, column_looks: [] }
     case "heading":
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
+    case "textBox":
+      return { ...placed, type, fields: [], show_when: alwaysShown() }
     case "import":
       return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [], lookup: null }
     case "export":
@@ -1389,6 +1399,7 @@ const NAME_WORDS: Record<WidgetType, string> = {
   collection: "collection",
   chart: "chart",
   heading: "heading",
+  textBox: "text_box",
   import: "import",
   export: "export",
 }
@@ -2578,6 +2589,33 @@ export function answeredOutputs(
   return lined
 }
 
+/** Whether a column takes a Text Box's text: a Text input of a one-row table, not one the underwriter app sets. */
+export const takesText = (table: SchemaTable, column: SchemaColumn): boolean =>
+  table.rows === "one" &&
+  column.type === "str" &&
+  !isOutputColumn(table, column) &&
+  !(isQuoteDetails(table) && QUOTE_DETAILS_MANAGED.has(column.name))
+
+/** The columns a Text Box can be given, by table: each one-row table's Text inputs as a sheet shows them (`takesText`). */
+export const textBoxColumns = (schema: FormSchema): { table: SchemaTable; columns: SchemaColumn[] }[] =>
+  schema.tables.flatMap((table) => {
+    const columns = sheetColumns(table).filter((column) => takesText(table, column))
+    return columns.length === 0 ? [] : [{ table, columns }]
+  })
+
+/** A Text Box given its column, or none; the form as given while it holds that one already. */
+export function setTextBoxField(spec: FormSpec, id: string, field: FieldRef | null): FormSpec {
+  const found = findWidget(spec, id)
+  if (found === null) throw new Error(`No component ${id}`)
+  if (found.widget.type !== "textBox") throw new Error("Only a Text Box takes one column of its own")
+  const held = found.widget.fields[0] ?? null
+  if (held?.table === field?.table && held?.column === field?.column) return spec
+  return edit(spec, (draft) => {
+    const widget = findWidget(draft, id)!.widget as TextBoxWidget
+    widget.fields = field === null ? [] : [{ table: field.table, column: field.column }]
+  })
+}
+
 /** What stops a component showing what it should, by the component it is about. */
 export interface WidgetProblem {
   widgetId: string
@@ -2589,6 +2627,7 @@ const KIND_NAMES: Record<WidgetType, string> = {
   collection: "Collection",
   chart: "Chart",
   heading: "Heading",
+  textBox: "Text Box",
   import: "Import",
   export: "Export",
 }
@@ -2598,7 +2637,8 @@ const kindArticle = (type: WidgetType): string => (/^[AEIOU]/.test(KIND_NAMES[ty
 
 /** `Table "Layers"`, a Heading by its text, `Heading "Cover"`, a button by its label, `Import "Schedule"`, or `A Table` and `An Import` while it has none. */
 export const widgetName = (widget: Widget): string => {
-  const name = widget.type === "heading" ? widget.text.trim() : isButton(widget) ? widget.label.trim() : widget.title
+  const name =
+    widget.type === "heading" ? widget.text.trim() : widget.type === "textBox" ? (widget.fields[0]?.column ?? "") : isButton(widget) ? widget.label.trim() : widget.title
   return name ? `${KIND_NAMES[widget.type]} "${name}"` : `${kindArticle(widget.type)} ${KIND_NAMES[widget.type]}`
 }
 
@@ -2619,6 +2659,12 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
     const problem = (message: string) => problems.push({ widgetId: widget.id, message: `${name} ${message}` })
     if (widget.type === "heading") {
       if (widget.text.trim() === "") problem("has no text")
+    } else if (widget.type === "textBox") {
+      const field = widget.fields[0]
+      const found = field === undefined ? null : fieldColumn(spec, field)
+      if (field === undefined) problem("has no field")
+      else if (found === null) problem("shows a column that is no longer in the schema")
+      else if (!takesText(found.table, found.column)) problem("shows a column that is not a Text input of a one-row table")
     } else if (isButton(widget)) {
       if (widget.label.trim() === "") problem("has no label")
       for (const message of widget.type === "import" ? importProblems(spec, widget) : exportProblems(spec, widget)) problem(message)

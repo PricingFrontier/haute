@@ -205,6 +205,7 @@ export type {
   HttpImport,
   SqlImport,
   TableInputWidget,
+  TextBoxWidget,
   Theme,
   TrueFalseText,
   WorkbenchAppEditing,

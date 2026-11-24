@@ -5775,7 +5775,9 @@ export interface Section {
   id: string;
   show_when: ShowWhen;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget)[];
+  widgets: (
+    TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | TextBoxWidget | ImportWidget | ExportWidget
+  )[];
 }
 /**
  * When a sheet, a section, a widget or a widget's field shows: always, without
@@ -6036,6 +6038,27 @@ export interface HeadingWidget {
   size: 'large' | 'medium' | 'small';
   text: string;
   type: 'heading';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Text Box: a box an underwriter types free text into, over as many lines as they
+ * like, under its column's label. Its column is one Text input of a one-row schema table,
+ * ``fields`` holding it, none until chosen; a column of another kind is the component's
+ * problem, as a Collection's is. What is typed is the column's value, saved, priced and
+ * stored as any input's.
+ */
+export interface TextBoxWidget {
+  /**
+   * @maxItems 1
+   */
+  fields: FieldRef[];
+  h: number;
+  id: string;
+  name: string;
+  show_when: ShowWhen;
+  type: 'textBox';
   w: number;
   x: number;
   y: number;
