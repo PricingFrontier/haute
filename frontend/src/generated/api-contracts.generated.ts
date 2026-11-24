@@ -6183,6 +6183,16 @@ export interface ExportBlock {
   header: 'labels' | 'names' | 'none';
   sheet: string;
   table: string;
+  true_false: TrueFalseText | null;
+}
+/**
+ * What an Excel workbook of cells writes for a True/false column in place of Excel's
+ * TRUE and FALSE: ``true`` for a ticked box, ``false`` for one unticked or empty, each as
+ * text, a blank one leaving the cell empty.
+ */
+export interface TrueFalseText {
+  false: string;
+  true: string;
 }
 /**
  * A cell an Excel workbook of cells holds: the value of a one-row table's column, by
@@ -6197,6 +6207,7 @@ export interface ExportCell {
   label_cell: string;
   sheet: string;
   table: string;
+  true_false: TrueFalseText | null;
 }
 /**
  * The data the sheets work with: tables of named, typed columns.

@@ -30,6 +30,7 @@ from haute._workbench_form import (
     FormSpec,
     SchemaColumn,
     SchemaTable,
+    TrueFalseText,
     with_quote_details,
 )
 from haute._workbench_input import with_stand_in
@@ -190,13 +191,27 @@ def _block_column_problems(spec: FormSpec, block: ExportBlock) -> list[str]:
     return problems
 
 
+def _block_true_false_problems(spec: FormSpec, block: ExportBlock) -> list[str]:
+    """True/False text on *block* none of whose columns is True/false, while it has columns
+    the schema holds: a block whose table or a column is gone has that problem alone."""
+    held = None if block.true_false is None else _block_columns(spec, block)
+    if held is None or not held[1] or any(column.type == "bool" for column in held[1]):
+        return []
+    return [
+        f"writes the table {block.table} with True/False text, but none of its columns is "
+        "True/false"
+    ]
+
+
 def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
     """What stops an Excel workbook of cells being written, as ``cellsProblems`` in the view
     words them: its file name's problems, then its cells', then its blocks', each once, in
     their order, a cell's value's address checked before its label's, each against every
     address taken before it on its sheet, a value's or a label's, and a block, which takes
     its columns from its top-left cell's row to the sheet's last, against every value,
-    label and block before it, the first it lies over named."""
+    label and block before it, the first it lies over named. True/False text is a problem on
+    a cell whose column the schema holds but not as True/false, after that column's own, and
+    on a block none of whose columns is True/false, after its columns' own."""
     problems = _file_name_problems(spec, target.file_name)
     if not target.cells and not target.blocks:
         problems.append("writes no cells or tables")
@@ -210,6 +225,10 @@ def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
             problems.append(f"writes {field}, which is no longer in the schema")
         elif found[0].rows == "many":
             problems.append(f"writes {field}, a column of a many-row table")
+        if found is not None and cell.true_false is not None and found[1].type != "bool":
+            problems.append(
+                f"writes {field} with True/False text, but it is not a True/false column"
+            )
         problems += _sheet_problems(cell.sheet, sheets)
         if cell_address(cell.cell) is None:
             problems.append(
@@ -235,6 +254,7 @@ def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
     placed: list[tuple[str, int, int, int, ExportBlock]] = []
     for block in target.blocks:
         problems += _block_column_problems(spec, block)
+        problems += _block_true_false_problems(spec, block)
         problems += _sheet_problems(block.sheet, sheets)
         address = cell_address(block.cell)
         if address is None:
@@ -362,15 +382,46 @@ def _refuse_long_text(text: str, what: str, where: str) -> None:
         )
 
 
-def _write(cell: Any, column: SchemaColumn, value: Any, field: str) -> None:
-    """*value*, of *column*'s type, into the openpyxl *cell*: text held as text, so neither a
-    leading ``=`` nor an error value is read; a whole number Excel cannot hold exactly (past
-    2**53, as its numbers are doubles) written as its digits, as text, so none is lost; a
-    date shown ``yyyy-mm-dd``; a number in its column's format; none leaving the cell
-    empty."""
+def _write_true_false(cell: Any, text: TrueFalseText, value: Any, field: str) -> None:
+    """*text*'s True text for a ticked *value*, its False text for one unticked or empty,
+    into the openpyxl *cell* as text; a blank text leaves the cell empty."""
     # Imported here: only an export loads openpyxl.
     from openpyxl.utils.exceptions import IllegalCharacterError
 
+    written = text.true if value is True else text.false
+    if written.strip() == "":
+        return
+    what = f"The True/False text of {field}"
+    _refuse_long_text(written, what, "the Export's settings")
+    try:
+        cell.value = written
+    except IllegalCharacterError:
+        raise ExportRefusedError(
+            f"{what} holds a character Excel cannot hold in a cell, such as a control "
+            "character: take it out of the Export's settings."
+        ) from None
+    cell.data_type = "s"
+
+
+def _write(
+    cell: Any,
+    column: SchemaColumn,
+    value: Any,
+    field: str,
+    true_false: TrueFalseText | None = None,
+) -> None:
+    """*value*, of *column*'s type, into the openpyxl *cell*: text held as text, so neither a
+    leading ``=`` nor an error value is read; a whole number Excel cannot hold exactly (past
+    2**53, as its numbers are doubles) written as its digits, as text, so none is lost; a
+    date shown ``yyyy-mm-dd``; a number in its column's format; a True/false value given
+    *true_false* that text (:func:`_write_true_false`), even when it is none; none else
+    leaving the cell empty."""
+    # Imported here: only an export loads openpyxl.
+    from openpyxl.utils.exceptions import IllegalCharacterError
+
+    if true_false is not None and column.type == "bool":
+        _write_true_false(cell, true_false, value, field)
+        return
     if value is None:
         return
     if column.type == "int" and abs(value) > MAX_SAFE_INTEGER:
@@ -452,7 +503,13 @@ def cells_workbook(
             raise AssertionError(f"{cell!r} has a problem cells_problems names")
         column_number, row = address
         field = f"{cell.table}.{cell.column}"
-        _write(sheet.cell(row=row, column=column_number), found[1], value_of(cell), field)
+        _write(
+            sheet.cell(row=row, column=column_number),
+            found[1],
+            value_of(cell),
+            field,
+            cell.true_false,
+        )
         if cell.label_cell.strip() == "":
             continue
         label_address = cell_address(cell.label_cell)
@@ -483,7 +540,7 @@ def cells_workbook(
         for values in rows:
             for offset, (column, value) in enumerate(zip(columns, values, strict=True)):
                 at = sheet.cell(row=row, column=first + offset)
-                _write(at, column, value, f"{table.name}.{column.name}")
+                _write(at, column, value, f"{table.name}.{column.name}", block.true_false)
             row += 1
     buffer = io.BytesIO()
     workbook.save(buffer)

@@ -10100,6 +10100,17 @@
         "table": {
           "title": "Table",
           "type": "string"
+        },
+        "true_false": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrueFalseText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -10107,7 +10118,8 @@
         "columns",
         "sheet",
         "cell",
-        "header"
+        "header",
+        "true_false"
       ],
       "title": "ExportBlock",
       "type": "object"
@@ -10135,6 +10147,17 @@
         "table": {
           "title": "Table",
           "type": "string"
+        },
+        "true_false": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrueFalseText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -10142,7 +10165,8 @@
         "column",
         "sheet",
         "cell",
-        "label_cell"
+        "label_cell",
+        "true_false"
       ],
       "title": "ExportCell",
       "type": "object"
@@ -27327,6 +27351,26 @@
         }
       },
       "title": "TransformConfig",
+      "type": "object"
+    },
+    "TrueFalseText": {
+      "additionalProperties": false,
+      "description": "What an Excel workbook of cells writes for a True/false column in place of Excel's\nTRUE and FALSE: ``true`` for a ticked box, ``false`` for one unticked or empty, each as\ntext, a blank one leaving the cell empty.",
+      "properties": {
+        "false": {
+          "title": "False",
+          "type": "string"
+        },
+        "true": {
+          "title": "True",
+          "type": "string"
+        }
+      },
+      "required": [
+        "true",
+        "false"
+      ],
+      "title": "TrueFalseText",
       "type": "object"
     },
     "TuningReportPayload": {

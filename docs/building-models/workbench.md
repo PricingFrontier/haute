@@ -465,7 +465,11 @@ a sheet per table.
   label. Sheets are made in the order the rows first name them. Each cell holds the
   field's value as the sheets hold it: numbers stay numbers in the field's number format,
   dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
-  `=`. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
+  `=`. Under a True/false field, **True/False** chooses what its tick writes instead:
+  **X / blank**, **blank / X** (an X when the box is not ticked, for a "not provided" box),
+  **Yes / No**, or **Custom**, a **True** and a **False** text of your own. A box that is
+  empty, such as one on a hidden cover, writes the False text. A blank text leaves the cell
+  empty. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
   written as its digits, as text, so none is lost. A field that holds nothing, or that only the underwriter app sets, leaves its cell
   empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
   name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
@@ -473,7 +477,8 @@ a sheet per table.
   quote. Pick a table under **Add a table**: it goes at `A1` of a sheet named after it.
   Set its **Sheet**, its **Cell**, the top-left corner it starts from, and its
   **Header**: the columns' **Labels**, their **Names**, or **None**, which starts the rows
-  at that cell. Pick its columns under **Add a column**, the index among them, and drag
+  at that cell. A table with a True/false column has a **True/False** too, as a cell's,
+  for every True/false column it writes. Pick its columns under **Add a column**, the index among them, and drag
   them, or use Alt+Up and Alt+Down, into the order they go in, left to right. A table of
   many rows writes the rows the quote has (a table with a row for each value, every
   value's row), each output beside the inputs of its row; a one-row table writes its one

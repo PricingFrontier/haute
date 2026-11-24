@@ -29,6 +29,7 @@ import type {
   HttpImport,
   SqlImport,
   Theme,
+  TrueFalseText,
 } from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
@@ -2132,7 +2133,7 @@ export function addExportCell(spec: FormSpec, id: string, field: FieldRef): Form
   const cell = (last === undefined ? null : nextCellAddress(last.cell)) ?? "A1"
   const label_cell = (last === undefined ? null : nextCellAddress(last.label_cell)) ?? ""
   return edit(spec, (draft) => {
-    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell, label_cell })
+    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell, label_cell, true_false: null })
   })
 }
 
@@ -2142,12 +2143,36 @@ function cellAt(target: ExcelCellsExport, id: string, index: number): ExportCell
   return cell
 }
 
-/** The column an Export's cell writes. */
+/** The column an Export's cell writes; its True/False text taken away while that column is not True/false. */
 export function setExportCellColumn(spec: FormSpec, id: string, index: number, field: FieldRef): FormSpec {
   const cell = cellAt(cellsExportOf(spec, id), id, index)
   if (cell.table === field.table && cell.column === field.column) return spec
+  const keepsText = fieldColumn(spec, field)?.column.type === "bool"
   return edit(spec, (draft) => {
-    Object.assign(cellAt(cellsExportOf(draft, id), id, index), { table: field.table, column: field.column })
+    Object.assign(cellAt(cellsExportOf(draft, id), id, index), { table: field.table, column: field.column, ...(keepsText ? {} : { true_false: null }) })
+  })
+}
+
+/** What a True/false column is written as in place of TRUE and FALSE, by name: Excel's own (null), X / blank, blank / X, or Yes / No. */
+export const TRUE_FALSE_PRESETS: ReadonlyArray<{ value: string; label: string; text: TrueFalseText | null }> = [
+  { value: "excel", label: "TRUE / FALSE", text: null },
+  { value: "x", label: "X / blank", text: { true: "X", false: "" } },
+  { value: "blank_x", label: "blank / X", text: { true: "", false: "X" } },
+  { value: "yes_no", label: "Yes / No", text: { true: "Yes", false: "No" } },
+]
+
+const sameTrueFalse = (a: TrueFalseText | null, b: TrueFalseText | null): boolean => (a === null || b === null ? a === b : a.true === b.true && a.false === b.false)
+
+/** The preset a True/False text is, by its `value`; null for a text of its own. */
+export function trueFalsePreset(text: TrueFalseText | null): string | null {
+  return TRUE_FALSE_PRESETS.find((preset) => sameTrueFalse(preset.text, text))?.value ?? null
+}
+
+/** The text an Export's cell writes for a True/false column, null for TRUE and FALSE; the form as given while it holds that text. */
+export function setExportCellTrueFalse(spec: FormSpec, id: string, index: number, text: TrueFalseText | null): FormSpec {
+  if (sameTrueFalse(cellAt(cellsExportOf(spec, id), id, index).true_false, text)) return spec
+  return edit(spec, (draft) => {
+    cellAt(cellsExportOf(draft, id), id, index).true_false = text === null ? null : { ...text }
   })
 }
 
@@ -2175,7 +2200,7 @@ export type ExportHeader = ExportBlock["header"]
 /** Add a block of a table to an Export's workbook of cells: no columns yet, headed by their labels, at `A1` of a sheet named by the table. */
 export const addExportBlock = (spec: FormSpec, id: string, table: string): FormSpec =>
   edit(spec, (draft) => {
-    cellsExportOf(draft, id).blocks.push({ table, columns: [], sheet: table, cell: "A1", header: "labels" })
+    cellsExportOf(draft, id).blocks.push({ table, columns: [], sheet: table, cell: "A1", header: "labels", true_false: null })
   })
 
 function blockAt(target: ExcelCellsExport, id: string, index: number): ExportBlock {
@@ -2191,6 +2216,14 @@ export function updateExportBlock(spec: FormSpec, id: string, index: number, pat
   if (keys.every((key) => patch[key] === undefined || patch[key] === block[key])) return spec
   return edit(spec, (draft) => {
     Object.assign(blockAt(cellsExportOf(draft, id), id, index), patch)
+  })
+}
+
+/** The text an Export's block writes for each of its True/false columns, null for TRUE and FALSE; the form as given while it holds that text. */
+export function setExportBlockTrueFalse(spec: FormSpec, id: string, index: number, text: TrueFalseText | null): FormSpec {
+  if (sameTrueFalse(blockAt(cellsExportOf(spec, id), id, index).true_false, text)) return spec
+  return edit(spec, (draft) => {
+    blockAt(cellsExportOf(draft, id), id, index).true_false = text === null ? null : { ...text }
   })
 }
 
@@ -2604,15 +2637,28 @@ function blockColumnProblems(spec: FormSpec, block: ExportBlock): string[] {
   })
 }
 
+/** True/False text on a block none of whose columns is True/false, while it has columns the schema holds (the server's `_block_true_false_problems`). */
+function blockTrueFalseProblems(spec: FormSpec, block: ExportBlock): string[] {
+  if (block.true_false === null || block.columns.length === 0) return []
+  const table = spec.schema.tables.find((held) => held.name === block.table)
+  if (table === undefined) return []
+  const shown = new Map(sheetColumns(table).map((column) => [column.name, column]))
+  const columns = block.columns.map((name) => shown.get(name))
+  if (columns.some((column) => column === undefined) || columns.some((column) => column?.type === "bool")) return []
+  return [`writes the table ${block.table} with True/False text, but none of its columns is True/false`]
+}
+
 /**
  * What stops an Excel workbook of cells being written, worded as the server's
  * `cells_problems` words it, each once in its order: the file name's problems, no cells or
  * blocks, and each cell's: a column no longer in the schema or of a many-row table, a sheet
  * with no name, one Excel refuses or one named as another in another case, an address that
- * is not a cell, and a cell already written; then its label's, while its label's address is
+ * is not a cell, and a cell already written, True/False text on a column the schema holds
+ * that is not True/false coming after its column's own; then its label's, while its label's address is
  * not blank: one that is not a cell, and a cell already written. A cell already written is
  * one any value or label before it on its sheet took. Then each block's: its table's and its
- * columns' (`blockColumnProblems`), its sheet's, an address that is not a cell, its columns
+ * columns' (`blockColumnProblems`), True/False text where none of its columns is True/false
+ * (`blockTrueFalseProblems`), its sheet's, an address that is not a cell, its columns
  * past XFD, and the first value or label, else the first block, it lies over, a block
  * taking its columns from its top-left cell's row to the sheet's last.
  */
@@ -2628,6 +2674,7 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
     const field = `${cell.table}.${cell.column}`
     if (found === null) problems.push(`writes ${field}, which is no longer in the schema`)
     else if (found.table.rows === "many") problems.push(`writes ${field}, a column of a many-row table`)
+    if (found !== null && cell.true_false !== null && found.column.type !== "bool") problems.push(`writes ${field} with True/False text, but it is not a True/false column`)
     problems.push(...sheetProblems(cell.sheet, sheets))
     if (cellAddress(cell.cell) === null) problems.push(`writes to "${cell.cell}" on "${cell.sheet}", which is not a cell like B3`)
     else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.cell}`)) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
@@ -2640,7 +2687,7 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
   // The blocks placed, each by its sheet in lower case, its first and last column.
   const placed: { sheet: string; first: number; last: number; block: ExportBlock }[] = []
   for (const block of target.blocks) {
-    problems.push(...blockColumnProblems(spec, block), ...sheetProblems(block.sheet, sheets))
+    problems.push(...blockColumnProblems(spec, block), ...blockTrueFalseProblems(spec, block), ...sheetProblems(block.sheet, sheets))
     const address = cellAddress(block.cell)
     if (address === null) {
       problems.push(`writes the table ${block.table} to "${block.cell}" on "${block.sheet}", which is not a cell like B3`)

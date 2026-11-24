@@ -1378,8 +1378,8 @@ describe("PropertiesPanel", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:year" } })
     expect(screen.getByRole("combobox", { name: "Add a cell" })).toHaveValue("")
     expect(cells()).toEqual([
-      { table: "policy", column: "state", sheet: "Sheet1", cell: "A1", label_cell: "" },
-      { table: "policy", column: "year", sheet: "Sheet1", cell: "A2", label_cell: "" },
+      { table: "policy", column: "state", sheet: "Sheet1", cell: "A1", label_cell: "", true_false: null },
+      { table: "policy", column: "year", sheet: "Sheet1", cell: "A2", label_cell: "", true_false: null },
     ])
     expect(screen.getByText("2 written")).toBeInTheDocument()
 
@@ -1388,19 +1388,19 @@ describe("PropertiesPanel", () => {
     commit("Cell 2 label address", " a7 ")
     fireEvent.change(screen.getByRole("combobox", { name: "Cell 1 field" }), { target: { value: "policy:year" } })
     expect(cells()).toEqual([
-      { table: "policy", column: "year", sheet: "Slip", cell: "A1", label_cell: "" },
-      { table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7" },
+      { table: "policy", column: "year", sheet: "Slip", cell: "A1", label_cell: "", true_false: null },
+      { table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7", true_false: null },
     ])
     expect(screen.getByRole("textbox", { name: "Cell 2 address" })).toHaveValue("B7")
     expect(screen.getByRole("textbox", { name: "Cell 2 label address" })).toHaveValue("A7")
 
     // The next cell goes under the last, its label under the last's label.
     fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:state" } })
-    expect(cells()[2]).toEqual({ table: "policy", column: "state", sheet: "Sheet1", cell: "B8", label_cell: "A8" })
+    expect(cells()[2]).toEqual({ table: "policy", column: "state", sheet: "Sheet1", cell: "B8", label_cell: "A8", true_false: null })
     fireEvent.click(screen.getByRole("button", { name: "Remove cell 3" }))
 
     fireEvent.click(screen.getByRole("button", { name: "Remove cell 1" }))
-    expect(cells()).toEqual([{ table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7" }])
+    expect(cells()).toEqual([{ table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7", true_false: null }])
 
     // A cell whose column is gone, or of a many-row table, shows it first, disabled.
     act(() => useWorkbenchFormStore.getState().change((spec) => setExportCellColumn(spec, "w_out", 0, { table: "policy", column: "gone" })))
@@ -1436,7 +1436,7 @@ describe("PropertiesPanel", () => {
     expect(choices(add)).toEqual([["", "Add a table"], ["policy", "policy"], ["equipment", "equipment"], ["premiums", "premiums"]])
     fireEvent.change(add, { target: { value: "equipment" } })
     expect(screen.getByRole("combobox", { name: "Add a table" })).toHaveValue("")
-    expect(blocks()).toEqual([{ table: "equipment", columns: [], sheet: "equipment", cell: "A1", header: "labels" }])
+    expect(blocks()).toEqual([{ table: "equipment", columns: [], sheet: "equipment", cell: "A1", header: "labels", true_false: null }])
     expect(screen.getByText("1 written")).toBeInTheDocument()
 
     commit("Table 1 sheet", "Slip")
@@ -1474,6 +1474,67 @@ describe("PropertiesPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove table 1" }))
     expect(blocks()).toEqual([])
     expect(screen.queryByRole("combobox", { name: "Table 1 header" })).not.toBeInTheDocument()
+  })
+
+  it("writes a tick's True/False text, a preset or its own, under a True/false cell and under a block writing a tick", () => {
+    const form = sheetForm()
+    form.schema.tables[0].inputs.push(column("sprinklered", { type: "bool" }))
+    form.schema.tables[1].inputs.push(column("insured", { type: "bool" }))
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    loadForm(form)
+    select("w_out")
+    render(<PropertiesPanel />)
+    const target = () => (findWidget(currentForm(), "w_out")!.widget as ExportWidget).target as ExcelCellsExport
+    const commit = (name: string, value: string) => {
+      const field = screen.getByRole("textbox", { name })
+      fireEvent.change(field, { target: { value } })
+      fireEvent.blur(field)
+    }
+
+    fireEvent.click(screen.getByRole("radio", { name: "Excel" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Layout" }), { target: { value: "cells" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:state" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:sprinklered" } })
+    // Only a tick's cell has a True/False, Excel's own TRUE and FALSE to start.
+    expect(screen.queryByRole("combobox", { name: "Cell 1 True/False" })).not.toBeInTheDocument()
+    const preset = () => screen.getByRole("combobox", { name: "Cell 2 True/False" })
+    expect(preset()).toHaveValue("excel")
+    expect(choices(preset())).toEqual([
+      ["excel", "TRUE / FALSE"],
+      ["x", "X / blank"],
+      ["blank_x", "blank / X"],
+      ["yes_no", "Yes / No"],
+      ["custom", "Custom"],
+    ])
+    fireEvent.change(preset(), { target: { value: "blank_x" } })
+    expect(target().cells[1].true_false).toEqual({ true: "", false: "X" })
+    expect(screen.queryByRole("textbox", { name: "Cell 2 True text" })).not.toBeInTheDocument()
+
+    // Custom shows the two texts, each committed on blur.
+    fireEvent.change(preset(), { target: { value: "custom" } })
+    expect(preset()).toHaveValue("custom")
+    commit("Cell 2 True text", "Covered")
+    commit("Cell 2 False text", "Not covered")
+    expect(target().cells[1].true_false).toEqual({ true: "Covered", false: "Not covered" })
+    fireEvent.change(preset(), { target: { value: "excel" } })
+    expect(target().cells[1].true_false).toBeNull()
+
+    // A field that is not a tick takes the text away, and its True/False with it.
+    fireEvent.change(preset(), { target: { value: "yes_no" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Cell 2 field" }), { target: { value: "policy:year" } })
+    expect(target().cells[1].true_false).toBeNull()
+    expect(screen.queryByRole("combobox", { name: "Cell 2 True/False" })).not.toBeInTheDocument()
+
+    // A block has one once it writes a tick, for every tick it writes.
+    fireEvent.change(screen.getByRole("combobox", { name: "Add a table" }), { target: { value: "equipment" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Table 1 add a column" }), { target: { value: "item" } })
+    expect(screen.queryByRole("combobox", { name: "Table 1 True/False" })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByRole("combobox", { name: "Table 1 add a column" }), { target: { value: "insured" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Table 1 True/False" }), { target: { value: "x" } })
+    expect(target().blocks[0].true_false).toEqual({ true: "X", false: "" })
+    // Text a block keeps once it writes no tick still shows, so it can be taken away.
+    fireEvent.click(screen.getByRole("button", { name: "Remove Insured from table 1" }))
+    expect(screen.getByRole("combobox", { name: "Table 1 True/False" })).toHaveValue("x")
   })
 
   it("shows another section's panel as it is selected, and closes as a component is", () => {

@@ -966,8 +966,8 @@ describe("SchemaEditor", () => {
     const cells: ExcelCellsExport = {
       format: "excel_cells",
       file_name: "slip",
-      cells: [{ table: "policy_details", column: "state", sheet: "Slip", cell: "B3", label_cell: "" }],
-      blocks: [{ table: "layers", columns: ["limit"], sheet: "Slip", cell: "A12", header: "labels" }],
+      cells: [{ table: "policy_details", column: "state", sheet: "Slip", cell: "B3", label_cell: "", true_false: null }],
+      blocks: [{ table: "layers", columns: ["limit"], sheet: "Slip", cell: "A12", header: "labels", true_false: null }],
     }
     used.pages[0].sections[0].widgets = [
       { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }, used), id: "w_in", table: "policy_details" },

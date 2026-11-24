@@ -1508,7 +1508,11 @@ Out of scope:
   a select of the columns of the one-row tables, by table, each by its label (as a
   Collection's fields are offered), the sheet's name, the cell's address and its label's
   address, each in a text field committed on blur or Enter, each address trimmed and taken
-  in capitals, and a cross that takes the cell away; a
+  in capitals, and a cross that takes the cell away, and, under a cell whose column is
+  True/false or which holds True/False text, True/False: a select of TRUE / FALSE (Excel's
+  own), X / blank, blank / X, Yes / No and Custom, Custom showing a True and a False text
+  field committed on blur or Enter, a cell given a column that is not True/false losing its
+  text; a
   cell whose column is no longer in the schema, or no longer of a one-row table, shows it
   first, as "Missing column" or the column's label, disabled. Under them Add a cell, a
   select of the same columns, a column chosen adding a cell of it on the last cell's sheet
@@ -1517,7 +1521,8 @@ Out of scope:
   showing Add a cell again. Then Tables: for each block in order, its table's name, or
   "Missing table", with a cross that takes the block away; its Sheet and its Cell, the
   address of its top-left corner, in text fields as a cell's are; its Header, a select of
-  Labels, Names or None; its columns in order, each by its label, or "Missing column",
+  Labels, Names or None; while one of its columns is True/false or it holds True/False text,
+  its True/False, as a cell's, for every True/false column it writes; its columns in order, each by its label, or "Missing column",
   with a cross that takes it out, dragged or moved with Alt+Up and Alt+Down into a new
   order; and Add a column, a select of its table's columns as a sheet shows them (the
   index among them) that it does not hold yet. Under them Add a table, a select of the
@@ -1851,7 +1856,9 @@ Out of scope:
   `quote_details`, held whole; an output as priced; and nothing for one holding no value
   or one only the app sets, which Preview's sample holds none of (the quote's reference
   and option are Preview's stand-in, `PREVIEW` and 1). A number
-  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, and text is always
+  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, or, where its cell
+  or block gives True/False text, that text, as text: the True text for a ticked box and the
+  False text for one unticked or empty, a blank text leaving the cell empty; and text is always
   text, never read as a formula or an error value, whatever it starts with; a whole number
   past 2^53, which Excel cannot hold exactly as a number, is written as its digits, as text,
   so no digit is lost. A cell's label cell holds its column's label as the sheets label

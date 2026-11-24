@@ -691,6 +691,15 @@ class ExcelExport(_FileExport):
     format: Literal["excel"]
 
 
+class TrueFalseText(_Strict):
+    """What an Excel workbook of cells writes for a True/false column in place of Excel's
+    TRUE and FALSE: ``true`` for a ticked box, ``false`` for one unticked or empty, each as
+    text, a blank one leaving the cell empty."""
+
+    true: str
+    false: str
+
+
 class ExportCell(_Strict):
     """A cell an Excel workbook of cells holds: the value of a one-row table's column, by
     ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
@@ -704,6 +713,8 @@ class ExportCell(_Strict):
     cell: str
     #: Where the column's label is written, an address such as ``A3``; blank for none.
     label_cell: str
+    #: The text a True/false column is written as; None for TRUE and FALSE.
+    true_false: TrueFalseText | None = None
 
 
 class ExportBlock(_Strict):
@@ -720,6 +731,8 @@ class ExportBlock(_Strict):
     sheet: str
     cell: str
     header: ExportHeader
+    #: The text each of its True/false columns is written as; None for TRUE and FALSE.
+    true_false: TrueFalseText | None = None
 
 
 class ExcelCellsExport(_Strict):

@@ -1989,6 +1989,29 @@ def test_an_export_of_cells_writes_each_cell_s_column_by_name_and_reads_it_back(
     assert form_files(document.spec, form_folder(project)) == files
 
 
+def test_an_export_of_cells_keeps_true_false_text_and_leaves_it_out_while_it_has_none(
+    project: Path,
+) -> None:
+    form = _cells_form()
+    target = widget_of(form, EXPORTER)["target"]
+    target["cells"][1]["true_false"] = {"true": "X", "false": ""}
+    target["blocks"][0]["true_false"] = {"true": "Yes", "false": "No"}
+    files = write_form(project, form)
+
+    written = json.loads(files["components/export.json"])["target"]
+    assert [cell.get("true_false") for cell in written["cells"]] == [
+        None,
+        {"true": "X", "false": ""},
+        None,
+    ]
+    # Left out of the file while a cell or a block has none.
+    assert ["true_false" in cell for cell in written["cells"]] == [False, True, False]
+    assert written["blocks"][0]["true_false"] == {"true": "Yes", "false": "No"}
+    document = read_form_document(config(project))
+    assert document.spec == spec_of(form)
+    assert form_files(document.spec, form_folder(project)) == files
+
+
 def test_an_export_of_cells_keeps_a_column_the_schema_does_not_hold_and_names_it(
     project: Path,
 ) -> None:

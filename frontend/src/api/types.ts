@@ -206,6 +206,7 @@ export type {
   SqlImport,
   TableInputWidget,
   Theme,
+  TrueFalseText,
   WorkbenchAppEditing,
   WorkbenchAppEditingResponse,
   WorkbenchAppFormResponse,

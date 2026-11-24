@@ -1,7 +1,7 @@
 /** An Export's panel (specs/workbench). */
 import { GripVertical, X } from "lucide-react"
-import type { KeyboardEvent } from "react"
-import type { CsvExport, ExcelCellsExport, ExportBlock, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import { useState, type KeyboardEvent } from "react"
+import type { CsvExport, ExcelCellsExport, ExportBlock, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable, TrueFalseText } from "../../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow } from "../../components/form"
 import useListReorder from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove } from "../../hooks/useRefocusAfterMove"
@@ -22,15 +22,19 @@ import {
   removeExportBlock,
   removeExportCell,
   setExcelLayout,
+  setExportBlockTrueFalse,
   setExportCellColumn,
+  setExportCellTrueFalse,
   setExportFormat,
   toggleExportTable,
+  trueFalsePreset,
   updateExportBlock,
   updateExportCell,
   updateExportTarget,
   type ExcelLayout,
   type ExportHeader,
   EXPORT_FORMATS,
+  TRUE_FALSE_PRESETS,
 } from "../../utils/workbenchForm"
 import { ButtonPanes, FormatToggle } from "./ButtonPanes"
 import { Section } from "./Section"
@@ -63,6 +67,9 @@ const EXCEL_LAYOUTS: ReadonlyArray<{ value: ExcelLayout; label: string }> = [
 ]
 
 const REMOVE_CLASS = "icon-danger-btn focus-ring shrink-0 rounded p-0.5"
+
+const CUSTOM = "custom"
+const TRUE_FALSE_CHOICES: ReadonlyArray<{ value: string; label: string }> = [...TRUE_FALSE_PRESETS.map(({ value, label }) => ({ value, label })), { value: CUSTOM, label: "Custom" }]
 
 const columnLabel = (column: SchemaColumn): string => column.label || readableName(column.name)
 
@@ -153,8 +160,9 @@ function ColumnOptions({ tables }: { tables: readonly SchemaTable[] }) {
 
 /**
  * A workbook of cells' Cells: under a heading row, a row for each cell, its column, its
- * sheet, its address and its label's address, and a cross; then Add a cell, a select of
- * the columns a cell can be given, held at its first option.
+ * sheet, its address and its label's address, and a cross, under a tick's its True/False
+ * (`TrueFalseSetting`); then Add a cell, a select of the columns a cell can be given, held
+ * at its first option.
  */
 function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportWidget; target: ExcelCellsExport }) {
   const change = useWorkbenchFormStore((s) => s.change)
@@ -211,55 +219,97 @@ function CellRow({
   const found = fieldColumn(form, cell)
   const number = index + 1
   return (
-    <div className="flex items-center gap-1.5">
-      <select
-        aria-label={`Cell ${number} field`}
-        value={key}
-        onChange={(event) => {
-          const field = choices.get(event.target.value)
-          if (field !== undefined) change((spec) => setExportCellColumn(spec, widget.id, index, field))
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <select
+          aria-label={`Cell ${number} field`}
+          value={key}
+          onChange={(event) => {
+            const field = choices.get(event.target.value)
+            if (field !== undefined) change((spec) => setExportCellColumn(spec, widget.id, index, field))
+          }}
+          className={`${FIELD_CLASS} min-w-0 flex-1`}
+          style={INPUT_STYLE}
+        >
+          {!choices.has(key) && (
+            <option value={key} disabled>
+              {found === null ? "Missing column" : columnLabel(found.column)}
+            </option>
+          )}
+          <ColumnOptions tables={tables} />
+        </select>
+        <CommittedTextField
+          aria-label={`Cell ${number} sheet`}
+          value={cell.sheet}
+          onCommit={(sheet) => change((spec) => updateExportCell(spec, widget.id, index, { sheet }))}
+          className={`${FIELD_CLASS} w-20 shrink-0`}
+          style={INPUT_STYLE}
+        />
+        <CommittedTextField
+          aria-label={`Cell ${number} address`}
+          value={cell.cell}
+          onCommit={(address) => change((spec) => updateExportCell(spec, widget.id, index, { cell: address.trim().toUpperCase() }))}
+          className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
+          style={INPUT_STYLE}
+        />
+        <CommittedTextField
+          aria-label={`Cell ${number} label address`}
+          value={cell.label_cell}
+          onCommit={(address) => change((spec) => updateExportCell(spec, widget.id, index, { label_cell: address.trim().toUpperCase() }))}
+          className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
+          style={INPUT_STYLE}
+        />
+        <button type="button" onClick={() => change((spec) => removeExportCell(spec, widget.id, index))} aria-label={`Remove cell ${number}`} className={REMOVE_CLASS}>
+          <X size={12} aria-hidden="true" />
+        </button>
+      </div>
+      {(found?.column.type === "bool" || cell.true_false !== null) && (
+        // Keyed by what the cell is, so its Custom stays with it when a cell above is taken away.
+        <TrueFalseSetting key={`${cell.table}.${cell.column}@${cell.sheet}!${cell.cell}`} name={`Cell ${number}`} text={cell.true_false} onChange={(text) => change((spec) => setExportCellTrueFalse(spec, widget.id, index, text))} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * What a tick writes in place of TRUE and FALSE: True/False, a select of `TRUE_FALSE_PRESETS`
+ * and Custom, Custom, or a text that is none of them, showing a True and a False text field.
+ */
+function TrueFalseSetting({ name, text, onChange }: { name: string; text: TrueFalseText | null; onChange: (text: TrueFalseText | null) => void }) {
+  const [custom, setCustom] = useState(false)
+  const preset = trueFalsePreset(text)
+  const shown = custom || preset === null ? CUSTOM : preset
+  return (
+    <div className="flex flex-col gap-1 pl-2">
+      <SelectRow
+        label="True/False"
+        name={`${name} True/False`}
+        value={shown}
+        choices={TRUE_FALSE_CHOICES}
+        onChange={(value) => {
+          setCustom(value === CUSTOM)
+          const chosen = TRUE_FALSE_PRESETS.find((held) => held.value === value)
+          if (chosen !== undefined) onChange(chosen.text)
         }}
-        className={`${FIELD_CLASS} min-w-0 flex-1`}
-        style={INPUT_STYLE}
-      >
-        {!choices.has(key) && (
-          <option value={key} disabled>
-            {found === null ? "Missing column" : columnLabel(found.column)}
-          </option>
-        )}
-        <ColumnOptions tables={tables} />
-      </select>
-      <CommittedTextField
-        aria-label={`Cell ${number} sheet`}
-        value={cell.sheet}
-        onCommit={(sheet) => change((spec) => updateExportCell(spec, widget.id, index, { sheet }))}
-        className={`${FIELD_CLASS} w-20 shrink-0`}
-        style={INPUT_STYLE}
       />
-      <CommittedTextField
-        aria-label={`Cell ${number} address`}
-        value={cell.cell}
-        onCommit={(address) => change((spec) => updateExportCell(spec, widget.id, index, { cell: address.trim().toUpperCase() }))}
-        className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
-        style={INPUT_STYLE}
-      />
-      <CommittedTextField
-        aria-label={`Cell ${number} label address`}
-        value={cell.label_cell}
-        onCommit={(address) => change((spec) => updateExportCell(spec, widget.id, index, { label_cell: address.trim().toUpperCase() }))}
-        className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
-        style={INPUT_STYLE}
-      />
-      <button type="button" onClick={() => change((spec) => removeExportCell(spec, widget.id, index))} aria-label={`Remove cell ${number}`} className={REMOVE_CLASS}>
-        <X size={12} aria-hidden="true" />
-      </button>
+      {shown === CUSTOM && (
+        <>
+          <LabelledRow label="True">
+            <CommittedTextField aria-label={`${name} True text`} value={text?.true ?? ""} onCommit={(written) => onChange({ true: written, false: text?.false ?? "" })} className={`${FIELD_CLASS} min-w-0 flex-1`} style={INPUT_STYLE} />
+          </LabelledRow>
+          <LabelledRow label="False">
+            <CommittedTextField aria-label={`${name} False text`} value={text?.false ?? ""} onCommit={(written) => onChange({ true: text?.true ?? "", false: written })} className={`${FIELD_CLASS} min-w-0 flex-1`} style={INPUT_STYLE} />
+          </LabelledRow>
+        </>
+      )}
     </div>
   )
 }
 
 /**
  * A workbook of cells' Tables: under a heading row, each block, its table's name or Missing
- * table, its sheet, its top-left cell's address, its header and a cross; then its columns
+ * table, its sheet, its top-left cell's address, its header and a cross, its True/False
+ * while it writes a tick or holds text; then its columns
  * and Add a column (`BlockColumns`); and under them Add a table, a select of the tables a
  * sheet shows columns of, held at its first option.
  */
@@ -303,7 +353,10 @@ function ExportBlocks({ form, widget, target }: { form: FormSpec; widget: Export
 
 function BlockRow({ form, widget, block, index }: { form: FormSpec; widget: ExportWidget; block: ExportBlock; index: number }) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const missing = !form.schema.tables.some((table) => table.name === block.table)
+  const table = form.schema.tables.find((held) => held.name === block.table)
+  const missing = table === undefined
+  // It writes a tick: one of its columns is True/false.
+  const ticks = table !== undefined && sheetColumns(table).some((column) => column.type === "bool" && block.columns.includes(column.name))
   const number = index + 1
   const set = (patch: Parameters<typeof updateExportBlock>[3]) => change((spec) => updateExportBlock(spec, widget.id, index, patch))
   return (
@@ -337,6 +390,9 @@ function BlockRow({ form, widget, block, index }: { form: FormSpec; widget: Expo
           <X size={12} aria-hidden="true" />
         </button>
       </div>
+      {(ticks || block.true_false !== null) && (
+        <TrueFalseSetting key={`${block.table}@${block.sheet}!${block.cell}`} name={`Table ${number}`} text={block.true_false} onChange={(text) => change((spec) => setExportBlockTrueFalse(spec, widget.id, index, text))} />
+      )}
       <BlockColumns form={form} widget={widget} block={block} index={index} />
     </div>
   )

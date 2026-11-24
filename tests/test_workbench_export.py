@@ -967,6 +967,135 @@ def test_a_label_longer_than_a_cell_holds_is_refused_naming_it() -> None:
     assert refused.value.message.startswith("The label of policy.note is 32,768 characters long")
 
 
+X_OR_BLANK = {"true": "X", "false": ""}
+BLANK_OR_X = {"true": "", "false": "X"}
+YES_OR_NO = {"true": "Yes", "false": "No"}
+
+
+def ticked(field: str, sheet: str, address: str, text: dict[str, str] | None) -> dict[str, Any]:
+    """A cell of *field* writing *text* for its tick; None for TRUE and FALSE."""
+    return {**cell(field, sheet, address), "true_false": text}
+
+
+def with_ticks(form: dict[str, Any]) -> dict[str, Any]:
+    """*form* with two more ticks on the policy: one typed unticked, and one empty, which the
+    sheets hide beside the secret while the policy is sprinklered."""
+    inputs = form["schema"]["tables"][1]["inputs"]
+    inputs += [column("alarmed", "bool"), column("flooded", "bool")]
+    form["sample"]["policy"][0]["alarmed"] = False
+    hiding = form["pages"][0]["sections"][0]["widgets"][0]
+    hiding["fields"].append({"table": "policy", "column": "flooded"})
+    return form
+
+
+def test_a_tick_with_true_false_text_writes_that_text_an_empty_box_its_false_text() -> None:
+    form = with_ticks(
+        with_cells(
+            ticked("policy.sprinklered", "Slip", "B1", X_OR_BLANK),
+            ticked("policy.sprinklered", "Slip", "B2", BLANK_OR_X),
+            ticked("policy.alarmed", "Slip", "B3", YES_OR_NO),
+            ticked("policy.flooded", "Slip", "B4", YES_OR_NO),
+            ticked("policy.flooded", "Slip", "B5", BLANK_OR_X),
+            ticked("policy.sprinklered", "Slip", "B6", None),
+            ticked("policy.flooded", "Slip", "B7", None),
+        )
+    )
+
+    _, data = export(form)
+
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    # The text as text; a blank one, and an empty box with no text, an empty cell; an empty
+    # box with text its False text; a tick with none TRUE or FALSE, as Excel writes one.
+    assert [(slip[f"B{row}"].value, slip[f"B{row}"].data_type) for row in range(1, 8)] == [
+        ("X", "s"),
+        (None, "n"),
+        ("No", "s"),
+        ("No", "s"),
+        ("X", "s"),
+        (True, "b"),
+        (None, "n"),
+    ]
+
+
+def test_a_block_s_true_false_text_writes_each_of_its_ticks_and_leaves_its_other_columns() -> None:
+    form = with_blocks(
+        {
+            **block("items", ["item", "insured_item", "value"], "Slip", "A1"),
+            "true_false": X_OR_BLANK,
+        }
+    )
+    form["schema"]["tables"][3]["inputs"].append(column("insured_item", "bool"))
+    form["sample"]["items"][0]["insured_item"] = True
+
+    _, data = export(form, ITEMS_PRICED)
+
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    assert values_of(slip, "A1:C3") == [
+        ["Item", "Insured item", "Value"],
+        [1, "X", 100],
+        [2, None, 250.5],
+    ]
+    assert slip["B2"].data_type == "s"
+
+
+@pytest.mark.parametrize(
+    ("cells", "blocks", "problem"),
+    [
+        (
+            [ticked("policy.note", "Slip", "B3", X_OR_BLANK)],
+            [],
+            "writes policy.note with True/False text, but it is not a True/false column",
+        ),
+        (
+            [],
+            [{**block("items", ["item", "value"], "Slip", "A1"), "true_false": X_OR_BLANK}],
+            "writes the table items with True/False text, but none of its columns is True/false",
+        ),
+        # A column the schema no longer holds is its own problem alone.
+        (
+            [ticked("policy.nope", "Slip", "B3", X_OR_BLANK)],
+            [],
+            "writes policy.nope, which is no longer in the schema",
+        ),
+        (
+            [],
+            [{**block("items", ["nope"], "Slip", "A1"), "true_false": X_OR_BLANK}],
+            "writes items.nope, which is no longer in the schema",
+        ),
+    ],
+)
+def test_true_false_text_where_no_tick_takes_it_is_a_problem_named_as_the_view_names_it(
+    cells: list[dict[str, Any]], blocks: list[dict[str, Any]], problem: str
+) -> None:
+    form = with_blocks(*blocks, cells=tuple(cells))
+    spec = with_quote_details(spec_of(form))
+
+    # The same words `cellsProblems` gives in the view (workbenchForm.test.ts).
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == [problem]
+
+
+def test_true_false_text_follows_its_cell_s_column_problems_and_precedes_its_sheet_s() -> None:
+    form = with_cells(ticked("policy.note", "History", "B3", X_OR_BLANK))
+    spec = with_quote_details(spec_of(form))
+
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == [
+        "writes policy.note with True/False text, but it is not a True/false column",
+        'writes to the sheet "History", which is a name Excel keeps for itself',
+    ]
+
+
+def test_true_false_text_excel_cannot_hold_is_refused_naming_the_export_s_settings() -> None:
+    form = with_cells(ticked("policy.sprinklered", "Slip", "B3", {"true": "X\x01", "false": ""}))
+
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form)
+
+    assert refused.value.message == (
+        "The True/False text of policy.sprinklered holds a character Excel cannot hold in a "
+        "cell, such as a control character: take it out of the Export's settings."
+    )
+
+
 def test_the_file_name_writes_each_character_a_file_name_cannot_hold_as_an_underscore() -> None:
     form = copy.deepcopy(FORM)
     form["sample"]["quote_details"][0]["insured"] = 'Acme/Ltd: "UK" <a|b>?*\\'
