@@ -216,12 +216,12 @@ class TestInitScaffold:
     ) -> None:
         """Existing .gitignore entries are matched line-by-line.
 
-        Substrings like ``metadata/`` or ``mlruns-old/`` must not satisfy
-        Haute's required ``/data/`` or ``mlruns/`` entries.
+        Substrings like ``profiles/`` or ``mlruns-old/`` must not satisfy
+        Haute's required ``/files/`` or ``mlruns/`` entries.
         """
         use_project(tmp_path)
         (tmp_path / ".gitignore").write_text(
-            "metadata/\nmlruns-old/\n.env.local\n",
+            "profiles/\nmlruns-old/\n.env.local\n",
             encoding="utf-8",
         )
 
@@ -229,7 +229,7 @@ class TestInitScaffold:
         assert result.exit_code == 0, result.output
 
         lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
-        assert "/data/" in lines
+        assert "/files/" in lines
         assert "mlruns/" in lines
         assert ".env" in lines
 
