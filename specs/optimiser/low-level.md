@@ -915,11 +915,13 @@ automatically.
 
 ### Artifact lifecycle (persist / validate / load / cleanup) (`src/haute/routes/_optimiser_artifacts.py`)
 
-Four artifact families, all rooted under the versioned marker-aware OS-temp hierarchy
-(`<tempdir>/haute/artifacts/v1/optimiser_apply`,
-`<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`,
-`<tempdir>/haute/artifacts/v1/optimiser_quote_analysis`,
-`<tempdir>/haute/artifacts/v1/optimiser_frontier_history`; the third is described in
+Four artifact families, all rooted under the versioned marker-aware hierarchy in
+Haute's temporary folder (`src/haute/_temp_folder.py::haute_temp_root`)
+(`<root>/artifacts/v1/optimiser_apply`,
+`<root>/artifacts/v1/optimiser_ratebook_factors`,
+`<root>/artifacts/v1/optimiser_quote_analysis`,
+`<root>/artifacts/v1/optimiser_frontier_history`, with the scratch root
+`<root>/artifacts/v1/optimiser_scratch`; the third is described in
 "Analysis-column side table and scenario grid", the fourth in "Frontier point traces (OPT-PC04)"):
 
 - **Persist** (`_persist_apply_frame_artifact`, `_persist_apply_result_artifact`,

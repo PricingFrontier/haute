@@ -36,12 +36,25 @@ collaboration and running pipelines as Databricks jobs are out of scope.
   complete environment, records the hosted trust decision before the server
   middleware is imported, and returns the normal server wrapped by the proxy
   boundary. It never silently becomes the local entry point.
-- For HTTP and WebSocket traffic, the boundary records a non-blank
+- For HTTP and WebSocket traffic, the boundary first refuses a page of another
+  site: a request that changes state (any method but `GET`, `HEAD` and `OPTIONS`)
+  or a WebSocket handshake whose `Origin` is not the app's own URL
+  (`DATABRICKS_APP_URL`) or whose `Sec-Fetch-Site` is not `same-origin` or `none` is
+  answered 403, or closed with 1008 before accept, and reaches no route. A request
+  with neither header passes. The platform's proxy signs users in and never looks
+  at Origin, so this is the hosted editor's only cross-site rule, and it holds
+  whatever the platform's sign-in cookie allows
+  ([sandbox-security](../sandbox-security/high-level.md), Trust boundary, Pages of
+  other sites).
+- The boundary then records a non-blank
   `X-Forwarded-Email` stripped of surrounding whitespace on the ASGI scope
   (treating a blank or whitespace-only header as absent), removes `Forwarded`
-  and every `X-Forwarded-*` header, and replaces `Host` with the loopback
-  authority that the server expects. Lifespan and other non-request scopes pass
-  through.
+  and every `X-Forwarded-*` header, replaces `Host` with the loopback
+  authority that the server expects, and replaces an `Origin` that is the app's own
+  URL with the loopback origin of that authority, so the local Origin checks, which
+  stay on with the session gate off, see the app's page as the local page. Any other
+  Origin is passed as sent, which those checks refuse on `/api/`. Lifespan and other
+  non-request scopes pass through.
 - The boundary alone grants no authority. If the explicit hosted trust
   decision has not disabled the local session gate, rewritten proxied traffic
   remains unauthorized. Outside the hosted entry point, local behavior is
@@ -113,6 +126,11 @@ is treated as an implicit shared data plane.
   fails at startup naming the missing variables without exposing their values.
 - Calling the hosted factory outside the complete environment fails rather than
   falling back to a local server.
+- A `DATABRICKS_APP_URL` that is not an `http` or `https` origin (a path, a query,
+  credentials) stops the hosted factory, naming the variable, before the server is
+  built: without the app's own origin no write could be told from another site's.
+- A refused cross-site request is logged with the header that decided it
+  (`origin` or `sec-fetch-site`), never the header's value.
 - Missing Databricks authentication identifies the accepted credential forms;
   incomplete service-principal credentials are rejected and no supplied value
   is echoed.

@@ -131,7 +131,7 @@ an in-place or non-atomic fallback.
 A writer killed before its rename leaves its stage, and nothing else would remove it, so a
 stage says whose it is. Its name is `<stem>.<owner><4 hex>.tmp`, where `<owner>` is the
 writing process's token (`_writer_token`): on its first atomic write a process takes an
-exclusive `FileLock` on `haute-writers/<owner>.lock` under the temporary folder and holds it
+exclusive `FileLock` on `writers/<owner>.lock` under Haute's temporary folder (`src/haute/_temp_folder.py::haute_temp_root`) and holds it
 until it exits, and the operating system frees it then, however the process ends.
 `remove_dead_writers_stages(paths)` removes a stage only once its owner's lock can be taken,
 so only when that process is gone (removing the freed lock file too); a stage an earlier version named with eight random hex digits is still a stage (never versioned, still a save's to recover) but is never removed, since whose it is cannot be told; never this process's
@@ -146,8 +146,8 @@ killed at its rename leaves nothing there after the next start, a restart straig
 crash included.
 
 A Data Output's Write holds its destination's lock from staging its copy to publishing it
-(`executor.data_output_destination_lock`, a `FileLock` under the temporary folder's
-`haute-output-locks/`, keyed by the destination's path): the route's transaction and
+(`executor.data_output_destination_lock`, a `FileLock` under Haute's temporary folder (`src/haute/_temp_folder.py::haute_temp_root`)'s
+`output-locks/`, keyed by the destination's path): the route's transaction and
 `write_data_output` take it, so a second server or a run writing the same file waits. Holding
 it, the Write removes every staged copy of that destination but its own
 (`remove_leftover_data_output_staging`, which refuses to run without the lock), whatever its
