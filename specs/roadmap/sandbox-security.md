@@ -9,47 +9,17 @@ requests the server accepts from a browser, the files it creates outside the
 project, and the pickles it agrees to load. The packages below come from the
 9 November 2026 codebase review. `SBS-03` is a risk read from the source
 whose reach depends on the host and was not confirmed; its entry says what
-would have to be true. `SBS-02` was reproduced against `HEAD` on that day.
+would have to be true.
 
 ## Priorities
 
-**Start with:** `SBS-02`
+**Start with:** `SBS-03`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SBS-02 | Planned | P2 | A pickle written under NumPy 1 loads, and a refused pickle tells the analyst what they can do. |
 | SBS-03 | Planned | P3 | Haute's files under the shared temporary folder belong to one user and are created private. |
 
 ## Planned improvements
-
-### SBS-02 — A NumPy 1 pickle loads, and a refusal is written for the analyst
-**Why:** Reproduced. The restricted unpickler allows NumPy's array
-reconstruction under the module path NumPy 2 writes, `numpy._core.multiarray`.
-A pickle written under NumPy 1 names `numpy.core.multiarray` and is refused.
-An array pickled with protocol 2 loaded as written; with the module path a
-NumPy 1 install writes it raised "Blocked unpickling of
-numpy.core.multiarray._reconstruct — not in the allowlist. If this is a
-legitimate model/data class, add its exact (module, qualname) to
-_ALLOWED_PICKLE_CLASSES in src/haute/_sandbox.py; add only vetted scaffolding
-functions to _ALLOWED_PICKLE_GLOBALS". Any Load File or model pickled before
-the move to NumPy 2 hits this, and the message tells an analyst to edit
-Haute's source, which they do not have and should not change.
-
-**Plan:** Allow the NumPy 1 module paths for exactly the functions already
-allowed under the NumPy 2 paths. Rewrite the refusal for the analyst: it
-names the file, the class it refused, and what they can do (write the file
-again from a current environment, or use Parquet for data).
-
-**Acceptance:** An array, a scalar and a dtype pickled with the NumPy 1
-module paths load through `safe_unpickle`; a pickle naming a function
-outside the allowlist is still refused. The refusal's text names the file and
-does not mention Haute's source files.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_sandbox.py::_blocked_pickle_error`;
-`src/haute/_sandbox.py::_ALLOWED_PICKLE_GLOBALS`;
-`src/haute/_sandbox.py::safe_unpickle`.
 
 ### SBS-03 — Haute's temporary folders are per user and private
 **Why:** A risk read from the source; it needs a host where several users

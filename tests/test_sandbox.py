@@ -7,10 +7,13 @@ import io
 import pickle
 import sys
 import tomllib
+import warnings
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 
+import joblib
+import numpy as np
 import pytest
 from packaging.requirements import Requirement
 
@@ -18,6 +21,7 @@ from haute._project_context import ProjectContext, context_thread, project_scope
 from haute._sandbox import (
     _ALLOWED_PICKLE_CLASSES,
     _ALLOWED_PICKLE_GLOBALS,
+    _NUMPY_1_SPELLINGS,
     ArtifactVersionMismatchError,
     UnsafeCodeError,
     _resolve_allowed_global,
@@ -31,6 +35,9 @@ from haute._sandbox import (
 )
 from haute.errors import PathOutsideProjectError
 from tests._project import use_project
+
+#: The file a refusal names when a test drives the unpickler on bytes in memory.
+_SOURCE = Path("model.pkl")
 
 
 class TestSafeGlobals:
@@ -193,7 +200,7 @@ class TestSafeUnpickle:
             b"\x8c\necho pwned\x94\x85\x94R\x94."
         )
         f.write_bytes(payload)
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_unpickle(str(f))
 
     @pytest.mark.parametrize(
@@ -210,7 +217,8 @@ class TestSafeUnpickle:
         f = tmp_path / "model.pkl"
         f.write_bytes(pickle.dumps(model))
         with pytest.raises(
-            pickle.UnpicklingError, match=rf"Blocked unpickling of {module}\.{name} "
+            pickle.UnpicklingError,
+            match=rf"it refers to {module}\.{name}, which Haute does not load",
         ):
             safe_unpickle(str(f))
 
@@ -468,7 +476,7 @@ class TestSafeJoblibLoad:
                 return (os.system, ("echo pwned",))
 
         joblib.dump(_Evil(), str(f))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_joblib_load(str(f))
 
     def test_subprocess_payload_blocked(self, tmp_path: Path):
@@ -485,7 +493,7 @@ class TestSafeJoblibLoad:
                 return (subprocess.call, (["echo", "pwned"],))
 
         joblib.dump(_Evil(), str(f))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_joblib_load(str(f))
 
     def test_path_outside_root_blocked(self, tmp_path: Path):
@@ -627,8 +635,8 @@ class TestJoblibFindClassWeakerThanPickle:
         from haute._sandbox import _RestrictedUnpickler
 
         buf = io.BytesIO(b"")
-        unpickler = _RestrictedUnpickler(buf)
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(buf, source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("builtins", "eval")
 
     def test_builtins_eval_blocked_by_joblib_find_class(self, tmp_path: Path):
@@ -643,8 +651,8 @@ class TestJoblibFindClassWeakerThanPickle:
 
         # The genuine gate (find_class) blocks builtins.eval on the real path
         # the joblib shim also delegates through.
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("builtins", "eval")
 
     def test_builtins_exec_blocked_by_both_pickle_and_joblib(self, tmp_path: Path):
@@ -656,15 +664,15 @@ class TestJoblibFindClassWeakerThanPickle:
         from haute._sandbox import _resolve_allowed_global, _RestrictedUnpickler
 
         # Pickle path blocks it via find_class.
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("builtins", "exec")
 
         # The joblib shim delegates to the same ``_resolve_allowed_global``
         # gate; invoking it directly (as the shim does) also rejects exec.
         base_find_class = super(_RestrictedUnpickler, unpickler).find_class
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
-            _resolve_allowed_global(base_find_class, "builtins", "exec")
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
+            _resolve_allowed_global(base_find_class, "builtins", "exec", source=_SOURCE)
 
 
 class TestPickleAllowlistDotAnchoring:
@@ -683,8 +691,8 @@ class TestPickleAllowlistDotAnchoring:
         module.Marker = type("Marker", (), {})
         monkeypatch.setitem(sys.modules, "numpy_evil", module)
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("numpy_evil", "Marker")
 
     def test_safe_joblib_load_blocks_sibling_module(
@@ -707,7 +715,7 @@ class TestPickleAllowlistDotAnchoring:
         f = tmp_path / "sibling.joblib"
         joblib.dump(marker, str(f))
 
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_joblib_load(str(f))
 
 
@@ -1136,7 +1144,7 @@ class TestSafeUnpickleEdgeCases:
                 return (os.system, ("echo pwned",))
 
         f.write_bytes(pickle.dumps(_Evil()))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_unpickle(str(f))
 
     def test_path_outside_project_root_blocked(self, tmp_path: Path):
@@ -1157,7 +1165,7 @@ class TestSafeUnpickleEdgeCases:
                 return (subprocess.check_output, (["echo", "pwned"],))
 
         f.write_bytes(pickle.dumps(_Evil()))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_unpickle(str(f))
 
 
@@ -1207,7 +1215,7 @@ class TestPickleReduceExploit:
         use_project(tmp_path)
         f = tmp_path / "reduce_exploit.pkl"
         f.write_bytes(payload)
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_unpickle(str(f))
 
 
@@ -1332,8 +1340,8 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("numpy", "load")
 
     def test_ctypeslib_load_library_gadget_rejected(self):
@@ -1342,8 +1350,8 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("numpy.ctypeslib", "load_library")
 
     def test_class_under_trusted_package_allowed(self):
@@ -1354,7 +1362,7 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         assert unpickler.find_class("numpy", "ndarray") is np.ndarray
 
     def test_sklearn_estimator_class_allowed(self):
@@ -1365,7 +1373,7 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         resolved = unpickler.find_class("sklearn.linear_model._base", "LinearRegression")
         assert resolved is LinearRegression
 
@@ -1383,8 +1391,8 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class(module, name)
 
     def test_scaffolding_function_allowed_via_exact_entry(self):
@@ -1393,7 +1401,7 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         resolved = unpickler.find_class("numpy._core.multiarray", "_reconstruct")
         assert callable(resolved)
 
@@ -1412,7 +1420,7 @@ class TestPickleRCEGadgetGate:
 
         f = tmp_path / "gadget.pkl"
         f.write_bytes(pickle.dumps(_Gadget()))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_unpickle(str(f))
 
     def test_joblib_trusted_tree_function_gadget_blocked(self, tmp_path: Path):
@@ -1428,7 +1436,7 @@ class TestPickleRCEGadgetGate:
 
         f = tmp_path / "gadget.joblib"
         joblib.dump(_Gadget(), str(f))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_joblib_load(str(f))
 
     def test_true_false_none_omitted_from_exact_allowlist(self):
@@ -1445,7 +1453,7 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         assert unpickler.find_class("builtins", "frozenset") is frozenset
         assert unpickler.find_class("builtins", "int") is int
 
@@ -1455,8 +1463,8 @@ class TestPickleRCEGadgetGate:
 
         from haute._sandbox import _RestrictedUnpickler
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("builtins", "eval")
 
 
@@ -1572,7 +1580,7 @@ class TestPickleAllowlistResolves:
             raise ModuleNotFoundError(f"No module named {module!r}", name="catboost")
 
         with pytest.raises(pickle.UnpicklingError, match="`catboost` is not installed"):
-            _resolve_allowed_global(resolver, "catboost.core", "CatBoost")
+            _resolve_allowed_global(resolver, "catboost.core", "CatBoost", source=_SOURCE)
 
     def test_broken_install_deeper_in_the_tree_propagates(self) -> None:
         """Only the entry's own top-level package counts as absent."""
@@ -1581,7 +1589,7 @@ class TestPickleAllowlistResolves:
             raise ModuleNotFoundError("No module named 'scipy.sparse'", name="scipy.sparse")
 
         with pytest.raises(ModuleNotFoundError, match="scipy.sparse"):
-            _resolve_allowed_global(resolver, "catboost.core", "CatBoost")
+            _resolve_allowed_global(resolver, "catboost.core", "CatBoost", source=_SOURCE)
 
     def test_real_unpickler_reports_absent_catboost(self) -> None:
         """The real ``find_class`` path in an environment without catboost."""
@@ -1592,7 +1600,7 @@ class TestPickleAllowlistResolves:
 
         if importlib.util.find_spec("catboost") is not None:
             pytest.skip("catboost is installed here; the absent-package path is not reachable")
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         with pytest.raises(pickle.UnpicklingError, match="`catboost` is not installed"):
             unpickler.find_class("catboost.core", "CatBoost")
 
@@ -1604,19 +1612,19 @@ class TestRestrictedUnpicklerAcceptArms:
         """An exact ``(module, qualname)`` class entry is resolved."""
         import numpy as np
 
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         resolved = unpickler.find_class("numpy", "dtype")
         assert resolved is np.dtype
 
     def test_exact_global_allowlist_accepts(self):
         """``builtins.dict`` matches its exact scaffolding-global entry."""
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         resolved = unpickler.find_class("builtins", "dict")
         assert resolved is dict
 
     def test_two_element_exact_match_accepts_set(self):
         """builtins.set matches its exact 2-tuple allowlist entry."""
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
         resolved = unpickler.find_class("builtins", "set")
         assert resolved is set
 
@@ -1626,8 +1634,8 @@ class TestRestrictedUnpicklerAcceptArms:
         Confirms the accept arm does not leak: only the exact (module, name)
         pairs pass, not the whole builtins module.
         """
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""), source=_SOURCE)
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             unpickler.find_class("builtins", "eval")
 
 
@@ -1664,7 +1672,7 @@ class TestSafeUnpickleRoundTrip:
             b"\x8c\necho pwned\x94\x85\x94R\x94."
         )
         f.write_bytes(payload)
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_unpickle(str(f))
 
 
@@ -1675,8 +1683,8 @@ class TestSandboxBoundaryCoverage:
         def _resolver(_module: str, _name: str):
             return lambda: None
 
-        with pytest.raises(pickle.UnpicklingError, match="non-class callable"):
-            _resolve_allowed_global(_resolver, "numpy", "dtype")
+        with pytest.raises(pickle.UnpicklingError, match="that is not a class"):
+            _resolve_allowed_global(_resolver, "numpy", "dtype", source=_SOURCE)
 
 
 class TestJoblibAcceptArm:
@@ -1725,7 +1733,7 @@ class TestJoblibAcceptArm:
                 return (os.system, ("echo pwned",))
 
         joblib.dump(_Evil(), str(f))
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+        with pytest.raises(pickle.UnpicklingError, match="which Haute does not load"):
             safe_joblib_load(str(f))
 
 
@@ -1771,3 +1779,161 @@ class TestRestrictedJoblibLoadHasNoFallback:
 
         with pytest.raises(RuntimeError, match="[Ii]nstalled joblib is incompatible"):
             safe_joblib_load(artifact)
+
+
+# ---------------------------------------------------------------------------
+# NumPy 1 pickles (SBS-02)
+# ---------------------------------------------------------------------------
+#
+# Written by NumPy 1.26.4 under CPython 3.12, which names its reconstruction helpers
+# under ``numpy.core``, by ``pickle.dumps(value, protocol=p)`` for
+# ``np.array([1.5, 2.5, 3.5])``, ``np.float64(2.5)`` and ``np.dtype("float64")``, and by
+# ``joblib.dump({"array": np.array([1.5, 2.5]), "scalar": np.float64(2.5)}, buffer)``
+# with joblib 1.5.2.
+_NUMPY_1_ARRAY_P2 = bytes.fromhex(
+    "8002636e756d70792e636f72652e6d756c746961727261790a5f7265636f6e7374727563740a7100636e756d"
+    "70790a6e6461727261790a71014b00857102635f636f646563730a656e636f64650a71035801000000627104"
+    "58060000006c6174696e317105867106527107877108527109284b014b0385710a636e756d70790a64747970"
+    "650a710b58020000006638710c898887710d52710e284b0358010000003c710f4e4e4e4affffffff4affffff"
+    "ff4b00747110628968035819000000000000000000c3b83f00000000000004400000000000000c4071116805"
+    "867112527113747114622e"
+)
+_NUMPY_1_SCALAR_P2 = bytes.fromhex(
+    "8002636e756d70792e636f72652e6d756c746961727261790a7363616c61720a7100636e756d70790a647479"
+    "70650a71015802000000663871028988877103527104284b0358010000003c71054e4e4e4affffffff4affff"
+    "ffff4b0074710662635f636f646563730a656e636f64650a7107580800000000000000000004407108580600"
+    "00006c6174696e31710986710a52710b86710c52710d2e"
+)
+_NUMPY_1_DTYPE_P2 = bytes.fromhex(
+    "8002636e756d70790a64747970650a71005802000000663871018988877102527103284b0358010000003c71"
+    "044e4e4e4affffffff4affffffff4b00747105622e"
+)
+_NUMPY_1_ARRAY_P5 = bytes.fromhex(
+    "8005958b000000000000008c126e756d70792e636f72652e6e756d65726963948c0b5f66726f6d6275666665"
+    "7294939428961800000000000000000000000000f83f00000000000004400000000000000c40948c056e756d"
+    "7079948c0564747970659493948c02663894898887945294284b038c013c944e4e4e4affffffff4affffffff"
+    "4b007494624b0385948c014394749452942e"
+)
+_NUMPY_1_SCALAR_P5 = bytes.fromhex(
+    "80059569000000000000008c156e756d70792e636f72652e6d756c74696172726179948c067363616c617294"
+    "93948c056e756d7079948c0564747970659493948c02663894898887945294284b038c013c944e4e4e4affff"
+    "ffff4affffffff4b007494624308000000000000044094869452942e"
+)
+_NUMPY_1_DTYPE_P5 = bytes.fromhex(
+    "80059537000000000000008c056e756d7079948c0564747970659493948c02663894898887945294284b038c"
+    "013c944e4e4e4affffffff4affffffff4b007494622e"
+)
+_NUMPY_1_JOBLIB = bytes.fromhex(
+    "800495dc000000000000007d94288c056172726179948c136a6f626c69622e6e756d70795f7069636b6c6594"
+    "8c114e756d70794172726179577261707065729493942981947d94288c08737562636c617373948c056e756d"
+    "7079948c076e6461727261799493948c057368617065944b0285948c056f72646572948c0143948c05647479"
+    "70659468088c0564747970659493948c02663894898887945294284b038c013c944e4e4e4affffffff4affff"
+    "ffff4b007494628c0a616c6c6f775f6d6d617094888c1b6e756d70795f61727261795f616c69676e6d656e74"
+    "5f6279746573944b10756208ffffffffffffffff000000000000f83f0000000000000440953f000000000000"
+    "008c067363616c6172948c156e756d70792e636f72652e6d756c74696172726179948c067363616c61729493"
+    "946814430800000000000004409486945294752e"
+)
+
+
+class TestNumpy1Pickles:
+    """A pickle written under NumPy 1 loads through the restricted unpicklers."""
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (_NUMPY_1_ARRAY_P2, np.array([1.5, 2.5, 3.5])),
+            (_NUMPY_1_SCALAR_P2, np.float64(2.5)),
+            (_NUMPY_1_DTYPE_P2, np.dtype("float64")),
+            (_NUMPY_1_ARRAY_P5, np.array([1.5, 2.5, 3.5])),
+            (_NUMPY_1_SCALAR_P5, np.float64(2.5)),
+            (_NUMPY_1_DTYPE_P5, np.dtype("float64")),
+        ],
+        ids=["array-p2", "scalar-p2", "dtype-p2", "array-p5", "scalar-p5", "dtype-p5"],
+    )
+    def test_a_numpy_1_pickle_loads(self, tmp_path: Path, payload: bytes, expected: object):
+        use_project(tmp_path)
+        f = tmp_path / "numpy1.pkl"
+        f.write_bytes(payload)
+        # Read at the NumPy 2 path, never through NumPy's deprecated numpy.core stand-in.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            loaded = safe_unpickle(str(f))
+        assert type(loaded) is type(expected)
+        np.testing.assert_array_equal(loaded, expected)
+
+    def test_a_numpy_1_joblib_file_loads(self, tmp_path: Path):
+        use_project(tmp_path)
+        f = tmp_path / "numpy1.joblib"
+        f.write_bytes(_NUMPY_1_JOBLIB)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            loaded = safe_joblib_load(str(f))
+        np.testing.assert_array_equal(loaded["array"], np.array([1.5, 2.5]))
+        assert loaded["scalar"] == np.float64(2.5)
+
+    def test_a_numpy_core_name_not_allowed_at_its_numpy_2_path_is_refused(self, tmp_path: Path):
+        use_project(tmp_path)
+        f = tmp_path / "gadget.pkl"
+        # GLOBAL numpy.core.multiarray.fromfile, then STOP: refused before anything is called.
+        f.write_bytes(b"\x80\x02cnumpy.core.multiarray\nfromfile\nq\x00.")
+        with pytest.raises(
+            pickle.UnpicklingError,
+            match=r"it refers to numpy\.core\.multiarray\.fromfile, which Haute does not load",
+        ):
+            safe_unpickle(str(f))
+
+    def test_every_numpy_1_spelling_is_derived_from_an_allowed_numpy_2_entry(self):
+        allowed = _ALLOWED_PICKLE_GLOBALS | _ALLOWED_PICKLE_CLASSES
+        numpy_2 = {entry for entry in allowed if entry[0].startswith("numpy._core.")}
+        assert numpy_2, "the allowlist names NumPy 2's reconstruction helpers"
+        assert set(_NUMPY_1_SPELLINGS.values()) == numpy_2
+        for (module, name), entry in _NUMPY_1_SPELLINGS.items():
+            assert entry == (module.replace("numpy.core.", "numpy._core.", 1), name)
+
+
+class TestBlockedPickleMessage:
+    """A refusal is written for the analyst who chose the file (SBS-02)."""
+
+    def test_a_refused_pickle_names_its_file_the_name_and_the_remedy(self, tmp_path: Path):
+        use_project(tmp_path)
+        f = tmp_path / "evil.pkl"
+        f.write_bytes(b"\x80\x02cposix\nsystem\nq\x00.")
+        with pytest.raises(pickle.UnpicklingError) as refused:
+            safe_unpickle(str(f))
+        message = str(refused.value)
+        assert message == (
+            f"Cannot load {f.resolve()}: it refers to posix.system, which Haute does not "
+            "load from a pickle or joblib file. Write the file again from an environment "
+            "with current library versions, or keep data as Parquet."
+        )
+
+    def test_a_refused_joblib_file_names_its_file(self, tmp_path: Path):
+        use_project(tmp_path)
+        f = tmp_path / "evil.joblib"
+        joblib.dump(_Gadget(), f)
+        with pytest.raises(pickle.UnpicklingError) as refused:
+            safe_joblib_load(str(f))
+        assert str(refused.value).startswith(f"Cannot load {f.resolve()}: it refers to ")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [b"\x80\x02cposix\nsystem\nq\x00.", b"\x80\x02cnumpy.core.multiarray\nfromfile\nq\x00."],
+    )
+    def test_a_refusal_never_points_at_haute_source(self, tmp_path: Path, payload: bytes):
+        use_project(tmp_path)
+        f = tmp_path / "refused.pkl"
+        f.write_bytes(payload)
+        with pytest.raises(pickle.UnpicklingError) as refused:
+            safe_unpickle(str(f))
+        message = str(refused.value)
+        for internal in ("_sandbox", "src/haute", "_ALLOWED_PICKLE", "allowlist"):
+            assert internal not in message
+
+
+class _Gadget:
+    """A joblib payload that would run a shell command on load."""
+
+    def __reduce__(self):
+        import os
+
+        return (os.system, ("echo pwned",))
