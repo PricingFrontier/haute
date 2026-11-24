@@ -847,7 +847,7 @@ export type {
   ProjectFolderResponse,
 } from "../generated/api-contracts.generated"
 
-/** The Files panel's two places: the pipeline folder's versioned files/, and local data/ and outputs/. */
+/** The Files panel's two places: the pipeline folder's versioned files/, and the project root's local files/. */
 export type ProjectFilePlace = import("../generated/api-contracts.generated").ProjectFolderResponse["place"]
 
 // ---------------------------------------------------------------------------

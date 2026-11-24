@@ -17,7 +17,7 @@ uv run haute init --target databricks
 
 `uv run` runs Haute from the project's environment, which you have not activated yet. `--target` names where you will deploy: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs` or `gcp-run`. `--ci` names where your CI/CD runs: `github` (the default), `gitlab`, `azure-devops` or `none`.
 
-This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `data/` folder for your data files, a `haute.toml` configuration file, a starter test with an example test quote in `tests/`, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
+This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `files/` folder for your local data and run outputs, a `haute.toml` configuration file, a starter test with an example test quote in `tests/`, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
 
 Copy the credential template to `.env` and fill in the values you have: the editor reads them when it starts, for example to reach your Databricks data and MLflow ([Credentials](../deployment/index.md#credentials) says which reads what). `.env` is gitignored, so your credentials are never committed:
 

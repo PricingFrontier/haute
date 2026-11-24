@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Any
 
 from haute._config_validation import reject_removed_config_keys
+from haute._project_layout import LOCAL_OUTPUTS_FOLDER
 from haute._types import NodeType
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._descriptors import DESCRIPTORS, algorithm_descriptor
@@ -855,7 +856,7 @@ def build_training_job_kwargs(
         "refit_on_development": refit_on_development,
         "metrics": metrics,
         "mlflow_experiment": config.get("mlflow_experiment") or None,
-        "output_dir": config.get("output_dir", "outputs"),
+        "output_dir": config.get("output_dir", LOCAL_OUTPUTS_FOLDER),
         "loss_function": config.get("loss_function") or None,
         "variance_power": variance_power,
         "offset": config.get("offset") or None,

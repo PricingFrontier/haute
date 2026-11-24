@@ -2,8 +2,9 @@
 
 The pipeline folder (the folder holding ``[project].pipeline``) is versioned as a
 whole. Its ``files/`` folder holds what the pipeline reads that is not code:
-``files/data/``, ``files/models/`` and ``files/params/``. The project root's ``data/`` and
-``outputs/`` stay on the analyst's machine.
+``files/data/``, ``files/models/`` and ``files/params/``. The project root has a ``files/``
+folder of the same name that stays on the analyst's machine: ``files/data/`` and
+``files/outputs/``.
 """
 
 from __future__ import annotations
@@ -12,9 +13,13 @@ from pathlib import Path, PurePosixPath
 
 from haute._project_settings import read_project_settings
 
-PIPELINE_FILES_FOLDER = "files"
+#: The files folder's name, in the pipeline folder (versioned) and at the project root (local).
+FILES_FOLDER = "files"
 PIPELINE_FILES_SUBFOLDERS = ("data", "models", "params")
-LOCAL_FOLDERS = ("data", "outputs")
+LOCAL_FILES_SUBFOLDERS = ("data", "outputs")
+#: Where a run writes a bare filename: a Data Output's, an exported training frame's, and a
+#: scripted training job's files.
+LOCAL_OUTPUTS_FOLDER = f"{FILES_FOLDER}/outputs"
 
 #: The largest file Haute versions from the pipeline folder: GitHub refuses larger files.
 VERSIONED_FILE_LIMIT_BYTES = 100 * 1024 * 1024
@@ -57,7 +62,7 @@ def pipeline_files_folder(project_root: Path) -> str | None:
     folder = pipeline_folder(project_root)
     if folder is None:
         return None
-    return str(PurePosixPath(folder) / PIPELINE_FILES_FOLDER)
+    return str(PurePosixPath(folder) / FILES_FOLDER)
 
 
 def default_model_folder(project_root: Path) -> str:

@@ -1,7 +1,7 @@
 """The modelling export, save, MLflow log and model-cache routes.
 
 A trained model's script is exported, the model is saved to its destination (with a preview of it),
-a scripted job writes into ``outputs/`` by default, the job is logged to MLflow, and the model
+a scripted job writes into ``files/outputs/`` by default, the job is logged to MLflow, and the model
 cache is cleared, through the client and directly.
 """
 
@@ -485,7 +485,7 @@ class TestSaveModelEndpoint:
 
 
 class TestOutputDirDefault:
-    """A scripted TrainingJob writes into outputs/ by default."""
+    """A scripted TrainingJob writes into files/outputs/ by default."""
 
     def test_default_output_dir_without_source_file(self):
         from haute._project_context import graph_pipeline_dir
@@ -503,7 +503,7 @@ class TestOutputDirDefault:
         # output_dir parameter default (7th keyword-only param after name...model_name)
         # Verify via signature
         sig = inspect.signature(TrainingJob.__init__)
-        assert sig.parameters["output_dir"].default == "outputs"
+        assert sig.parameters["output_dir"].default == "files/outputs"
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +766,7 @@ class TestExportScriptDirect:
         result = await export_script(body)
         assert "TrainingJob" in result.script
         # Where a Data Output with that bare name writes its file.
-        assert "outputs/my_model.parquet" in result.script
+        assert "data='files/outputs/my_model.parquet'" in result.script
 
     @pytest.mark.asyncio
     async def test_missing_node_raises_404(self):

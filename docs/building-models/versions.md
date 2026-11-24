@@ -56,7 +56,7 @@ right-click it). Your branch carries on from that version: Haute records its fil
 save. The saves since then stay in the history, so restoring a later one undoes it. You stay
 on the same branch, with nothing to reconnect.
 
-`data/` and `outputs/` are left as they are ([Project Files](project-files.md)).
+The project root's `files/` is left as it is ([Project Files](project-files.md)).
 
 ## Starting a branch from a version
 

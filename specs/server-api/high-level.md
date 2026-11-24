@@ -305,8 +305,9 @@ toolbar's Pipeline files and Local files panels show, in two places
 folder's `files/`: it is versioned, so a file written or deleted there is recorded at once as
 a save on the ledger, and a file larger than 100 MiB, or one `.gitignore` would ignore, is
 refused. Without git, or in a project that is not a repository, the place refuses every
-listing and write, saying which, rather than promise a history it cannot keep. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
-which only downloads. Neither local folder is versioned, and a hosted app refuses files there
+listing and write, saying which, rather than promise a history it cannot keep. The local place is the project root's `files/`, the same name kept
+outside the pipeline folder: its `data/` takes and deletes files and its `outputs/` only
+downloads. Neither local folder is versioned, and a hosted app refuses files there
 because its disk does not survive a restart
 ([hosted-project-storage](../hosted-project-storage/high-level.md)). Every operation refuses
 a path that leaves its place, names a dot-file or `__pycache__`, or passes through a link. A

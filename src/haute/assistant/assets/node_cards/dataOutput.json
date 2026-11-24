@@ -30,7 +30,7 @@
         "output_type": "file",
         "format": "parquet",
         "mode": "sink",
-        "path": "outputs/priced.parquet",
+        "path": "files/outputs/priced.parquet",
         "arguments": {}
       },
       "produces": ["policy_id", "premium", "age_band"]
@@ -42,7 +42,7 @@
         "output_type": "file",
         "format": "csv",
         "mode": "sink",
-        "path": "outputs/premiums.csv",
+        "path": "files/outputs/premiums.csv",
         "arguments": {},
         "selected_columns": ["policy_id", "premium"]
       },

@@ -62,8 +62,8 @@ class TestRestoreVersion:
         working_tip = _git(repo, "rev-parse", WORKING)
         (repo / "notes.txt").write_text("mine\n")  # untracked, outside any sweep
         (repo / ".haute_cache").mkdir()
-        result = repo / "outputs" / "result.parquet"
-        result.parent.mkdir()
+        result = repo / "files" / "outputs" / "result.parquet"
+        result.parent.mkdir(parents=True)
         result.write_text("kept")
 
         resp = restore_version(sha1, repo, cwd=repo)

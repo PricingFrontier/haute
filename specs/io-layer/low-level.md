@@ -225,7 +225,7 @@ platforms, and on Windows with long paths on, nothing is renamed.
    written on Windows and naming the longest tail of it found under the project root as the
    path to write (`_path_resolution.reject_windows_drive_path`). A file Data Output's path is
    refused the same way, never joined to the root as a folder named `C:`: its setting as
-   written, before the writer puts a bare name in `outputs/` (where `C:priced.csv` would
+   written, before the writer puts a bare name in `files/outputs/` (where `C:priced.csv` would
    lose its drive), goes through `reject_unportable_path_text`, the check of a path's own
    text that every read path's candidates go through too (a null byte, a reserved device
    name, a drive letter). The preview
@@ -248,7 +248,7 @@ platforms, and on Windows with long paths on, nothing is renamed.
    accepted. A path that matches as written and also, with case ignored, another entry (two
    files differing only in case, which Windows and macOS hold as one) is refused too. A
    written path is checked as its writer reads it (`executor.data_output_written_path`: a
-   bare name in `outputs/`, the format's extension added, from the project root) by
+   bare name in `files/outputs/`, the format's extension added, from the project root) by
    `portable_output_path_refusal`: outside the project, absolute, a drive letter, or a folder
    or file on disk in another letter case (Windows and macOS write into it, Linux makes
    another); a folder not there yet is the writer's to make. A whole save (`SavePipelineService.validate_graph`, which
@@ -884,7 +884,7 @@ checked against the source schema.
 
 ### Data Output
 
-`executor.resolve_data_output_path()` adds `outputs/` to bare filenames and the
+`executor.resolve_data_output_path()` adds `files/outputs/` (`_project_layout.LOCAL_OUTPUTS_FOLDER`) to bare filenames and the
 registry's default extension when absent. File-provider paths are anchored to the
 project root before containment, even for a nested pipeline; explicit relative paths
 are also project-relative. The returned display path and filesystem target describe
