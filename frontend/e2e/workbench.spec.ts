@@ -233,4 +233,111 @@ test.describe("workbench", () => {
     })
     expect(readFormFile("sample/policy.json")).toEqual([{ limit: "1000", region: "north" }])
   })
+
+  test("writes an Export's cells in an order dragged or moved with Alt+arrows, each opened for its settings, its label placed beside it, its field searched for, a tick's written as X, one removed once confirmed, and saves the order", async ({ page }) => {
+    const cell = (field: string, row: number) => ({ field, sheet: "Slip", cell: `B${row}`, label_cell: `A${row}` })
+    writeFormFiles({
+      "schema/policy.json": {
+        rows: "one",
+        inputs: [
+          { name: "limit", type: "int", required: true },
+          { name: "region", type: "str", options: ["north", "south"] },
+          { name: "sprinklered", type: "bool" },
+        ],
+      },
+      "sheets/sheet_1.json": {
+        title: "Sheet 1",
+        width: 1280,
+        sections: [{ title: "Section 1", height: 560, components: [{ component: "export_1", x: 16, y: 16, w: 160, h: 40 }] }],
+      },
+      "components/export_1.json": {
+        type: "export",
+        label: "Slip",
+        target: { format: "excel_cells", file_name: "slip", cells: [cell("policy.limit", 1), cell("policy.region", 2), cell("pricing.premium", 5)], blocks: [] },
+        tables: [],
+      },
+    })
+    await page.goto("/")
+    await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+    await buildWorkbenchPipeline(page)
+    await page.reload()
+    await page.getByTestId("view-switcher-workbench").click()
+    await page.getByRole("group", { name: 'Export "Slip"' }).focus()
+
+    // A row for each cell: its field's label, where it writes beside it, its settings shut.
+    const rows = page.getByRole("list", { name: "Cells" }).getByRole("listitem")
+    const names = async () => rows.evaluateAll((held) => held.map((row) => row.getAttribute("aria-label")))
+    await expect(rows).toHaveCount(3)
+    expect(await names()).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Premium"])
+    await expect(page.getByTestId("export-cell-1-summary")).toHaveText("Slip!B1 · label A1")
+    await expect(page.getByRole("textbox", { name: "Cell 1 sheet" })).toHaveCount(0)
+
+    // Dragged by its grip onto the first, the last cell takes its place.
+    await rows.nth(2).hover()
+    await rows.nth(2).getByTitle("Drag to move").dragTo(rows.nth(0))
+    await expect.poll(names).toEqual(["Cell 1 Premium", "Cell 2 Limit", "Cell 3 Region"])
+
+    // Its settings open under it and stay open as Alt+Down moves it, the focus with it.
+    await page.getByRole("button", { name: "Cell 1 settings" }).click()
+    await expect(page.getByRole("textbox", { name: "Cell 1 address" })).toHaveValue("B5")
+    await page.getByRole("listitem", { name: "Cell 1 Premium" }).focus()
+    await page.keyboard.press("Alt+ArrowDown")
+    await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Premium", "Cell 3 Region"])
+    await expect(page.getByRole("listitem", { name: "Cell 2 Premium" })).toBeFocused()
+    await expect(page.getByRole("textbox", { name: "Cell 2 address" })).toHaveValue("B5")
+
+    // Its label, saved left of it, reads as Left; put Right, it goes with the cell to a new address.
+    const label = page.getByRole("combobox", { name: "Cell 2 label" })
+    await expect(label).toHaveValue("left")
+    await expect(page.getByRole("textbox", { name: "Cell 2 label address" })).toHaveCount(0)
+    await label.selectOption("right")
+    await page.getByRole("textbox", { name: "Cell 2 address" }).fill("b6")
+    await page.keyboard.press("Enter")
+    await expect(page.getByTestId("export-cell-2-summary")).toHaveText("Slip!B6 · label C6")
+    // Custom shows its Label cell.
+    await label.selectOption("custom")
+    await expect(page.getByRole("textbox", { name: "Cell 2 label address" })).toHaveValue("C6")
+
+    // Its field searched for and chosen with the keyboard.
+    await page.getByRole("button", { name: "Cell 2 field" }).click()
+    await page.getByRole("combobox", { name: "Search Cell 2 field" }).fill("regi")
+    await page.keyboard.press("Enter")
+    await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Region"])
+
+    // Add a cell searched the same way, the new cell under the last.
+    await page.getByRole("button", { name: "Add a cell" }).click()
+    await page.getByRole("combobox", { name: "Search Add a cell" }).fill("prem")
+    await page.keyboard.press("Enter")
+    await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Region", "Cell 4 Premium"])
+    await expect(page.getByTestId("export-cell-4-summary")).toHaveText("Slip!B3 · label A3")
+
+    // A tick's settings hold its True/False, Excel's own to start, written here as X or blank.
+    await page.getByRole("button", { name: "Add a cell" }).click()
+    await page.getByRole("combobox", { name: "Search Add a cell" }).fill("sprink")
+    await page.keyboard.press("Enter")
+    await page.getByRole("button", { name: "Cell 5 settings" }).click()
+    const ticks = page.getByRole("combobox", { name: "Cell 5 True/False" })
+    await expect(ticks).toHaveValue("excel")
+    await ticks.selectOption("custom")
+    await ticks.selectOption("x")
+    await expect(page.getByTestId("export-cell-5-summary")).toHaveText("Slip!B4 · label A4 · X / blank")
+
+    // A cell is removed from its settings once the question is answered Remove.
+    await page.getByRole("button", { name: "Cell 3 settings" }).click()
+    await page.getByRole("button", { name: "Remove cell 3" }).click()
+    const question = page.getByRole("dialog", { name: "Remove cell 3, Region?" })
+    await expect(question).toContainText("It stops writing to Slip!B2, and its label to A2.")
+    await question.getByRole("button", { name: "Remove", exact: true }).click()
+    await expect.poll(names).toEqual(["Cell 1 Limit", "Cell 2 Region", "Cell 3 Premium", "Cell 4 Sprinklered"])
+
+    // Saved, the cells in their new order.
+    await page.getByRole("button", { name: "Save", exact: true }).click()
+    await expect(page.getByTestId("toast-notification").filter({ hasText: "Saved → rating/workbench" })).toBeVisible()
+    expect(readFormFile("components/export_1.json").target.cells).toEqual([
+      cell("policy.limit", 1),
+      { field: "policy.region", sheet: "Slip", cell: "B6", label_cell: "C6" },
+      cell("pricing.premium", 3),
+      { ...cell("policy.sprinklered", 4), true_false: { true: "X", false: "" } },
+    ])
+  })
 })

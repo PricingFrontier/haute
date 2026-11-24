@@ -39,14 +39,14 @@ export function SelectRow<T extends string>({
   label: string
   name?: string
   value: T
-  choices: ReadonlyArray<{ value: T; label: string }>
+  choices: ReadonlyArray<{ value: T; label: string; disabled?: boolean }>
   onChange: (value: T) => void
 }) {
   return (
     <LabelledRow label={label}>
       <select aria-label={name} value={value} onChange={(event) => onChange(event.target.value as T)} className={FIELD_CLASS} style={INPUT_STYLE}>
         {choices.map((choice) => (
-          <option key={choice.value} value={choice.value}>
+          <option key={choice.value} value={choice.value} disabled={choice.disabled}>
             {choice.label}
           </option>
         ))}

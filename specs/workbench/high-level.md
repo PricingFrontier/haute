@@ -1503,22 +1503,39 @@ Out of scope:
   holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
   the file name and starting the other's settings afresh; a file's File name, a CSV's
   Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
-  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: under a
-  heading row naming Field, Sheet, Cell and Label cell, a row for each cell in order, with
-  a select of the columns of the one-row tables, by table, each by its label (as a
-  Collection's fields are offered), the sheet's name, the cell's address and its label's
-  address, each in a text field committed on blur or Enter, each address trimmed and taken
-  in capitals, and a cross that takes the cell away, and, under a cell whose column is
-  True/false or which holds True/False text, True/False: a select of TRUE / FALSE (Excel's
-  own), X / blank, blank / X, Yes / No and Custom, Custom showing a True and a False text
-  field committed on blur or Enter, a cell given a column that is not True/false losing its
-  text; a
-  cell whose column is no longer in the schema, or no longer of a one-row table, shows it
-  first, as "Missing column" or the column's label, disabled. Under them Add a cell, a
-  select of the same columns, a column chosen adding a cell of it on the last cell's sheet
-  in the cell under the last cell's, its label in the cell under the last cell's label
-  while that cell has one, or `Sheet1` and `A1` with no label for the first, the select
-  showing Add a cell again. Then Tables: for each block in order, its table's name, or
+  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: a
+  row for each cell in order, as a schema column's row is drawn: a grip it is dragged by,
+  and Alt+Up and Alt+Down moving it, into a new order; its column's label, or "Missing
+  column" for one the schema no longer holds; on one line after it, its sheet and address
+  (`Slip!B3`), its label's address and its True/False text while it has them; a settings
+  button opening its settings under it, one cell's at a time, the open cell staying open
+  as it or another moves, is added or is taken away, and none open after a change from
+  outside the list (an undo's). Its settings: Field, a searchable
+  `ColumnSelector` of the one-row tables' columns as a sheet shows them, each as
+  `table.column` with its type, a column the schema no longer holds, or no longer of a
+  one-row table, shown and marked but never offered; Sheet and Cell, each in a text field
+  committed on blur or Enter, the address trimmed and taken in capitals; Label, a select of
+  None, Above, Under, Left, Right and Custom, read from where the label is (None while it
+  has none, one of the four while it is that cell next to the cell, Custom anywhere else),
+  a position past the sheet's edge, or any while the cell's address is not a cell,
+  disabled; a position chosen puts the label in that cell, None takes it away, and Custom
+  shows Label cell, its address in a text field committed on blur or Enter, trimmed and
+  taken in capitals, staying shown until another choice; while the label is in a position,
+  a new address for the cell takes its label with it to the same position, in one change,
+  the label left where it is when the new address has no such cell; and, while its column
+  is True/false or it holds True/False text, True/False: a select of
+  TRUE / FALSE (Excel's own), X / blank, blank / X, Yes / No and Custom, Custom showing a
+  True and a False text field committed on blur or Enter, a cell given a column that is not
+  True/false losing its text; and at their foot Remove cell, in the danger colour, asking
+  "Remove cell n, its label?" with where it stops writing (its sheet and address, and its
+  label's address while it has one), Remove in the danger colour, and taking the cell away
+  only on Remove. A cell's place matters: the workbook makes its sheets in the
+  order the cells first name them, a new cell goes under the last, and of two cells
+  writing to one address the later is the problem. Under them Add a cell, a
+  `ColumnSelector` of the same columns drawn as an add button, a column chosen adding a
+  cell of it on the last cell's sheet in the cell under the last cell's, its label in the
+  cell under the last cell's label while that cell has one, or `Sheet1` and `A1` with no
+  label for the first. Then Tables: for each block in order, its table's name, or
   "Missing table", with a cross that takes the block away; its Sheet and its Cell, the
   address of its top-left corner, in text fields as a cell's are; its Header, a select of
   Labels, Names or None; while one of its columns is True/false or it holds True/False text,

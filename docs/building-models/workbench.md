@@ -457,10 +457,17 @@ a sheet per table.
   sheets show them), and a CSV a **Delimiter**.
 - An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
   writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
-  row is a field of a one-row table, the **Sheet** it goes on, the **Cell** it goes in,
-  such as `B3`, and the **Label cell** its label goes in, such as `A3`, or blank for no
-  label. The label is the one the schema gives the field. Pick a field under **Add a cell**
-  to add one, which goes on the last row's sheet in the cell below it, its label below the
+  row is a field of a one-row table, with where it goes beside it, such as `Slip!B3`. Its
+  settings button opens its **Field**, the **Sheet** it goes on, the **Cell** it goes in,
+  such as `B3`, and where its **Label** goes: **None**, **Above**, **Under**, **Left** or
+  **Right** of the cell, or **Custom**, which shows **Label cell** for an address of your
+  own, such as `A3`. A label above, under, left or right moves with the cell when you
+  change the cell's address. The label is the one the schema gives the field, and
+  **Remove cell** at the foot
+  of the settings takes the row away once you confirm. Drag a row by its grip, or use
+  Alt+Up and Alt+Down, to change the order: sheets are made in the order the rows first
+  name them. Under **Add a cell**, type to search the fields, shown as `table.column`, and
+  pick one to add it, on the last row's sheet in the cell below it, its label below the
   last row's label. A field can go in more than one cell, but a cell holds one field or one
   label. Sheets are made in the order the rows first name them. Each cell holds the
   field's value as the sheets hold it: numbers stay numbers in the field's number format,

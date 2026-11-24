@@ -33,6 +33,10 @@ import {
   copyName,
   keptUses,
   moveBlockColumn,
+  moveExportCell,
+  LABEL_POSITIONS,
+  labelAddress,
+  labelPosition,
   removeBlockColumn,
   removeExportBlock,
   updateExportBlock,
@@ -44,6 +48,7 @@ import {
   createWidget,
   duplicateWidget,
   excelLayout,
+  exportCellsOf,
   exportFormatShown,
   fieldColumn,
   fieldUses,
@@ -2957,6 +2962,36 @@ describe("Imports and Exports", () => {
       expect(cellsOf(spec)).toEqual([{ ...total, sheet: FIRST_CELL_SHEET, cell: "A2", label_cell: "", true_false: null }])
       expect(() => removeExportCell(spec, "w_out", 3)).toThrow("has no cell 3")
       expect(() => addExportCell(buttons(), "w_out", insured)).toThrow("which writes no cells")
+    })
+
+    it("moves a cell to another place in the order, the form as given while it stays where it is", () => {
+      const spec = addExportCell(cells(), "w_out", insured)
+      const order = (held: FormSpec) => cellsOf(held).map((cell) => `${cell.column}@${cell.cell}`)
+      expect(order(spec)).toEqual(["insured@A1", "total@A2", "insured@A3"])
+
+      expect(moveExportCell(spec, "w_out", 1, 1)).toBe(spec)
+      expect(order(moveExportCell(spec, "w_out", 2, 0))).toEqual(["insured@A3", "insured@A1", "total@A2"])
+      expect(order(moveExportCell(spec, "w_out", 0, 2))).toEqual(["total@A2", "insured@A3", "insured@A1"])
+      expect(exportCellsOf(spec, "w_out")).toBe(cellsOf(spec))
+      expect(() => moveExportCell(spec, "w_out", 3, 0)).toThrow("has no cell 3")
+      expect(() => moveExportCell(buttons(), "w_out", 0, 1)).toThrow("which writes no cells")
+    })
+
+    it("finds the cell above, under, left or right of an address, none past the sheet's edge, and where a cell's label is", () => {
+      expect(LABEL_POSITIONS.map((held) => labelAddress("B3", held.value))).toEqual(["B2", "B4", "A3", "C3"])
+      expect(labelAddress("Z9", "right")).toBe("AA9")
+      expect(labelAddress("AA9", "left")).toBe("Z9")
+      expect(labelAddress("AZ1", "right")).toBe("BA1")
+      expect(labelAddress("XFC1", "right")).toBe("XFD1")
+      for (const [address, position] of [["XFD1", "right"], ["A1", "left"], ["A1", "above"], [`A${LAST_CELL_ROW}`, "under"], ["b3", "left"], ["", "under"]] as const) {
+        expect(labelAddress(address, position)).toBeNull()
+      }
+      expect(labelPosition({ cell: "B3", label_cell: "" })).toBe("none")
+      expect(labelPosition({ cell: "B3", label_cell: "A3" })).toBe("left")
+      expect(labelPosition({ cell: "B3", label_cell: "B2" })).toBe("above")
+      // Anywhere else, or typed unclean, is no position.
+      for (const label_cell of ["D9", "a3", "A 3"]) expect(labelPosition({ cell: "B3", label_cell })).toBeNull()
+      expect(labelPosition({ cell: "b 3", label_cell: "A3" })).toBeNull()
     })
 
     it("offers a cell the columns a sheet shows of the one-row tables", () => {

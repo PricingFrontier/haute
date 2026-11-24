@@ -2081,6 +2081,9 @@ function cellsExportOf(spec: FormSpec, id: string): ExcelCellsExport {
   return target
 }
 
+/** The cells an Export's workbook of cells writes, in order. */
+export const exportCellsOf = (spec: FormSpec, id: string): ExportCell[] => cellsExportOf(spec, id).cells
+
 /** The columns an Export's cell can be given: a one-row table's, as a sheet shows them (as a Collection's fields are offered). */
 export const cellColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? sheetColumns(table) : [])
 
@@ -2097,6 +2100,44 @@ export function cellAddress(address: string): { column: number; row: number } | 
   const column = [...found[1]].reduce((number, letter) => number * 26 + letter.charCodeAt(0) - 64, 0)
   const row = Number(found[2])
   return column <= LAST_CELL_COLUMN && row <= LAST_CELL_ROW ? { column, row } : null
+}
+
+/** A column's letters from its number from 1: 1 is A, 27 is AA, `LAST_CELL_COLUMN` is XFD. */
+function columnLetters(column: number): string {
+  let letters = ""
+  for (let left = column; left > 0; left = Math.floor((left - 1) / 26)) letters = String.fromCharCode(65 + ((left - 1) % 26)) + letters
+  return letters
+}
+
+/** The four cells next to a cell a label can be put in. */
+export type LabelPosition = "above" | "under" | "left" | "right"
+export const LABEL_POSITIONS: ReadonlyArray<{ value: LabelPosition; label: string }> = [
+  { value: "above", label: "Above" },
+  { value: "under", label: "Under" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+]
+const LABEL_STEPS: Record<LabelPosition, { column: number; row: number }> = {
+  above: { column: 0, row: -1 },
+  under: { column: 0, row: 1 },
+  left: { column: -1, row: 0 },
+  right: { column: 1, row: 0 },
+}
+
+/** The address of the cell `position` of `address`; null past the sheet's edge, or when `address` is not a cell. */
+export function labelAddress(address: string, position: LabelPosition): string | null {
+  const found = cellAddress(address)
+  if (found === null) return null
+  const column = found.column + LABEL_STEPS[position].column
+  const row = found.row + LABEL_STEPS[position].row
+  if (column < 1 || column > LAST_CELL_COLUMN || row < 1 || row > LAST_CELL_ROW) return null
+  return `${columnLetters(column)}${row}`
+}
+
+/** Where a cell's label is: "none" while it has none, the position of the cell next to it that holds it, or null for anywhere else. */
+export function labelPosition(cell: Pick<ExportCell, "cell" | "label_cell">): LabelPosition | "none" | null {
+  if (cell.label_cell.trim() === "") return "none"
+  return LABEL_POSITIONS.find((position) => labelAddress(cell.cell, position.value) === cell.label_cell)?.value ?? null
 }
 
 /** The address of the cell under `address`; null when `address` is not a cell or is on the last row. */
@@ -2183,6 +2224,21 @@ export function updateExportCell(spec: FormSpec, id: string, index: number, patc
   if (keys.every((key) => patch[key] === undefined || patch[key] === cell[key])) return spec
   return edit(spec, (draft) => {
     Object.assign(cellAt(cellsExportOf(draft, id), id, index), patch)
+  })
+}
+
+/**
+ * Move an Export's cell to another place in its order, which is the order the workbook
+ * makes its sheets in and the order its addresses are checked in; the form as given while
+ * it stays where it is.
+ */
+export function moveExportCell(spec: FormSpec, id: string, from: number, to: number): FormSpec {
+  cellAt(cellsExportOf(spec, id), id, from)
+  if (from === to) return spec
+  return edit(spec, (draft) => {
+    const held = cellsExportOf(draft, id).cells
+    const [cell] = held.splice(from, 1)
+    held.splice(to, 0, cell)
   })
 }
 
