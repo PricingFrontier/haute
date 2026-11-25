@@ -26,7 +26,7 @@ import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewSto
 import { quoteChecks } from "../utils/quoteChecks"
 import { QUOTE_DETAILS, QUOTE_DETAILS_NAME } from "../utils/quoteIdentity"
 import { indexProblemCells, newQuoteValues, quoteProblems, withPresetRows, type RowsByTable } from "../utils/sheetValues"
-import { APP_SET_COLUMNS, basisOf, columnKey, quoteEligible, quoteIndexProblems, quotedSchema, sheetVisibility, withPrice, type SheetVisibility } from "../utils/sheetVisibility"
+import { APP_SET_COLUMNS, basisOf, columnKey, quoteEligible, quoteIndexProblems, quotedSchema, sheetVisibility, withLocked, withPrice, type SheetVisibility } from "../utils/sheetVisibility"
 import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
 export interface SheetValues {
@@ -221,7 +221,8 @@ export function useSampleValues(active = true): SheetValues {
         // A column the app sets takes no typing, as in the app.
         if (!APP_SET_COLUMNS.has(columnKey(tableId, columnId))) change((spec) => withSampleCell(spec, tableId, row, columnId, value))
       },
-      setRows: (rowsByTable) => change((spec) => withSampleRows(spec, rowsByTable)),
+      // Rows set whole, as an Import sets them, change no cell of one either.
+      setRows: (rowsByTable) => change((spec) => withSampleRows(spec, withLocked(spec.sample, rowsByTable, APP_SET_COLUMNS))),
       price,
       basis,
       problems,

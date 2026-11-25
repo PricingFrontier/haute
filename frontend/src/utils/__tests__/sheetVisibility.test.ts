@@ -14,6 +14,7 @@ import {
   CONDITION_TESTS,
   columnKey,
   conditionFault,
+  conditionInputs,
   fieldKey,
   neverShown,
   newCondition,
@@ -439,6 +440,26 @@ describe("conditionFault", () => {
     expect(fault({})).toBeNull()
     expect(fault({ column: "bi", op: "ticked", values: [], field: null, days: 0 })).toBeNull()
     expect(fault({ column: "start", op: "at_least", values: ["2026-01-01"], field: null, days: 0 })).toBeNull()
+  })
+
+  it("refuses a test of validation_passed, or against it: the checks work it out from what shows", () => {
+    const details: SchemaTable = {
+      name: "quote_details",
+      rows: "one",
+      outputs: [],
+      inputs: [column("quote_name"), column("is_renewal", { type: "bool" }), column("validation_passed", { type: "bool" })],
+    }
+    const detailed = formOf([page("p", [])], [details])
+    const ticked = (name: string, field: Condition["field"] = null): Condition => ({ table: "quote_details", column: name, op: field === null ? "ticked" : "equals", values: [], field, days: 0 })
+
+    expect(conditionFault(detailed, ticked("is_renewal"))).toBeNull()
+    expect(conditionFault(detailed, ticked("validation_passed"))).toBe("tests validation_passed, which the checks work out from what shows")
+    expect(conditionFault(detailed, ticked("is_renewal", { table: "quote_details", column: "validation_passed" }))).toBe(
+      "tests is_renewal against validation_passed, which the checks work out from what shows",
+    )
+    // The editor offers it for neither.
+    expect(conditionInputs(details).map((each) => each.name)).toEqual(["quote_name", "is_renewal"])
+    expect(testFields(detailed.schema, "quote_details", details.inputs[1])).toEqual([])
   })
 
   it("names the first fault: the column, the test, the number of values, then each value", () => {

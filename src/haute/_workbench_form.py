@@ -1301,6 +1301,10 @@ QUOTE_DETAILS_STORE_ONLY: frozenset[str] = frozenset(
         "validation_passed",
     }
 )
+#: The column of quote_details the checks work out (``haute._workbench_checks``). What shows
+#: decides which rules are checked, so it never decides what shows: a condition on it does
+#: not fit (``haute._workbench_visibility.condition_fits``).
+QUOTE_DETAILS_CHECKED = "validation_passed"
 #: The quote's identity at the head of every other table, each one's name and type, as
 #: ``quote_details`` names them.
 IDENTITY_COLUMNS: tuple[tuple[str, ColumnType], ...] = (

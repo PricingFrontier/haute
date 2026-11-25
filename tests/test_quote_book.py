@@ -1592,3 +1592,40 @@ def test_an_export_is_recorded_only_on_the_final_quote_it_was_read_as(book: Quot
     exported = next(entry for entry in entries if entry.action == "exported")
     assert (exported.actor, exported.version, exported.priced_release) == (JO, None, RELEASE)
     assert book.get("A-1", 1).version == final.version
+
+
+def test_validation_passed_never_decides_what_the_checks_that_set_it_read(store: Target) -> None:
+    # Trade, required, waits on validation_passed ticked. Were the condition to hold, a save
+    # would hide Trade on the answer before it (false), write true, and Mark final would
+    # then show Trade and refuse a quote the store says passes.
+    form = RULED.model_dump(mode="json", by_alias=True)
+    widgets = form["pages"][0]["sections"][0]["widgets"]
+    widgets[0]["fields"].append({"table": "quote_details", "column": "validation_passed"})
+    widgets[1]["show_when"] = {
+        "conditions": [{"table": "quote_details", "column": "validation_passed", "op": "ticked"}]
+    }
+    circular = FormSpec.model_validate(form)
+    store.make(circular)
+    with open_book(
+        store.url,
+        circular,
+        environment=store.environment,
+        haute_version=HAUTE,
+        clock=Clock(),
+        sign_in=store.sign_in,
+    ) as book:
+        quote = ruled_quote(book, True, region="south", age="40")
+        assert quote.details["validation_passed"] is True
+
+        final = book.finalise("A-1", 1, version=quote.version, actor=ANA, release=RELEASE)
+
+        assert final.stage == "final"
+        # A save over the answer true reads the same checks as the save over false did.
+        draft = book.amend("A-1", 1, version=final.version, actor=ANA, reason="Checked again")
+        again = save(
+            book,
+            draft,
+            values=ruled_values(region="south", age="40"),
+            document=ruled_document(True),
+        )
+        assert again.details["validation_passed"] is True

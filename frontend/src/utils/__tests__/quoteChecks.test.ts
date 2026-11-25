@@ -32,6 +32,19 @@ describe("quoteChecks", () => {
   })
 })
 
+describe("quoteChecks on a row the store keeps for columns the form no longer holds", () => {
+  it("holds nothing in a tick box, where a row with anything typed holds it unticked", () => {
+    const ticked = structuredClone(form)
+    const drivers = ticked.schema.tables.find((table) => table.name === "drivers")!
+    const name = drivers.inputs.find((column) => column.name === "name")!
+    drivers.inputs.push({ ...name, name: "declared", label: "Declared", type: "bool" })
+    const required = (rows: RowsByTable) => quoteChecks(ticked, rows, null).find((check) => check.column === "declared")
+
+    expect(required({ drivers: [{ name: "Ana" }, { $kept: '{"licence":"B"}' }] })).toEqual({ kind: "required", table: "drivers", column: "declared", passed: false, rows: ["2"] })
+    expect(required({ drivers: [{ name: "Ana" }, {}] })?.passed).toBe(true)
+  })
+})
+
 describe("checkLine", () => {
   const line = (check: Partial<QuoteCheck>) => checkLine(form, { kind: "required", table: "policy", column: "age", passed: false, rows: [], ...check })
 

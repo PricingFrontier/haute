@@ -14,8 +14,8 @@
  */
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
 import { hasInputs, isOutputColumn, tableColumns, tableIndex } from "./quoteIdentity"
-import { rowFilled, rowHolds, typedIndexValue, withPresetRows, type PricedRows, type RowsByTable } from "./sheetValues"
-import { columnKey, sheetVisibility } from "./sheetVisibility"
+import { KEPT_KEY, rowFilled, typedIndexValue, withPresetRows, type PricedRows, type RowsByTable } from "./sheetValues"
+import { columnKey, quotedSchema, sheetVisibility } from "./sheetVisibility"
 import { readTypedNumber, readTypedWhole, trimTyped } from "./typedNumbers"
 import { readableName, type SampleRow, type SampleValue } from "./workbenchForm"
 
@@ -86,22 +86,30 @@ function rowName(index: SchemaColumn, row: SampleRow, place: number): string {
 export function quoteChecks(form: FormSpec, values: RowsByTable, tables: Readonly<Record<string, PricedRows>> | null): QuoteCheck[] {
   const hidden = sheetVisibility(form, values).hidden
   const rows = withPresetRows(form.schema, values)
+  // The tables as a request holds them, the columns the sheets hide left out: a value typed
+  // into a hidden column is stored nowhere, so it makes no row and fills none.
+  const sent = new Map(quotedSchema(form.schema, hidden).tables.map((table) => [table.name, table]))
   const checks: QuoteCheck[] = []
   for (const table of form.schema.tables) {
     const index = tableIndex(table)
+    // Whether the store writes the row's cells: something is typed in a column it is sent.
+    const written = (row: SampleRow | undefined): boolean => rowFilled(sent.get(table.name) ?? table, row)
     const typed = rows[table.name] ?? []
     const answered = tables?.[table.name] ?? []
     // The rows the quote holds: a one-row table's one, a many-row input table's filled
     // rows, each by its name, and a table of outputs alone's rows as pricing gave them.
+    // `filled` is whether the store writes the row's cells, a tick box among them.
     const held: { name: string; typed: SampleRow; filled: boolean; priced: Record<string, unknown> | undefined }[] = []
     if (table.rows === "one") {
-      held.push({ name: "", typed: typed[0] ?? {}, filled: rowFilled(table, typed[0]), priced: answered[0] })
+      held.push({ name: "", typed: typed[0] ?? {}, filled: written(typed[0]), priced: answered[0] })
     } else if (index !== null && hasInputs(table)) {
       typed.forEach((row, place) => {
-        // A row holding values in store columns the form no longer holds is a row the store keeps too.
-        if (!rowHolds(table, row)) return
+        // A row holding values in store columns the form no longer holds is a row the store
+        // keeps too, its cells empty.
+        const filled = written(row)
+        if (!filled && !(KEPT_KEY in row)) return
         const name = rowName(index, row, place)
-        held.push({ name, typed: row, filled: true, priced: answered.find((candidate) => candidate[index.name] !== null && candidate[index.name] !== undefined && String(candidate[index.name]) === name) })
+        held.push({ name, typed: row, filled, priced: answered.find((candidate) => candidate[index.name] !== null && candidate[index.name] !== undefined && String(candidate[index.name]) === name) })
       })
     } else if (index !== null) {
       for (const row of answered) held.push({ name: String(row[index.name]), typed: {}, filled: true, priced: row })

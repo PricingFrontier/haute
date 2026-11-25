@@ -330,6 +330,26 @@
               "number_format": "general",
               "decimal_places": null,
               "use_grouping": true
+            },
+            {
+              "name": "points",
+              "type": "int",
+              "label": "Points",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
             }
           ],
           "outputs": [
@@ -795,6 +815,10 @@
                   {
                     "table": "drivers",
                     "column": "age"
+                  },
+                  {
+                    "table": "drivers",
+                    "column": "points"
                   }
                 ],
                 "show_when": {
@@ -824,7 +848,35 @@
                 "grid_style": "solid",
                 "frame_color": null,
                 "frame_weight": "thin",
-                "column_looks": []
+                "column_looks": [
+                  {
+                    "table": "drivers",
+                    "column": "points",
+                    "header_color": null,
+                    "header_font_color": null,
+                    "header_align": "auto",
+                    "cell_color": null,
+                    "font_color": null,
+                    "bold": false,
+                    "align": "auto",
+                    "width": null,
+                    "show_when": {
+                      "match": "all",
+                      "conditions": [
+                        {
+                          "table": "policy",
+                          "column": "region",
+                          "op": "equals",
+                          "values": [
+                            "north"
+                          ],
+                          "field": null,
+                          "days": 0
+                        }
+                      ]
+                    }
+                  }
+                ]
               }
             ]
           }
@@ -3071,6 +3123,444 @@
           "rows": [
             "7"
           ]
+        }
+      ]
+    },
+    {
+      "name": "a value typed into a column the sheets hide alone makes no row of a one-row table: its tick box holds nothing",
+      "values": {
+        "policy": [
+          {
+            "trade": "Joinery"
+          }
+        ]
+      },
+      "tables": null,
+      "expected": [
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "region",
+          "passed": false,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "age",
+          "passed": false,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "excess",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "band",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "agreed",
+          "passed": false,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "premium",
+          "passed": false,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "policy",
+          "column": "premium_ok",
+          "passed": false,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "name",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "drivers",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "loading",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "drivers",
+          "column": "licence_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "summary",
+          "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
+        }
+      ]
+    },
+    {
+      "name": "a many-row table's row holding a value in a hidden column alone is no row",
+      "values": {
+        "policy": [
+          {
+            "region": "south",
+            "age": "40",
+            "agreed": true
+          }
+        ],
+        "drivers": [
+          {
+            "name": "Ana"
+          },
+          {
+            "points": "3"
+          }
+        ]
+      },
+      "tables": {
+        "policy": [
+          {
+            "premium": 250,
+            "premium_ok": true
+          }
+        ],
+        "drivers": [
+          {
+            "row_number": 1,
+            "loading": 1,
+            "licence_ok": true
+          }
+        ]
+      },
+      "expected": [
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "excess",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "band",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "agreed",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "premium",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "policy",
+          "column": "premium_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "name",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "drivers",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "loading",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "drivers",
+          "column": "licence_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "summary",
+          "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
+        }
+      ]
+    },
+    {
+      "name": "the same row is one once its column shows",
+      "values": {
+        "policy": [
+          {
+            "region": "north",
+            "age": "40",
+            "trade": "Joinery",
+            "agreed": true
+          }
+        ],
+        "drivers": [
+          {
+            "name": "Ana"
+          },
+          {
+            "points": "3"
+          }
+        ]
+      },
+      "tables": {
+        "policy": [
+          {
+            "premium": 250,
+            "premium_ok": true
+          }
+        ],
+        "drivers": [
+          {
+            "row_number": 1,
+            "loading": 1,
+            "licence_ok": true
+          },
+          {
+            "row_number": 2,
+            "loading": 1,
+            "licence_ok": true
+          }
+        ]
+      },
+      "expected": [
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "excess",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "band",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "trade",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "agreed",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "premium",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "policy",
+          "column": "premium_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "name",
+          "passed": false,
+          "rows": [
+            "2"
+          ]
+        },
+        {
+          "kind": "range",
+          "table": "drivers",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "loading",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "drivers",
+          "column": "licence_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "summary",
+          "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     }

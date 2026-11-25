@@ -61,6 +61,19 @@ describe("validation_passed on the sheets", () => {
     expect(result.current.rows.quote_details[0]).toMatchObject({ quote_reference: "PREVIEW", quote_option: "1" })
   })
 
+  it("keeps in Preview every cell the app sets when rows are set whole, as an Import sets them", () => {
+    const sample = { ...values("40", true), quote_details: [{ quote_name: "Fleet", stage: "draft", insured: "Before" }] }
+    useWorkbenchFormStore.setState({ form: { ...form, sample }, status: "ready" })
+    const { result } = renderHook(() => useSampleValues())
+
+    act(() => result.current.setRows({ quote_details: [{ quote_name: "Imported", quote_reference: "Q-9", validation_passed: true, insured: "After" }], policy: [{ ...TYPED, age: "41" }] }))
+
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual({
+      policy: [{ ...TYPED, age: "41" }],
+      quote_details: [{ quote_name: "Fleet", stage: "draft", insured: "After" }],
+    })
+  })
+
   it("is unticked in Preview until the sample is priced, a validation the pipeline fills being unfilled", () => {
     useWorkbenchFormStore.setState({ form: { ...form, sample: values("40", true) }, status: "ready" })
 

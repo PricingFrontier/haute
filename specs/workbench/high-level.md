@@ -2577,7 +2577,10 @@ Out of scope:
     day and its days added. A condition on an output column holds here whatever the price
     (On the price, below). A condition that cannot hold as written
     never holds: one naming a column that is not in a one-row table (gone, or a many-row
-    table's), a condition on rows naming a table that is not a many-row table, a test of a
+    table's), one testing `quote_details`' `validation_passed` or testing against it (the
+    checks work it out from the rules of what shows, so it never decides what shows: were
+    it to, the answer a save wrote would change what marking final reads of the same
+    values), a condition on rows naming a table that is not a many-row table, a test of a
     row naming a column that is not its table's or is a numbered index, a condition on rows whose
     tests and total name both inputs and outputs, a condition on an output
     tested against another field, a total of a column that is not a number column of its table other than its
@@ -3091,7 +3094,7 @@ Out of scope:
   then, which takes no save, holds none unless whoever adds the column sets it in SQL
   (true for each final quote, which passed the checks to become one). Preview and the app
   act alike on a sheet: the cells of the columns the app sets, and of `quote_name`, take
-  no typing in either, Preview showing the identity its sample is priced under (`PREVIEW`
+  no typing in either, rows set whole, as an Import sets them, changing none of them, Preview showing the identity its sample is priced under (`PREVIEW`
   and 1) whatever the sample holds, and the rest as the sample holds them. The
   `validation_passed` cell shows what the checks come to on the
   values the sheets hold and the price they were last given, as Validation says it,

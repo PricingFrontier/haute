@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter
 
-from haute._workbench_form import Condition, FormSpec, SingleCondition
+from haute._workbench_form import Condition, FormSpec, SingleCondition, with_quote_details
 from haute._workbench_visibility import condition_fits, visibility
 
 FIXTURE = (
@@ -270,3 +270,28 @@ def test_a_condition_fits_while_its_table_has_the_rows_it_tests(
     single = TypeAdapter(SingleCondition).validate_python(condition)
 
     assert condition_fits(every_type_form(), single) is fits
+
+
+@pytest.mark.parametrize(
+    ("condition", "fits"),
+    [
+        ({"column": "is_renewal", "op": "ticked"}, True),
+        ({"column": "validation_passed", "op": "ticked"}, False),
+        ({"column": "validation_passed", "op": "not_ticked"}, False),
+        (
+            {
+                "column": "is_renewal",
+                "op": "equals",
+                "field": {"table": "quote_details", "column": "validation_passed"},
+            },
+            False,
+        ),
+    ],
+)
+def test_no_condition_tests_validation_passed_which_the_checks_work_out_from_what_shows(
+    condition: dict[str, Any], fits: bool
+) -> None:
+    form = with_quote_details(every_type_form())
+    single = Condition.model_validate({"table": "quote_details", **condition})
+
+    assert condition_fits(form, single) is fits
