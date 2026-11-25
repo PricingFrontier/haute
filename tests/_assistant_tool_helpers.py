@@ -354,6 +354,23 @@ def _egress_policy(
     )
 
 
+def _turn_egress():
+    """A policy for a turn whose tools do not read it: the session records it."""
+    from haute.assistant._config import EgressPolicy
+
+    return EgressPolicy(
+        trust="organization",
+        max_sensitivity="internal",
+        allow_project_knowledge=False,
+        allow_executable_source=False,
+        allow_row_samples=False,
+        allow_aggregate_statistics=False,
+    )
+
+
+TURN_EGRESS = _turn_egress()
+
+
 def _policy(*, max_sensitivity: str, executable: bool):
     from haute.assistant._config import EgressPolicy
 

@@ -361,6 +361,10 @@ message, so the default names the changed files; an assistant apply passes its c
 headline and an assistant undo `Undo: ` and that headline, through
 `SavePipelineService.save_graph_transactionally(commit_message=...)`.
 
+An assistant apply and undo save through the same service and answer the same fields: the
+applied change's record (`AssistantChangeRecord`) and the undo's response
+(`AssistantUndoResponse`) are each a `SaveCapture`.
+
 Every route that writes project files captures them through the save module's
 `capture_save_in_ledger(root, rel_paths, warnings, message)`, which returns a
 `LedgerCapture` (`git_sha`, `identity_required`, `uncaptured`) and answers it in the shared

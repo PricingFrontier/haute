@@ -31,6 +31,7 @@ import type {
   AssistantBuildPlan,
   AssistantChangeRecord,
   AssistantStatusResponse,
+  SaveCapture,
 } from "../generated/api-contracts.generated"
 
 /**
@@ -196,8 +197,9 @@ export function listAssistantSessions(
 
 export interface AssistantUndoResult {
   changeId: string
-  /** The commit the undo's save made, or null when it was not captured in Git. */
-  gitSha: string | null
+  /** The undo's version capture, as any save answers it; `git_sha` is null when the undo
+   * was not captured in Git. */
+  capture: SaveCapture
   /** The session's build plan after the undo marked the change undone; null without one. */
   buildPlan: AssistantBuildPlan | null
 }
@@ -214,7 +216,8 @@ export function undoAssistantChange(
     source_file: sourceFile,
   }).then((value) => {
     const undo = expectGeneratedContract("AssistantUndoResponse", validateAssistantUndoResponse, value)
-    return { changeId: undo.change_id, gitSha: undo.git_sha, buildPlan: undo.build_plan }
+    const { change_id: changeId, build_plan: buildPlan, ...capture } = undo
+    return { changeId, capture, buildPlan }
   })
 }
 

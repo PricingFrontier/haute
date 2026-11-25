@@ -225,8 +225,10 @@ another comment line.
   own. A `free_code` step may hold only comments and blank lines. A step with no statement
   and no comment is still refused.
 - **The editor.** The step editor shows no control for the comment and keeps it through
-  every edit of the step. The assistant neither writes nor reads it, and `step_fields()`
-  does not list it, as it does not list `id`.
+  every edit of the step. The assistant does not write it, and `step_fields()` does not
+  list it, as it does not list `id`. It is executable source, so the assistant is sent it
+  only where the egress policy's `allow_executable_source` permits code
+  ([assistant specification](../assistant/high-level.md)).
 
 ### A number's `text` (CGEN-09)
 

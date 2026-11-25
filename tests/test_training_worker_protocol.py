@@ -2095,6 +2095,11 @@ def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
         },
     )
 
+    # Under the cap with unbounded arenas the fit either fails or, on some hosts, hangs
+    # where a thread cannot start; either is the cap refusing it, so that case is stopped
+    # well inside the test's own 60 seconds, which a completed fit here never nears.
+    timeout_seconds = 120 if arenas is None else 30
+
     def run() -> WorkerResultManifest:
         return run_worker_protocol(
             _train_under_rlimit,
@@ -2102,7 +2107,9 @@ def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
             artifact_root=tmp_path / "artifacts",
             artifact_kinds=_TRAINING_ARTIFACT_KINDS,
             max_artifact_size_bytes=_max_training_artifact_bytes(),
-            config=IsolatedWorkerConfig(timeout_seconds=120, preload_modules=("catboost",)),
+            config=IsolatedWorkerConfig(
+                timeout_seconds=timeout_seconds, preload_modules=("catboost",)
+            ),
         )
 
     if arenas is not None:

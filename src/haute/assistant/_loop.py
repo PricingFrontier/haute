@@ -26,7 +26,7 @@ from haute.assistant._catalog import (
     tool_title,
 )
 from haute.assistant._change_record import not_run_words
-from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV
+from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV, EgressPolicy
 from haute.assistant._node_cards import node_card
 from haute.assistant._providers import (
     AssistantProvider,
@@ -1099,6 +1099,7 @@ async def run_turn(
     user_text: str,
     *,
     provider: AssistantProvider,
+    egress: EgressPolicy,
     tools: Sequence[Mapping[str, Any]],
     execute_tool: ToolExecutor | None,
     system_prompt: str,
@@ -1130,11 +1131,15 @@ async def run_turn(
     A tool call that replaces the session's build plan snapshot streams a
     ``build_plan_updated`` event after its tool row, and the stored turn keeps
     the plan it left when the turn changed it.
+
+    ``egress`` is the policy of *provider*, which the session records before
+    the turn sends anything: what the turn produces was produced under it.
     """
 
     if reservation is None:
         reservation = await reserve_turn(store, session_id)
     session = reservation.session
+    store.record_egress(session, egress)
     # Each change replaces the plan's snapshot, so identity tells whether it changed.
     plan_at_start = session.build_plan.current
 
@@ -1301,7 +1306,14 @@ async def run_turn(
                             change = AssistantChangeRecord.model_validate(payload["change"])
                             saved_changes.append(change.id)
                     round_results.append(_tool_result_message(event, payload, is_error))
-                    if interrupt is None:
+                    # The turn's time limit ends the turn but leaves its reader: what the
+                    # call did streams before the failure, so an apply that saved after the
+                    # limit still shows its card and its Undo. A reader that left (the turn
+                    # cancelled, the stream closed) is sent nothing more.
+                    reader_present = interrupt is None or isinstance(
+                        interrupt, TimeoutError | _TurnLimitError
+                    )
+                    if reader_present:
                         yield AssistantToolFinishedEvent(
                             id=event.id,
                             name=event.name,
@@ -1309,19 +1321,14 @@ async def run_turn(
                             is_error=is_error,
                             summary=_result_summary(event.name, payload, is_error),
                         )
-                    if change is not None and interrupt is None:
+                    if change is not None and reader_present:
                         yield AssistantChangeAppliedEvent(change=change)
                     plan_after = session.build_plan.current
-                    if (
-                        plan_after is not plan_before
-                        and plan_after is not None
-                        and interrupt is None
-                    ):
+                    if plan_after is not plan_before and plan_after is not None and reader_present:
                         yield AssistantBuildPlanUpdatedEvent(build_plan=plan_after)
                     if interrupt is not None:
-                        # Re-raise the original interrupt (CancelledError
-                        # or GeneratorExit) now that the completed tool
-                        # result is recorded for the history append.
+                        # Re-raise the original interrupt now that the completed
+                        # tool result is recorded for the history append.
                         raise interrupt
                 elif isinstance(event, TurnStop):
                     stop = event

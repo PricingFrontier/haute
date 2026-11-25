@@ -61,6 +61,16 @@ _PUBLIC_POLICY_REASON = (
     "denies the assistant every project read and edit."
 )
 _SENSITIVITY_VALUES = frozenset({"public", "internal", "restricted"})
+# Least to most a provider may be sent: an external endpoint below the organisation's own
+# below one on this machine, and public below internal below restricted material.
+_TRUST_RANK: dict[str, int] = {"external": 0, "organization": 1, "local": 2}
+_SENSITIVITY_RANK: dict[str, int] = {"public": 0, "internal": 1, "restricted": 2}
+_ALLOW_FLAGS = (
+    "allow_project_knowledge",
+    "allow_executable_source",
+    "allow_row_samples",
+    "allow_aggregate_statistics",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +90,46 @@ class EgressPolicy:
     def permits_data_checks(self) -> bool:
         """Whether a dry-run runs a data check: the flag, under a ceiling above ``public``."""
         return self.allow_aggregate_statistics and self.max_sensitivity != "public"
+
+    def narrower_than(self, earlier: EgressPolicy) -> tuple[str, ...]:
+        """The ``[assistant.egress]`` settings under which this policy lets a provider be
+        sent less than *earlier* did; empty when it allows everything *earlier* allowed."""
+
+        narrower: list[str] = []
+        if _TRUST_RANK[self.trust] < _TRUST_RANK[earlier.trust]:
+            narrower.append("trust")
+        if _SENSITIVITY_RANK[self.max_sensitivity] < _SENSITIVITY_RANK[earlier.max_sensitivity]:
+            narrower.append("max_sensitivity")
+        narrower.extend(
+            flag for flag in _ALLOW_FLAGS if getattr(earlier, flag) and not getattr(self, flag)
+        )
+        return tuple(narrower)
+
+    def as_record(self) -> dict[str, str | bool]:
+        """The policy as its ``[assistant.egress]`` table spells it."""
+
+        return {key: getattr(self, key) for key in sorted(ASSISTANT_EGRESS_TOML_KEYS)}
+
+    @classmethod
+    def from_record(cls, record: object) -> EgressPolicy:
+        """Read back what `as_record` wrote, refusing any other shape."""
+
+        if not isinstance(record, dict) or set(record) != ASSISTANT_EGRESS_TOML_KEYS:
+            raise ValueError("an egress policy record must hold exactly the egress settings")
+        if record["trust"] not in _TRUST_VALUES:
+            raise ValueError("an egress policy record has an unknown trust")
+        if record["max_sensitivity"] not in _SENSITIVITY_VALUES:
+            raise ValueError("an egress policy record has an unknown sensitivity")
+        if not all(isinstance(record[flag], bool) for flag in _ALLOW_FLAGS):
+            raise ValueError("an egress policy record's permissions must be booleans")
+        return cls(
+            trust=record["trust"],
+            max_sensitivity=record["max_sensitivity"],
+            allow_project_knowledge=record["allow_project_knowledge"],
+            allow_executable_source=record["allow_executable_source"],
+            allow_row_samples=record["allow_row_samples"],
+            allow_aggregate_statistics=record["allow_aggregate_statistics"],
+        )
 
     @property
     def policy_hash(self) -> str:

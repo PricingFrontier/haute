@@ -344,6 +344,31 @@ class TestTurnContext:
         assert "withheld" not in text
         assert _row_values_in(text) != []
 
+    def test_the_preview_error_follows_the_turn_s_policy_not_a_later_haute_toml(
+        self, egress_project: Path
+    ):
+        """AST-04: `haute.toml` saved with row samples after the turn's provider was
+        resolved does not let the turn's context quote them."""
+        from haute.assistant._tools import build_turn_context
+
+        toml = egress_project / "haute.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                "allow_row_samples = false", "allow_row_samples = true"
+            ),
+            encoding="utf-8",
+        )
+
+        context = build_turn_context(
+            "main.py", _turn_policy(max_sensitivity="restricted"), preview_error_node_id="strict"
+        )
+
+        assert context.graph is not None and context.graph.preview_error is not None
+        message = context.graph.preview_error.message
+        assert message is not None
+        assert _row_values_in(message) == []
+        assert "allow_row_samples is false" in message
+
     def test_a_node_whose_schema_resolves_reports_no_preview_error(self, egress_project: Path):
         from haute.assistant._render import render_turn_context
         from haute.assistant._tools import build_turn_context

@@ -8,6 +8,8 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from haute.assistant._bundle_inventory import MANIFEST_NAME, bundle_files
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_ROOT = PROJECT_ROOT / "src" / "haute" / "assistant" / "assets" / "examples"
 
@@ -29,11 +31,8 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 
 def _actual_bundle_paths(bundle: Path) -> set[str]:
-    return {
-        path.relative_to(bundle).as_posix()
-        for path in bundle.rglob("*")
-        if path.is_file() and path.name != "manifest.json"
-    }
+    # The loader's rule: an interpreter's compiled modules are no part of a bundle.
+    return set(bundle_files(bundle)) - {MANIFEST_NAME}
 
 
 def _refresh_manifest(path: Path, *, write: bool) -> bool:

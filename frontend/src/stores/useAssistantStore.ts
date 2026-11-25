@@ -21,6 +21,7 @@ import {
   type AssistantTurnOutcome,
 } from "../api/assistant"
 import { answer, ask, newest, requestKind, watch } from "../utils/answers"
+import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useToastStore from "./useToastStore"
@@ -689,6 +690,8 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
                   set((state) => ({
                     entries: appendActivity(state.entries, { kind: "change", change: event.change }),
                   }))
+                  // The apply was a save: its version capture is reported as any save's is.
+                  reportSaveCapture(event.change)
                   break
                 case "build_plan_updated":
                   set({ buildPlan: event.build_plan })
@@ -812,13 +815,21 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     await answer([watch(useAssistantStore, (state) => state.sessionId)], () => undoAssistantChange(sessionId, change.id, pipelineSource), {
       // The canvas updates through /ws/sync; the transcript notes the undo, and
       // the checklist shows the plan in which the backend marked it undone.
-      ok: (result) => set((state) => ({
-        entries: [...state.entries, { kind: "undo", change }],
-        buildPlan: result.buildPlan,
-      })),
+      ok: (result) => {
+        set((state) => ({
+          entries: [...state.entries, { kind: "undo", change }],
+          buildPlan: result.buildPlan,
+        }))
+        reportSaveCapture(result.capture)
+      },
       failed: (error) => {
         const detail = error instanceof ApiError ? error.detail : null
         set({ notice: detail ?? "The change could not be undone." })
+      },
+      // The undo saved whichever chat the panel shows by its answer: its capture is the
+      // project's, so it is reported though the transcript it would have noted is gone.
+      stale: (settled) => {
+        if ("value" in settled) reportSaveCapture(settled.value.capture)
       },
     }, { inFlight: (flying) => set({ undoingChangeId: flying ? change.id : null }) })
   },

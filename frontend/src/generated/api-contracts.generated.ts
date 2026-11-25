@@ -312,11 +312,13 @@ export interface AssistantTranscriptEntry {
   title: string;
 }
 /**
- * The value-free change card of one saved plan.
+ * The value-free change card of one saved plan, with its save's version capture.
  *
  * ``id`` is the hash of the plan it saved; a plan applies once, so it names
  * this change. ``summary`` and ``assumptions`` are the model's own words from
- * the plan's dry-run; everything else is built from what was saved.
+ * the plan's dry-run; everything else is built from what was saved, the
+ * capture fields (`SaveCapture`) as the save answered them, which the editor
+ * reports as it reports any save's.
  * ``data_check`` is the plan's data check, or ``None`` when no check was
  * attempted or its findings describe another graph.
  */
@@ -329,9 +331,11 @@ export interface AssistantChangeRecord {
   data_check: AssistantChangeDataCheck | null;
   git_sha: string | null;
   id: string;
+  identity_required: boolean;
   parent_sha: string | null;
   revision: string;
   summary: string;
+  uncaptured: string[];
   warnings: string[];
 }
 /**
@@ -435,10 +439,17 @@ export interface AssistantSessionSummary {
   session_id: string;
   title: string;
 }
+/**
+ * The change an undo undid, with the undo's save capture (``git_sha`` its commit, or
+ * None when it was not captured in Git).
+ */
 export interface AssistantUndoResponse {
   build_plan: AssistantBuildPlan | null;
   change_id: string;
   git_sha: string | null;
+  identity_required: boolean;
+  uncaptured: string[];
+  warnings: string[];
 }
 export interface AssistantTextDeltaEvent {
   text: string;

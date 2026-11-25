@@ -480,6 +480,36 @@ class TestRevival:
         assert revived.build_plan.current is None
         assert revived.history[0].build_plan is None
 
+    def test_the_policies_a_chat_ran_under_revive_and_still_narrow_it(self, tmp_path: Path):
+        """AST-04: what a chat holds was produced under its policies, after a restart too."""
+        from tests._assistant_tool_helpers import TURN_EGRESS, _policy
+
+        wider = _policy(max_sensitivity="restricted", executable=True)
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        first.record_egress(session, wider)
+        first.record_egress(session, TURN_EGRESS)
+        first.record_egress(session, wider)
+        first.append(session, _turn())
+
+        revived = _store(tmp_path).lookup(session.id)
+
+        assert revived is not None
+        assert revived.egress_policies == [wider, TURN_EGRESS]
+        assert revived.narrowed_by(TURN_EGRESS) == ("max_sensitivity", "allow_executable_source")
+        assert revived.narrowed_by(wider) == ()
+
+    def test_a_session_file_without_its_policies_is_invalid(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        first.append(session, _turn())
+        path = tmp_path / "sessions" / f"{session.id}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["egress_policies"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert _store(tmp_path).lookup(session.id) is None
+
     def test_a_turn_record_without_an_outcome_key_is_invalid(self, tmp_path: Path):
         first = _store(tmp_path)
         session = first.create("rating/main.py")

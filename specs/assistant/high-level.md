@@ -471,7 +471,13 @@ saved more than once. The undo is recorded in the chat as a note after the lates
 the transcript shows it, and the next turn's context tells the model that the analyst
 undid that change, so the model does not assume its earlier change is still in place. The
 undo also updates the session's build plan as **Build plans for multi-stage requests**
-describes, and its response carries the resulting plan for the checklist.
+describes, and its response carries the resulting plan for the checklist. An apply and an
+undo are saves, and each answers its version capture as every save does: an applied
+change's record and an undo's response carry the save's warnings, its commit, the files a
+skipped or failed capture left out of version history, and whether git needs an
+identity, which the editor reports through the one function every write uses, so a
+capture that failed is said, its files are kept for the next capture, and a missing
+identity opens the identity prompt.
 A plan's single-use record never outlives the revision it applied to: after an undo
 restores that revision, dry-running the same change again issues a fresh plan with the
 same hash, which applies once more. This amends the rule that a stored plan "is
@@ -527,7 +533,8 @@ it:
     its code and the nodes inside it stay behind the v1 submodel boundary, as for edits.
   - `config` (`restricted`) — the node's structured config. Credential-shaped
     fields are always redacted; executable code (`code`, `preamble`, `query`,
-    `script`, at any depth, so a free-code step's `code` too) is redacted unless
+    `script`, at any depth, so a free-code step's `code` too) and a structured
+    step's `comment`, the authored text above its statement, are redacted unless
     the policy's `allow_executable_source` permits it. The whole part is still
     treated as `restricted` and is withheld unless the configured policy permits
     that class. A call whose every part is withheld says which parts the policy
@@ -1334,6 +1341,16 @@ HTTPS; external policy is public-only and cannot enable executable source, row
 samples or aggregate statistics. Project configuration may narrow but never
 widen these class ceilings.
 
+**One policy per turn, and per chat.** A turn runs under the policy of the provider it
+began with: every tool call of the turn answers under that policy, so a `haute.toml`
+saved while the turn runs changes nothing the turn's provider is sent; the next turn
+reads it. A chat records each policy its turns ran under, and what it holds (its earlier
+answers, its build plan, the evidence its turns gathered) was produced under them, so a
+message to a chat is refused with 409 before anything is sent when the current policy
+allows less than one of them, naming each narrowed `[assistant.egress]` setting: the
+analyst starts a new chat, or restores those settings to continue this one. A policy that
+allows as much or more continues the chat.
+
 **Aggregate statistics.** `allow_aggregate_statistics` authorises the
 [data check](#data-checks): executing the lineage of
 the nodes a plan changes, or of the saved node `inspect_node`'s data part names,
@@ -2105,7 +2122,9 @@ Loud, typed, and never averaged away:
   (sanitized) is what the model sees.
 - **Limits** — the per-turn tool-call cap and wall-clock timeout each terminate the stream
   with a named terminal event stating which limit was hit. Edits already applied remain (each
-  was a complete valid save); nothing is auto-reverted.
+  was a complete valid save); nothing is auto-reverted. An apply already saving when the time
+  limit passes completes, and its change-applied event streams before the terminal event, so
+  its card and Undo show without reopening the chat.
 - **Client disconnect** aborts the provider stream and stops the loop between tool
   executions; an executing save always completes. No orphaned provider streams or
   unmatched persisted tool calls outlive the request, and cleanup failure cannot retain

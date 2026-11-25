@@ -22,6 +22,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from haute.assistant._bundle_inventory import is_interpreter_output, undeclared_files
 from haute.assistant._render import render_pipeline_graph
 
 if TYPE_CHECKING:
@@ -163,10 +164,15 @@ def _read_resource(resource: Traversable) -> str:
 
 
 def _materialize_resource_tree(resource: Traversable, destination: Path) -> None:
-    """Copy a Traversable tree so parser-relative sidecars stay available."""
+    """Copy a Traversable tree so parser-relative sidecars stay available.
+
+    An installer's compiled modules are not part of a bundle and are not copied.
+    """
 
     destination.mkdir(parents=True, exist_ok=True)
     for child in resource.iterdir():
+        if is_interpreter_output(child):
+            continue
         target = destination / child.name
         if child.is_dir():
             _materialize_resource_tree(child, target)
@@ -319,25 +325,13 @@ def _validate_bundle(bundle: Traversable, manifest: dict[str, object]) -> None:
             raise RuntimeError(
                 f"Assistant example bundle {bundle.name!r} digest mismatch for {path!r}."
             )
-    declared = {"manifest.json"} | {str(item["path"]) for item in resources}
-    actual_paths = set(_resource_paths(bundle))
-    if undeclared := sorted(actual_paths - declared):
+    # What an interpreter or an installer writes beside the files (pip compiles every
+    # `pipeline.py` it installs) is no part of the bundle; any other file is refused.
+    if undeclared := undeclared_files(bundle, manifest):
         raise RuntimeError(
             f"Assistant example bundle {bundle.name!r} has undeclared resources: "
             + ", ".join(undeclared)
         )
-
-
-def _resource_paths(root: Traversable, prefix: str = "") -> tuple[str, ...]:
-    """Return a Traversable-compatible recursive file inventory."""
-    paths: list[str] = []
-    for child in root.iterdir():
-        path = f"{prefix}{child.name}"
-        if child.is_file():
-            paths.append(path)
-        elif child.is_dir():
-            paths.extend(_resource_paths(child, prefix=f"{path}/"))
-    return tuple(paths)
 
 
 def _read_bundle_json(bundle: Traversable, path: str) -> dict[str, object]:
