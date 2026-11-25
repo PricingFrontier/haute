@@ -1515,6 +1515,10 @@ function FlowEditor() {
           stale: refuse,
         })
       },
+      // Any step's own failure (the form store's chunk not loading, an edit barrier, a
+      // capture or a save throwing) reaches here, so a Save, a Commit or a Restore that
+      // saves first never ends without a word; nothing more is written.
+      failed: (error) => said(`Save failed: ${apiErrorMessage(error)}`),
       stale: refuse,
     })
     return saved

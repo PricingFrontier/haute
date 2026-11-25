@@ -35,7 +35,7 @@ from __future__ import annotations
 import codecs
 import importlib.util
 import io
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
@@ -1097,6 +1097,16 @@ def read_polars_input(
     return _invoke_polars_input(fmt, callable_name, config, arguments)
 
 
+def _input_callable(callable_name: str) -> Callable[..., Any]:
+    """The function that reads with Polars' *callable_name*: Haute's own read of a JSON
+    file (:func:`haute._io.read_json_table`), whose refusal names the file and the fault."""
+    if callable_name == "read_json":
+        from haute._io import read_json_table
+
+        return read_json_table
+    return cast(Callable[..., Any], getattr(pl, callable_name))
+
+
 def _invoke_polars_input(
     fmt: IoFormat,
     callable_name: str,
@@ -1116,7 +1126,7 @@ def _invoke_polars_input(
     _refuse_text_haute_cannot_read(fmt, config, polars_arguments)
     if fmt.name == "csv":
         _check_csv_header(source_args[0], polars_arguments)
-    fn = getattr(pl, callable_name)
+    fn = _input_callable(callable_name)
     try:
         result = fn(*source_args, **polars_arguments)
     except (ImportError, ModuleNotFoundError) as exc:

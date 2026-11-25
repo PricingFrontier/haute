@@ -310,10 +310,11 @@ data and as a loaded object, and a file a feed writes is not refused for its for
   take a pass over every file before Polars reads it.
 - A `.json` request file or Load File holding nothing is refused as empty, naming the
   file; a request file of no quotes is `[]`, and an empty JSON Lines file holds none.
-  Where Polars reads a `.json` file (a Data Input, and deploy reading a request file's
-  schema) and cannot, a file holding nothing, cut short or not UTF-8 is refused in those
-  words, with its line and column, as the request shredder refuses it; JSON that Polars
-  cannot read as a table keeps Polars' words.
+  Polars reads a `.json` table (a Data Input, and deploy reading a request file's schema)
+  in one place, `read_json_table`; when it cannot, a file whose bytes are not JSON (holding
+  nothing, cut short, with a trailing comma or content after its value, not UTF-8) is
+  refused in the request shredder's words, with its line and column, as the run refuses
+  the same file; JSON that Polars cannot read as a table keeps Polars' words.
 - A CSV file saved as UTF-16 or UTF-32 (a byte-order mark of either, or null bytes in its
   first line, judged in the text a gzip, zlib or zstd file decompresses to, as Polars
   decompresses it) is refused naming the file and the encoding found and saying to save it as

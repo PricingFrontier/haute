@@ -45,13 +45,16 @@ _UNTRAINED = "model_lifecycle"
 _UNRECOGNISED = "Haute hit a failure it does not recognise"
 
 
-def _project(tmp_path: Path, example: str) -> Path:
+#: The folder, in a test's temporary folder, an example is copied into.
+_PROJECT = "p"
+
+
+def _project(tmp_path: Path, example: str) -> None:
     """*example* as an analyst copies it into a project: its files, in a git repository."""
-    root = tmp_path / "p"
+    root = tmp_path / _PROJECT
     materialize_example_bundle(example, root)
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     use_project(root)
-    return root
 
 
 def _error_lines(result: Result) -> list[str]:
@@ -151,8 +154,8 @@ def test_a_wrong_request_file_is_named_with_its_fault_by_each_command(
 ) -> None:
     """The run and the dry run read one request file alike, in the IO layer's words
     (specs/io-layer, "Reading an input's bytes")."""
-    root = _project(tmp_path, _REQUEST_EXAMPLE)
-    request = root / _REQUEST_FILE
+    _project(tmp_path, _REQUEST_EXAMPLE)
+    request = tmp_path / _PROJECT / _REQUEST_FILE
     wrong, said = _WRONG_REQUESTS[case]
     request.write_bytes(wrong(request.read_bytes()) if callable(wrong) else wrong)
 
