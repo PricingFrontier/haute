@@ -1262,6 +1262,7 @@ QUOTE_DETAILS_COLUMNS: tuple[tuple[str, ColumnType], ...] = (
     ("modified_date", "date"),
     ("modified_by", "str"),
     ("haute_version", "str"),
+    ("validation_passed", "bool"),
 )
 QUOTE_DETAILS_NAMES: frozenset[str] = frozenset(name for name, _ in QUOTE_DETAILS_COLUMNS)
 #: The names an earlier Haute gave its columns, by today's: a form holding one takes today's.
@@ -1282,13 +1283,23 @@ QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
         "modified_date",
         "modified_by",
         "haute_version",
+        "validation_passed",
     }
 )
 #: The columns of quote_details the app changes over a quote's life: the quote store keeps
 #: them, but no request holds them and no frame has a column for them, so changing them never
 #: leaves a stored price that its stored inputs no longer give.
 QUOTE_DETAILS_STORE_ONLY: frozenset[str] = frozenset(
-    {"stage", "assignee", "archived", "modified_date", "modified_by", "haute_version"}
+    {
+        "stage",
+        "assignee",
+        "archived",
+        "modified_date",
+        "modified_by",
+        "haute_version",
+        # Read from the price, it is never an input to it.
+        "validation_passed",
+    }
 )
 #: The quote's identity at the head of every other table, each one's name and type, as
 #: ``quote_details`` names them.

@@ -264,7 +264,7 @@ business, which the underwriter app keeps with each saved quote and lists on its
 page. Its columns are fixed, in this order: **quote_reference**, **quote_option**,
 **quote_name**, **insured**, **broker**, **inception_date**, **expiry_date**,
 **is_renewal**, **stage**, **assignee**, **archived**, **created_date**, **created_by**,
-**modified_date**, **modified_by** and **haute_version**. Put them on the sheets as any
+**modified_date**, **modified_by**, **haute_version** and **validation_passed**. Put them on the sheets as any
 other columns, and give them labels, groups, help and placeholders, and the ones your
 underwriters type defaults and rules; the pipeline receives the table as it receives any
 other input, so a rule can read a quote's inception date or whether it is a renewal.
@@ -279,17 +279,22 @@ shows **Missing column** on the sheets while you build, for you to remove or mov
 column of your own, and is not shown in Preview or the app.
 
 The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
-**created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
-itself: their cells take no typing on the sheets in the app and take no rules and no
+**created_date**, **created_by**, **modified_date**, **modified_by**, **haute_version** and
+**validation_passed** itself: their cells take no typing on the sheets in the app and take no rules and no
 default. The underwriter keys the **quote_reference** once, in the window that makes the
 quote; it never changes after. **created_date** and **created_by** say when the quote was
 made and by whom; **modified_date** and **modified_by** when it was last saved or changed
-and by whom; **haute_version** is the version of Haute the app ran then. The two dates are
+and by whom; **haute_version** is the version of Haute the app ran then;
+**validation_passed** is ticked when the quote as last saved passes every check
+**Mark final** makes, the same answer the **Validation** button gives for a saved quote. It is
+set each time the quote is saved, so in a database that had quotes before the column was
+added it is empty until a quote's next save; set it to true in SQL for the quotes already
+final, which are not saved again. The two dates are
 dates in UTC, so near midnight they can differ by a day from the time the app shows you.
 The pipeline receives **quote_reference**, **quote_option**, **created_date** and
 **created_by**, and every other column of `quote_details`, whatever the sheets hide.
-**stage**, **assignee**, **archived**, **modified_date**, **modified_by** and
-**haute_version** are kept with the quote and never reach the pipeline, so assigning or
+**stage**, **assignee**, **archived**, **modified_date**, **modified_by**,
+**haute_version** and **validation_passed** are kept with the quote and never reach the pipeline, so assigning or
 archiving a quote never changes what it was priced on. In Preview the columns the pipeline
 receives hold what you type into the sample, to try a rule that reads them; an app without
 a quote store leaves them blank. Assigning, archiving, restoring, marking final and

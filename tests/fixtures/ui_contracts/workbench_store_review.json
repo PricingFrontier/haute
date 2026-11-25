@@ -335,6 +335,26 @@
               "number_format": "general",
               "decimal_places": null,
               "use_grouping": true
+            },
+            {
+              "name": "validation_passed",
+              "type": "bool",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
             }
           ],
           "outputs": []
@@ -1323,6 +1343,22 @@
           "name": "haute_version",
           "kind": "string",
           "type": "TEXT",
+          "nullable": true,
+          "capacity": {
+            "bits": null,
+            "length": null,
+            "every_character": true,
+            "unpadded": true,
+            "zoneless": true
+          },
+          "numbered": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "validation_passed",
+          "kind": "boolean",
+          "type": "BOOLEAN",
           "nullable": true,
           "capacity": {
             "bits": null,

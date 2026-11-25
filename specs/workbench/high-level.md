@@ -432,8 +432,8 @@ Out of scope:
   company or line of business, its columns `quote_reference`, `quote_option`,
   `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `is_renewal`,
   `stage`, `assignee`, `archived`, `created_date`, `created_by`, `modified_date`,
-  `modified_by` and `haute_version`, in that order, `inception_date`, `expiry_date`,
-  `created_date` and `modified_date` Dates, `is_renewal` and `archived` True/false,
+  `modified_by`, `haute_version` and `validation_passed`, in that order, `inception_date`, `expiry_date`,
+  `created_date` and `modified_date` Dates, `is_renewal`, `archived` and `validation_passed` True/false,
   `quote_option` an Integer and the rest Text. A form
   read or saved without it takes it on, and one holding it as an earlier Haute made it is
   brought to today's: a column under the name an earlier Haute gave it takes today's
@@ -447,8 +447,8 @@ Out of scope:
   `quote_details` is not Haute's (its rows, keys or index changed, an output given it, or a
   column of another name, or one of its own retyped) is
   refused, as is a rule or a default on `quote_reference`, `quote_option`, `stage`,
-  `assignee`, `archived`, `created_date`, `created_by`, `modified_date`, `modified_by` or
-  `haute_version`, which the underwriter app sets. Its labels, groups,
+  `assignee`, `archived`, `created_date`, `created_by`, `modified_date`, `modified_by`,
+  `haute_version` or `validation_passed`, which the underwriter app sets. Its labels, groups,
   help and placeholders are the project's, as are the rules and defaults of the columns the
   underwriter types; the sheets show its columns, and the pipeline receives it, as any other
   input table's. Every other table leads with the quote's identity: `quote_reference`
@@ -1199,7 +1199,7 @@ Out of scope:
   `inception_date`, `expiry_date` and `is_renewal` under Inputs, with labels, groups, help,
   defaults, placeholders and rules where applicable. Its field count is eight. The
   remaining managed fields (`stage`, `assignee`, `archived`, `created_date`, `created_by`,
-  `modified_date`, `modified_by`, `haute_version`) and all ten storage-only fields are
+  `modified_date`, `modified_by`, `haute_version`, `validation_passed`) and all ten storage-only fields are
   hidden in Build, Preview and schema search. Existing forms, field settings, sheets,
   runtime behavior and SQL definitions are preserved; this is schema-pane visibility
   only. A user column with the same name in another table remains visible and editable.
@@ -3076,7 +3076,14 @@ Out of scope:
   The details the app changes over a quote's life, `stage`, `assignee`, `archived`,
   `modified_date`, `modified_by` and `haute_version`, are columns of `quote_details` that no
   request holds, so changing them never leaves a stored price its stored inputs no longer
-  give; `quote_reference`, `quote_option`, `created_date`, `created_by` and the details the
+  give, and so is `validation_passed`, which is read from the price and never an input to
+  it: whether the quote as last saved passes every check marking it final makes, set by
+  the store as it writes the quote's rows (a new quote's and each save's), from those rows
+  read back as marking final reads them, so a quote that can be marked final says true
+  and one that cannot for a check says false; nothing else changes it, so a quote saved
+  before the column was added holds none until its next save, and one final since before
+  then, which takes no save, holds none unless whoever adds the column sets it in SQL
+  (true for each final quote, which passed the checks to become one); `quote_reference`, `quote_option`, `created_date`, `created_by` and the details the
   underwriter types do. Every column of `quote_details` is stored, and each that reaches the
   pipeline is priced, whatever the sheets hide; any other cell a Show when hides is saved
   blank, as the request leaves it out, so the input tables hold what the quote was priced on.

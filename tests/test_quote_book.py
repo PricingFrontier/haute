@@ -700,6 +700,45 @@ def test_a_required_input_the_sheets_hide_for_the_quote_does_not_stop_mark_final
     assert final.stage == "final"
 
 
+def test_validation_passed_says_whether_the_quote_as_saved_can_be_marked_final(
+    ruled: QuoteBook, store: Target
+) -> None:
+    def passed() -> Any:
+        return ruled.get("A-1", 1).details.get("validation_passed")
+
+    def said(**policy: Any) -> dict[str, Any]:
+        # A page's own word for it, the opposite of the truth each time, is never read.
+        typed = ruled_values(**policy)
+        typed["quote_details"][0]["validation_passed"] = policy["age"] != "40"
+        return typed
+
+    # As made, unpriced: the validation the pipeline fills is unfilled.
+    made = make(ruled, values=said(region="north", age="40"))
+    assert passed() is False
+
+    # Priced, the north's required trade still blank, so marking it final is refused.
+    north = save(ruled, made, values=said(region="north", age="40"), document=ruled_document(True))
+    assert passed() is False
+    with pytest.raises(QuoteNotReadyError):
+        ruled.finalise("A-1", 1, version=north.version, actor=ANA, release=RELEASE)
+
+    # Every check passing, it says so, and the quote is marked final.
+    south = save(ruled, north, values=said(region="south", age="40"), document=ruled_document(True))
+    assert passed() is True
+    assert sql(store, "SELECT validation_passed FROM quote_details") in ([(True,)], [(1,)])
+    final = ruled.finalise("A-1", 1, version=south.version, actor=ANA, release=RELEASE)
+    assert final.details["validation_passed"] is True
+
+    # A change that writes no rows leaves it; a save failing a check turns it off.
+    draft = ruled.amend("A-1", 1, version=final.version, actor=ANA, reason="Age corrected")
+    assert draft.details["validation_passed"] is True
+    save(ruled, draft, values=said(region="south", age="16"), document=ruled_document(True))
+    assert passed() is False
+    # A save without a price leaves the validation unfilled again.
+    save(ruled, ruled.get("A-1", 1), values=said(region="south", age="40"), priced=False)
+    assert passed() is False
+
+
 def test_a_final_quote_takes_no_save_until_it_is_amended_with_a_reason(
     book: QuoteBook, store: Target
 ) -> None:

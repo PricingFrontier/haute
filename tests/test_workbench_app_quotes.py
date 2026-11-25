@@ -307,6 +307,8 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept_in_the_forms_table
         "modified_date": today,
         "modified_by": "ana@example.com",
         "haute_version": "9.9.9",
+        # The form asks nothing the saved quote lacks.
+        "validation_passed": True,
     }
     # The values read back as cells, the app's details among them.
     assert answered["values"]["policy_details"] == [{"state": "NY", "exposure": "1000"}]

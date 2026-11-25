@@ -858,7 +858,7 @@ describe("SchemaEditor", () => {
     fireEvent.change(search, { target: { value: "insured" } })
     expect(nameFields(tableNamed("quote_details"))).toEqual(["insured"])
     expect(current()).toEqual(original)
-    expect(current().schema.tables[0].inputs).toHaveLength(16)
+    expect(current().schema.tables[0].inputs).toHaveLength(17)
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
   })
 

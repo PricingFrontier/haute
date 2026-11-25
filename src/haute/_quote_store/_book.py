@@ -977,6 +977,7 @@ class QuoteBook:
             )
         )
         self._write_rows(connection, rows)
+        self._set_validation(connection, reference, option)
         self._record(connection, operation, reference, option, 1, at, actor, "created")
         return self._open(connection, reference, option, checked=True)
 
@@ -1041,6 +1042,7 @@ class QuoteBook:
                 if moved.rowcount != 1:
                     raise _NotMovedError
                 self._replace_rows(connection, reference, option, rows)
+                self._set_validation(connection, reference, option)
                 self._record(
                     connection,
                     operation,
@@ -1278,6 +1280,18 @@ class QuoteBook:
             {"stage": "final"},
             archived=False,
             stage="draft",
+        )
+
+    def _set_validation(self, connection: Connection, reference: str, option: int) -> None:
+        """Set the quote's ``validation_passed`` from its rows as *connection* has just written
+        them: whether they pass every check marking it final makes (:meth:`_failing`), read
+        back as that reads them, so the two never differ. Only a write of the quote's rows
+        changes what it says."""
+        passed = not self._failing(self._rows(connection, reference, option))
+        connection.execute(
+            update(self._details)
+            .where(*self._is(reference, option))
+            .values(validation_passed=passed)
         )
 
     def _failing(self, rows: Mapping[str, Rows]) -> list[str]:
