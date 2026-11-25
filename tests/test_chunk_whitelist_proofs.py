@@ -172,7 +172,7 @@ def _run_full(graph) -> pl.DataFrame:
 def _outcome(run) -> tuple[pl.DataFrame | None, BaseException | None]:
     try:
         return run(), None
-    except Exception as exc:  # noqa: BLE001 - the raised class is part of the outcome
+    except Exception as exc:  # the raised class is part of the outcome
         return None, exc
 
 

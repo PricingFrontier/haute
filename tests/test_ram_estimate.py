@@ -2593,7 +2593,7 @@ class TestParquetMetadataEdgeCases:
     def test_nonexistent_file_raises(self, tmp_path) -> None:
         import pytest
 
-        # noqa: PT011 - broad by design. The contract under test is "a missing file
+        # Broad by design. The contract under test is "a missing file
         # raises rather than returning empty metadata"; polars does not promise a
         # stable exception type for a missing parquet path across versions.
         with pytest.raises(Exception):  # noqa: PT011

@@ -362,7 +362,7 @@ describe("DataOutputEditor", () => {
 
     const destination = await screen.findByRole("textbox", { name: "Filename or path *" })
     expect(destination).toHaveAccessibleDescription(
-      "Filenames save in the project's outputs/ folder. Paths are relative to the project root. The selected format's extension is added if omitted.",
+      "Filenames save in the project's files/outputs/ folder. Paths are relative to the project root. The selected format's extension is added if omitted.",
     )
     fireEvent.change(destination, { target: { value: "report.csv" } })
     fireEvent.blur(destination)

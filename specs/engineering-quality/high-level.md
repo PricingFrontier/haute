@@ -47,7 +47,10 @@ Out of scope:
   changed-code coverage check. They also run supported Python compatibility
   tests, package/install smoke tests, optional-dependency checks, frontend
   checks, browser E2E, the strict documentation build, and the named auxiliary
-  lanes in the CI workflow. Every gate runs on every run: a gate that combines
+  lanes in the CI workflow. The jobs that run the whole backend suite are on
+  Linux; the platform smoke job's Windows and macOS legs run the modules and tests
+  it names, among them every test that is skipped off Windows (by its module or
+  itself), so no such test is left to no job. Every gate runs on every run: a gate that combines
   other jobs' results (the coverage gate, the mutation gate) runs whether they
   passed or not and fails explicitly when one did not, so a red shard can never
   turn it into a skipped check.
@@ -181,8 +184,11 @@ Out of scope:
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
   discarded caught-error context, unsafe hook refs, state updates in effects, and
-  job-polling loops or intervals outside the shared poller, and local copies of
-  the shared error-text, formatting and object-guard helpers as errors; the
+  job-polling loops or intervals outside the shared poller, local copies of
+  the shared error-text, formatting and object-guard helpers, and, in browser
+  source outside tests, a promise that is neither awaited, handled nor dropped
+  with `void`, or a promise-returning function passed where a void callback is
+  expected, as errors; the
   pre-existing file/rule pairs `frontend/eslint.config.js` lists remain visible
   as narrow config exceptions until their owning changes land.
 - Production code that nothing calls fails the build. In the frontend, knip
@@ -320,6 +326,9 @@ Out of scope:
 - Test debt is visible through one generated, committed health summary rather
   than scattered comments alone. Backend skip/xfail/flaky sites and frontend
   skipped/focused/expected-failure sites remain exact fingerprint ratchets.
+  A skip whose condition is a file the repository does not hold (a frontend
+  build, a model a local training left behind) is not accepted: such a test
+  runs in no CI job, so it makes the file in its temporary folder instead.
   The same summary includes the pinned Playwright retry budget and every
   mutation target's survivor threshold. A stale generated summary fails
   ordinary tests. Because regenerating it scans the full backend and frontend
@@ -401,7 +410,8 @@ by, a scripted result.
 - Coverage merge/gate fails when shard data cannot satisfy the 90% global floor,
   `scripts/check_critical_coverage.py` finds a safety-critical file below its
   statement/branch thresholds, or the changed-code gate finds an uncovered changed
-  statement/branch arc in a safety-critical module. Uncovered changed code
+  statement/branch arc in a safety-critical module. A statement is changed when any
+  of its lines is, not only the first, where Coverage.py records it. Uncovered changed code
   elsewhere is reported in the job summary and does not fail the job.
 - E2E failures retain Playwright trace/screenshots/video according to its
   configuration. Benchmark/performance failures retain their workflow artifacts

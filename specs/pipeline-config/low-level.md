@@ -35,7 +35,7 @@
 | `src/haute/_project_settings.py` | The one parse of `haute.toml`: `read_project_settings(folder)` (the file read now, none without one) returns `ProjectSettings` (`path`, `text` with a leading byte-order mark taken off, `table(name)` a copy of a top-level table, `document()`, `path_setting(table, key)` a path setting by the node-path rule (`PATH_SETTINGS`: `[project].pipeline`, `[test_quotes].dir`, `[mlflow].folder`; a backslash a separator), `configured_pipeline`); a file that is not UTF-8 (named by byte position), malformed TOML (TOML's line and column), an unknown table or key across the whole file (`_schema`, the assistant's and the workbench's key sets imported from their readers, a sub-table the project names, a workbench environment's, checked against one schema, a key refused in its reader's own words), a table that is not one, a path that is not text or starts or ends with a space, or a configured pipeline outside the project raises `ProjectSettingsError` (a `ConfigError` carrying `path`, `text`, `line`, `column`). `settings_path`/`has_settings` name the file; `write_settings_text` (a whole file, checked) and `write_settings_table` (one table replaced through tomlkit, the rest kept) are its writers. Nothing is cached: each call reads the file. |
 | `src/haute/_project.py` | The one finder (`find_project_root(start)`: the first folder at or above *start* holding a `haute.toml`, none without one, `ProjectOutsideGitError` for one outside a git repository; `get_project_root(start)`, which raises `NoProjectError` where none is found; `is_haute_project`), the configured pipeline checked (`configured_pipeline_file(root)`: `PipelineFileError` for a file missing, unreadable (with the system's reason), or, only for a file read without `haute.Pipeline`, not a pipeline; the extension in any letter case) and pipeline-file resolution (`resolve_pipeline_file(path)`, 4-tier fallback in a folder; the CLI passes the shell's working directory when no path is given). |
 | `src/haute/_project_context.py` | The project a call works in. `ProjectContext` (frozen, slotted, picklable: the absolute, resolved `root`; `ProjectContext.at(root)` takes the root as given; the `pipeline_dir` property reads the root's `haute.toml` through the settings parse when used: the folder of `[project].pipeline`, or the root without one, a file the parse refuses raising the parse's refusal), `find_project(start)` (the finder's project, or none without a `haute.toml`), `resolve_project(start)` (the finder for a caller that needs a project, raising where none is found), `project_scope(context)` (a context manager over one `ContextVar`, the one accessor's installer) and `current_project()` (the installed context, `NoProjectContextError` when none; `installed_project()`, for an entry point that installs its own, reports that nothing is installed instead of raising), `standalone_project_scope(source_file)` and `project_holding(folder)` (a standalone run's or a file-given CLI command's project: an installed one, else the project holding the file's folder, else that folder when no `haute.toml` is above it, a `haute.toml` outside git refused; no file: the working directory, the one entry-point read of it), `graph_pipeline_dir(graph)` (the folder of `graph.source_file`, a relative one under the project root), `context_thread` (a `threading.Thread` running its target in a copy of the starting context) and `ProjectContextMiddleware` (ASGI, installs an app's context for every HTTP request, websocket and lifespan). |
-| `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
+| `src/haute/_project_layout.py` | The project's folder layout: `FILES_FOLDER` (`files`, the name of the pipeline folder's versioned files folder and of the project root's local one), `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` holds `data/`, `models/` and `params/`), `LOCAL_FILES_SUBFOLDERS` (the root's unversioned `files/` holds `data/` and `outputs/`), `LOCAL_OUTPUTS_FOLDER` (`files/outputs`, where runs write a bare filename), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
 | `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`, read by `src/haute/_project_settings.py::read_project_settings`, the one parse behind pipeline binding, `src/haute/_project_context.py::ProjectContext.pipeline_dir` and every table's reader. |
 
 ## Key types and data structures
@@ -780,7 +780,7 @@ shares the configured-path checks but additionally lists valid sibling pipelines
 named outside the root among them, raises `ProjectSettingsError`) and returns the parent folder, relative to the root in POSIX form, when that
 folder lies strictly below the root. It returns `None` when nothing is configured or the
 pipeline sits at the root, because then there is no folder to version as a whole.
-`pipeline_files_folder(project_root)` is that folder's `files/` (`PIPELINE_FILES_FOLDER`), or
+`pipeline_files_folder(project_root)` is that folder's `files/` (`FILES_FOLDER`), or
 `None`. `default_model_folder(project_root)` is `<pipeline folder>/files/models`, or `models`
 without a pipeline folder: the folder a bare model or optimiser-result filename lands in.
 `VERSIONED_FILE_LIMIT_BYTES` is 100 MiB (104,857,600 bytes); Commit refuses to version a
@@ -788,7 +788,10 @@ larger file from the pipeline folder ([git-integration](../git-integration/low-l
 `versioned_name(relative)` says whether a `/`-separated path names a file the project
 versions through Haute: no part a dot-name or `__pycache__`, and not a `*.pyc` file. The
 Files panels show and take only such names, and a milestone sweeps in only such new files.
-`LOCAL_FOLDERS` names the root's `data` and `outputs`, which stay out of version history.
+The project root's folder of the same name, `FILES_FOLDER`, holds the local folders
+`LOCAL_FILES_SUBFOLDERS`, `data` and `outputs`, which stay out of version history;
+`LOCAL_OUTPUTS_FOLDER` (`files/outputs`) is where a bare Data Output filename, a training
+frame the editor exports and a scripted training job's files land.
 
 **Scaffold generation (`src/haute/_scaffold.py`, driven by `src/haute/cli/_init_cmd.py::handle_init`).** Every
 template function is parameterised by `target`/`ci` and looks up per-target facts through
@@ -812,7 +815,7 @@ Python) and no other `[deploy]` key, `[ci]` and `workbench_table()`'s
 no `[safety]` or `[ci.staging]`, which only an endpoint's smoke and impact read. Its
 `[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a
 portfolio sample is committed, and a commented example names a Parquet sample under
-tests/impact/, outside the gitignored `data/` (BUG-23: the old
+tests/impact/, outside the gitignored `files/` (BUG-23: the old
 default named `data/portfolio_sample.parquet`, which CI never sees). A container-based target's
 `haute smoke` and `haute impact` call the services at `[ci.staging]` and `[ci.production]`
 `endpoint_url`, which only IT can supply, so its `haute.toml` holds both commented out, the

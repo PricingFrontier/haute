@@ -60,6 +60,12 @@ def _coverage(tmp_path: Path, files: dict[str, object] | None = None) -> Path:
     return path
 
 
+def _source(root: Path, path: str, text: str = "x = 1\n") -> None:
+    source = root / path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(text, encoding="utf-8")
+
+
 def test_config_rejects_empty_and_duplicate_normalized_paths(tmp_path: Path) -> None:
     config = _config(tmp_path, '["src\\\\haute\\\\a.py", "src/haute/a.py"]')
     with pytest.raises(checker.ChangedCoverageError, match="Duplicate"):
@@ -193,6 +199,7 @@ def test_collect_uses_base_and_worktree_and_fails_git(
         )
 
     monkeypatch.setattr(checker.subprocess, "run", run)
+    _source(tmp_path, "src/haute/a.py")
     changed, untracked = checker.collect_changed_lines(config, tmp_path, "base")
     assert changed == {"src/haute/a.py": {1}}
     assert not untracked and len(calls) == 3
@@ -240,6 +247,8 @@ def test_collect_keeps_changed_python_files_in_scope(
         return subprocess.CompletedProcess(args, 0, output)
 
     monkeypatch.setattr(checker.subprocess, "run", run)
+    for path in ("src/haute/a.py", "src/haute/b.py"):
+        _source(tmp_path, path)
     changed, untracked = checker.collect_changed_lines(_gated(), tmp_path, None)
 
     assert changed == {"src/haute/a.py": {1}, "src/haute/b.py": {1}}
@@ -372,3 +381,78 @@ def test_real_git_discovers_and_reports_gated_and_reported_files(
     assert "- src/haute/c.py: statements 0.00%" in output
     assert "scripts/d.py" not in output
     assert "1 statement and 0 branch targets" in output
+
+
+_DURATION = """\
+def seconds_in(hours):
+    seconds = (
+        hours * 3_600
+        + 0
+    )
+    # A comment is no statement's.
+    if (seconds
+            and hours):
+        return seconds
+    return 0
+"""
+
+
+def test_a_line_of_a_statement_is_moved_to_the_statement_s_first_line(tmp_path: Path) -> None:
+    source = tmp_path / "a.py"
+    source.write_text(_DURATION, encoding="utf-8")
+
+    # A term of a sum is the assignment's change, a line of a condition the if's (and so
+    # are the branches leaving it); a comment stays itself, which no statement is.
+    assert checker.statement_lines(source, {3, 4, 6, 8}) == {2, 6, 7}
+
+    source.write_text("def broken(:\n", encoding="utf-8")
+    with pytest.raises(checker.ChangedCoverageError, match="Cannot read the statements"):
+        checker.statement_lines(source, {1})
+
+
+@pytest.mark.parametrize("covered", [False, True], ids=["not-covered", "covered"])
+def test_the_gate_holds_a_change_on_a_later_line_of_a_statement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    covered: bool,
+) -> None:
+    """Coverage.py records the statement on its first line; the changed third line counts."""
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    _source(tmp_path, "src/haute/a.py", _DURATION)
+    config = _config(tmp_path)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    _source(tmp_path, "src/haute/a.py", _DURATION.replace("3_600", "3_000"))
+    statements = [1, 2, 7, 9, 10]
+    coverage = _coverage(
+        tmp_path,
+        {
+            "src/haute/a.py": {
+                "executed_lines": statements if covered else [1],
+                "missing_lines": [] if covered else statements[1:],
+                "executed_branches": [[7, 9], [7, 10]] if covered else [],
+                "missing_branches": [] if covered else [[7, 9], [7, 10]],
+            }
+        },
+    )
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+    outcome = checker.main(["--config", str(config), "--coverage-json", str(coverage)])
+
+    output = capsys.readouterr()
+    if covered:
+        assert outcome == 0
+        assert "1 statement and 0 branch targets" in output.out
+    else:
+        assert outcome == 1
+        assert "src/haute/a.py: missing changed lines: 2" in output.err

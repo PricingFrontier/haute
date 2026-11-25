@@ -2355,7 +2355,7 @@ class RowScopeResolver:
             if self._reads_edge(parent_id, child_id, handle, role)
         )
         single = len(edges) == 1
-        # (source_handle, row, index, width, frame, from_head, identical)
+        # Each match: its source handle, row, index, width, frame, from_head, identical.
         matches: list[
             tuple[
                 str | None,

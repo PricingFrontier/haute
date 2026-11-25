@@ -274,12 +274,13 @@ files, Assistant over Help, and the branch indicator with Save and Commit, is
 ([workbench](../workbench/high-level.md)).
 Pipeline files and Local files each open the Files panel on its place
 ([server-api](../server-api/high-level.md)): Pipeline files on the pipeline folder's
-versioned `files/`, Local files on the project root's `data/` and `outputs/`. The panel
-shows one folder at a time under a breadcrumb, a file's size and when it changed, and in
+versioned `files/`, Local files on the project root's unversioned `files/`, which holds
+`data/` and `outputs/`. The panel shows one folder at a time under a breadcrumb that starts
+at the place's folder (`rating/files` or `files`), a file's size and when it changed, and in
 Pipeline files a file not yet in version history (New), one edited since it was
 committed (Changed), or one `.gitignore` ignores (Ignored). Files
 dropped on it, or picked through Upload, go into the folder showing or the folder row they
-are dropped on (at Local files' root, into `data/`), one at a time with their progress; a
+are dropped on (at Local files' root, into `files/data/`), one at a time with their progress; a
 name already there asks before replacing it, a dropped folder is refused, and a folder that
 only downloads takes none. Each file offers Download, and Delete where files can be added.
 A pipeline-place write or delete is a save, reported as a save is. A replace raises the

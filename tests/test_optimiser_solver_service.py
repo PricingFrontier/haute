@@ -1060,7 +1060,7 @@ class TestFinalizeSolveResult:
             artifact_dir.mkdir(parents=True)
             return str(artifact_dir)
 
-        with patch("haute.routes._optimiser_artifacts.tempfile.mkdtemp", side_effect=_mkdtemp):
+        with patch("haute._artifact_housekeeping.tempfile.mkdtemp", side_effect=_mkdtemp):
             _finalize_solve_result(
                 self._make_solve_result(),
                 mode="online",

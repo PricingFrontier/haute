@@ -89,7 +89,7 @@ def _write_fixture(project: Path, fixture: dict[str, Any]) -> None:
         data = pl.DataFrame(frame["rows"]).with_columns(
             pl.col(column).str.to_date() for column in frame.get("dates", [])
         )
-        path = project / "data" / f"{name}.parquet"
+        path = project / "files" / "data" / f"{name}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
         data.write_parquet(path)
     for relative, value in fixture.get("files", {}).items():
@@ -113,7 +113,7 @@ def _frame_source(name: str) -> dict[str, Any]:
             "input_type": "file",
             "format": "parquet",
             "mode": "scan",
-            "path": f"data/{name}.parquet",
+            "path": f"files/data/{name}.parquet",
         },
     }
 

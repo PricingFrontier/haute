@@ -446,8 +446,9 @@ refused for its process memory cap names the cap, what it holds and the setting 
 it; an expected failure in its own words, so a misspelt `haute.toml` key, a value of the wrong
 type and a read-only file each end in their sentence; and anything else, a `TypeError` say,
 as "Haute hit a failure it does not recognise (incident <id>) …" and where its traceback was
-written, `.haute/incidents/<id>.txt` in the project, or `haute-incidents/` in the system's
-temporary folder outside one. A record that cannot be written is said with its reason, and
+written, `.haute/incidents/<id>.txt` in the project, or `incidents/` in Haute's
+own temporary folder outside one ([sandbox-security](../sandbox-security/high-level.md),
+Trust boundary). A record that cannot be written is said with its reason, and
 the traceback follows. Click's own usage errors (a port out of range among them) exit 2, and
 an abort ends as Click ends it. A reader that stopped reading the command's output (a pipe into
 `head` that took its lines, a pager quit early) ends the command quietly, exit 1, whatever was

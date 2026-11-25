@@ -17,7 +17,6 @@ import gc
 import hashlib
 import os
 import stat as stat_module
-import tempfile
 import threading
 import time
 import uuid
@@ -70,6 +69,7 @@ from haute._project_imports import (
     unbind_project_utility,
     utility_bound_to,
 )
+from haute._project_layout import LOCAL_OUTPUTS_FOLDER
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     PREAMBLE_FILENAME,
@@ -91,6 +91,7 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
+from haute._temp_folder import haute_temp_root
 from haute._temporal_text import exact_rows
 from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
@@ -271,7 +272,7 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     try:
         with project_code_module(ns):
             # Single dict = shared globals.
-            exec(compile_project_code(preamble, filename=PREAMBLE_FILENAME), ns)  # noqa: S102
+            exec(compile_project_code(preamble, filename=PREAMBLE_FILENAME), ns)
     except Exception as exc:
         # Report the innermost line of the project's own code: a utility module's,
         # else the preamble's. A library frame is neither, wherever it lives.
@@ -1948,7 +1949,7 @@ def data_output_destination_lock(final_path: str | Path) -> FileLock:
     the project mutation lock is, so no output folder holds lock files.
     """
     key = hashlib.sha256(os.path.normcase(os.path.abspath(final_path)).encode()).hexdigest()
-    return file_lock_for(Path(tempfile.gettempdir()) / "haute-output-locks" / f"{key}.lock")
+    return file_lock_for(haute_temp_root() / "output-locks" / f"{key}.lock")
 
 
 def data_output_file_destination(
@@ -2162,7 +2163,7 @@ def resolve_data_output_path(
 
     Returns ``(filesystem_path, display_path)``; the filesystem path is
     ``None`` for database targets (which have no local file). Bare filenames
-    land under ``outputs/``. File outputs are project-root-relative. The default
+    land under ``files/outputs/``. File outputs are project-root-relative. The default
     extension comes from the format registry; explicit extensions are preserved.
     """
     from haute._polars_io_registry import format_for_config, format_group, is_databricks_output
@@ -2185,7 +2186,7 @@ def resolve_data_output_path(
     path = data_output_written_path(config)
     if format_group(fmt_entry) == "file":
         # The setting as written: joined to the root, a drive-letter path would land in a
-        # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``outputs/``.
+        # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``files/outputs/``.
         reject_unportable_path_text(config["path"], project_root=root)
     if format_group(fmt_entry) != "file":
         return _contain_output_path(graph, path, project_root=root), path
@@ -2204,7 +2205,7 @@ def resolve_data_output_path(
 
 def data_output_written_path(config: Mapping[str, Any]) -> str:
     """A Data Output's ``path`` as its writer reads it, from the project root: a bare file
-    name goes in ``outputs/``, and the format's extension is added when it names none."""
+    name goes in ``files/outputs/``, and the format's extension is added when it names none."""
     from haute._polars_io_registry import default_output_extension, format_for_config
 
     raw = config.get("path", "")
@@ -2212,7 +2213,7 @@ def data_output_written_path(config: Mapping[str, Any]) -> str:
         raise ValueError("Data output node has no output path configured")
     path = raw
     if "/" not in path and "\\" not in path:
-        path = f"outputs/{path}"
+        path = f"{LOCAL_OUTPUTS_FOLDER}/{path}"
     ext = default_output_extension(format_for_config(config))
     if ext is not None and not Path(path).suffix:
         path = f"{path}{ext}"

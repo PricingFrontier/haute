@@ -1541,9 +1541,9 @@ def _solve_ratebook(
         )
     factor_columns_valid = [list(group) for group in raw_factor_columns]
 
-    factor_artifact_path, _factor_artifact_dir = (
-        _optimiser_artifacts._validate_ratebook_factors_artifact_handle(ratebook_factors_handle)
-    )
+    # Checked before the build, whose ValueError is the data's: a server-owned handle that
+    # fails its check is Haute's own fault, reported as an incident, not as a data error.
+    _optimiser_artifacts._validate_ratebook_factors_artifact_handle(ratebook_factors_handle)
     factor_chunk_decision = pipeline_chunk_decision("ratebook_factor_contexts")
     try:
         factor_contexts = _build_ratebook_factor_contexts(

@@ -125,7 +125,7 @@ def _http_request(
     method: str = "GET",
     headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
-    request = urllib.request.Request(  # noqa: S310 (loopback only)
+    request = urllib.request.Request(  # loopback only
         url,
         headers=headers or {},
         method=method,
@@ -192,10 +192,10 @@ def _scaffold_project(haute_exe: Path, project_dir: Path) -> None:
         cwd=project_dir,
         timeout=INIT_TIMEOUT_SECONDS,
     )
-    for expected in ("haute.toml", "data", "rating/main.py"):
+    for expected in ("haute.toml", "files/data", "rating/main.py"):
         if not (project_dir / expected).exists():
             raise SmokeError(f"haute init did not scaffold {expected}")
-    probe = project_dir / "data" / "init_smoke_probe.json"
+    probe = project_dir / "files" / "data" / "init_smoke_probe.json"
     probe.write_text('{"probe": true}\n', encoding="utf-8")
 
 
@@ -223,7 +223,7 @@ def _check_endpoints(base_url: str) -> None:
         raise SmokeError(f"GET / did not serve the packaged index.html (HTTP {status})")
     _log("packaged frontend served at /")
 
-    files_url = base_url + "/api/files?dir=data&extensions=.json"
+    files_url = base_url + "/api/files?dir=files/data&extensions=.json"
     status, _ = _http_get(files_url)
     if status not in (401, 403):
         raise SmokeError(f"tokenless /api/files should be rejected, got HTTP {status}")

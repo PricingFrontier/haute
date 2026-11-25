@@ -788,7 +788,7 @@ def test_clear_does_not_let_a_build_paused_before_publication_repopulate_the_slo
         def run_child() -> None:
             try:
                 result["value"] = function(request, budget)
-            except BaseException as exc:  # noqa: BLE001 - surfaced to the parent below.
+            except BaseException as exc:  # surfaced to the parent below.
                 result["error"] = exc
 
         child = context_thread(run_child, daemon=True)

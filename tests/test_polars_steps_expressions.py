@@ -899,7 +899,7 @@ def test_pivot_lowering_matches_native_pivot_cell_for_cell(agg: str) -> None:
     code = render_polars_steps(steps, ["rows"], start="input").code
     for frame in (_pivot_frame(), _pivot_frame().head(0)):
         namespace: dict[str, object] = {"pl": pl, "rows": frame}
-        exec(code, namespace, namespace)  # noqa: S102 - generated step code under test
+        exec(code, namespace, namespace)  # generated step code under test
         lowered = namespace["df"]
         assert isinstance(lowered, pl.LazyFrame)
         native = frame.pivot(

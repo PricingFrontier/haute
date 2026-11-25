@@ -14,10 +14,11 @@ interface ContextMenuProps {
   isSingleton?: boolean
   onClose: () => void
   onDelete: (id: string) => void
-  onDuplicate: (id: string) => void
+  // The creating actions report their own failures: the menu closes without waiting for them.
+  onDuplicate: (id: string) => Promise<void>
   onRename: (id: string) => void
-  onCreateInstance?: (id: string) => void
-  onDissolveSubmodel?: (instanceId: string) => void
+  onCreateInstance?: (id: string) => Promise<void>
+  onDissolveSubmodel?: (instanceId: string) => Promise<void>
 }
 
 export default function ContextMenu({
@@ -44,13 +45,13 @@ export default function ContextMenu({
     const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean }[] =
       fixedName ? [] : [{ label: "Rename", icon: Type, action: () => onRename(nodeId) }]
     if (!isSingleton && !isSubmodel) {
-      list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
+      list.push({ label: "Duplicate", icon: Copy, action: () => void onDuplicate(nodeId) })
     }
     if (isSubmodel && onCreateInstance && !isSingleton) {
-      list.push({ label: "Create Instance", icon: Link2, action: () => onCreateInstance(nodeId) })
+      list.push({ label: "Create Instance", icon: Link2, action: () => void onCreateInstance(nodeId) })
     }
     if (isSubmodel && onDissolveSubmodel) {
-      list.push({ label: "Dissolve Submodel", icon: Ungroup, action: () => onDissolveSubmodel(nodeId), danger: true })
+      list.push({ label: "Dissolve Submodel", icon: Ungroup, action: () => void onDissolveSubmodel(nodeId), danger: true })
     }
     if (!isSubmodel || isSubmodelCopy) {
       list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })

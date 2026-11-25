@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import tempfile
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
@@ -25,6 +24,7 @@ from haute._artifact_housekeeping import (
 )
 from haute._env import int_env
 from haute._logging import get_logger
+from haute._temp_folder import haute_temp_root
 from haute._worker_failures import WorkerProtocolError
 from haute._worker_protocol import WorkerArtifactManifest, WorkerResultManifest
 from haute.errors import GoneError
@@ -38,7 +38,7 @@ from haute.schemas import (
 
 logger = get_logger(component="server.modelling.train")
 
-_TRAINING_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/modelling_training"
+_TRAINING_ARTIFACT_ROOT_NAME = "artifacts/v1/modelling_training"
 _TRAINING_ARTIFACT_DIR_PREFIX = "train_"
 _TRAINING_ARTIFACT_OWNER = "modelling_training"
 _TRAINING_ARTIFACT_HANDLE_VERSION = 1
@@ -337,7 +337,7 @@ def _validate_training_artifacts(
 
 def training_artifact_root() -> Path:
     """The server-owned root that holds one marked directory per training job."""
-    return (Path(tempfile.gettempdir()) / _TRAINING_ARTIFACT_ROOT_NAME).resolve()
+    return (haute_temp_root() / _TRAINING_ARTIFACT_ROOT_NAME).resolve()
 
 
 def create_training_artifact_directory() -> Path:

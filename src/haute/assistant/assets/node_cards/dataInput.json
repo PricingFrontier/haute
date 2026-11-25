@@ -18,7 +18,7 @@
         "input_type": "file",
         "format": "parquet",
         "mode": "scan",
-        "path": "data/policies.parquet",
+        "path": "files/data/policies.parquet",
         "arguments": {}
       },
       "produces": ["policy_id", "driver_age", "exposure"]
@@ -30,7 +30,7 @@
         "input_type": "file",
         "format": "csv",
         "mode": "scan",
-        "path": "data/claims.csv",
+        "path": "files/data/claims.csv",
         "arguments": {"try_parse_dates": true},
         "steps": [
           {
@@ -57,7 +57,7 @@
       }
     },
     "files": {
-      "data/claims.csv": "claim_id,policy_id,loss_date,incurred\nc1,p1,2024-02-03,1250.0\nc2,p2,2024-05-19,0.0\nc3,p1,2024-11-30,310.5\n"
+      "files/data/claims.csv": "claim_id,policy_id,loss_date,incurred\nc1,p1,2024-02-03,1250.0\nc2,p2,2024-05-19,0.0\nc3,p1,2024-11-30,310.5\n"
     },
     "expect": {
       "realistic": [

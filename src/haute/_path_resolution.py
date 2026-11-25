@@ -611,7 +611,7 @@ def portable_output_path_refusal(
     root = Path(project_root).resolve()
     shown = repr(raw_path) if raw_path == written else f"{raw_path!r}, which writes {written!r},"
     try:
-        # The setting as written: ``C:priced.csv`` loses its drive once put in ``outputs/``.
+        # The setting as written: ``C:priced.csv`` loses its drive once put in ``files/outputs/``.
         reject_unportable_path_text(raw_path, project_root=root)
     except RuntimePathError as exc:
         return str(exc)

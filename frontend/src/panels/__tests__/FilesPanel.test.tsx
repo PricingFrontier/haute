@@ -41,7 +41,7 @@ function folder(name: string, path = name): ProjectFileEntry {
 }
 
 function listing(place: "pipeline" | "local", path: string, entries: ProjectFileEntry[], writable = true): ProjectFolderResponse {
-  return { place, path, root: place === "pipeline" ? "rating/files" : "", writable, entries }
+  return { place, path, root: place === "pipeline" ? "rating/files" : "files", writable, entries }
 }
 
 function written(path: string, replaced = false) {
@@ -177,13 +177,14 @@ describe("FilesPanel", () => {
     expect(useToastStore.getState().toasts.map((t) => t.text)).toContain("exports_2025 is a folder: drop the files inside it instead.")
   })
 
-  it("sends a drop at Local files' root into data/", async () => {
+  it("sends a drop at Local files' root into files/data/", async () => {
     mockList.mockImplementation((_place: string, path: string) =>
       Promise.resolve(path === "" ? listing("local", "", [folder("data"), folder("outputs")], false) : listing("local", "data", [])),
     )
     render(<FilesPanel place="local" onClose={vi.fn()} />)
     await screen.findByText("outputs")
     expect(screen.getByText("Not versioned")).toBeInTheDocument()
+    expect(screen.getByTestId("files-crumb-root")).toHaveTextContent("files")
     const parquet = new File(["rows"], "portfolio.parquet")
 
     dropFiles(screen.getByTestId("files-drop-zone"), [parquet])
@@ -203,7 +204,7 @@ describe("FilesPanel", () => {
     dropFiles(screen.getByTestId("files-drop-zone"), [new File(["x"], "x.csv")])
 
     await waitFor(() =>
-      expect(useToastStore.getState().toasts.map((t) => t.text)).toContain("outputs only downloads: files can't be added to it."),
+      expect(useToastStore.getState().toasts.map((t) => t.text)).toContain("files/outputs only downloads: files can't be added to it."),
     )
     expect(mockUpload).not.toHaveBeenCalled()
     expect(screen.queryByLabelText("Delete scored.parquet")).not.toBeInTheDocument()

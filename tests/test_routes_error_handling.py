@@ -467,11 +467,28 @@ class TestApiWsNotFoundReturnsJson:
     After the fix, a dedicated catch-all registered BEFORE ``serve_spa``
     returns 404 ``application/json`` for every unmatched /api/* and /ws/*
     path, leaving genuine SPA client routes unaffected.
+
+    ``serve_spa`` is registered only beside a frontend build, so each test
+    serves a build made in its temporary folder: without one, FastAPI's own
+    404 would answer JSON whether or not the guard stood in front.
     """
+
+    @pytest.fixture()
+    def spa_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        """The editor server beside a frontend build, so the SPA catch-all is live."""
+        build = tmp_path / "frontend-build"
+        (build / "assets").mkdir(parents=True)
+        (build / "index.html").write_text("<!doctype html><title>Haute</title>", encoding="utf-8")
+        monkeypatch.setattr("haute.server.STATIC_DIR", build)
+        project = tmp_path / "project"
+        project.mkdir()
+        use_project(project)
+        (project / "main.py").write_text('import haute\npipeline = haute.Pipeline("p")\n')
+        return TestClient(project_app(), raise_server_exceptions=False)
 
     def test_unregistered_api_git_history_returns_404_json(
         self,
-        project_client: TestClient,
+        spa_client: TestClient,
     ) -> None:
         """GET /api/git/history (no such endpoint) must return 404 JSON, not HTML.
 
@@ -479,7 +496,7 @@ class TestApiWsNotFoundReturnsJson:
         endpoint that does not exist, got back the SPA HTML shell, and
         ``res.json()`` threw the cryptic SyntaxError.
         """
-        resp = project_client.get("/api/git/history")
+        resp = spa_client.get("/api/git/history")
         assert resp.status_code == 404, (
             f"expected 404, got {resp.status_code}; body: {resp.text[:200]!r}"
         )
@@ -493,10 +510,10 @@ class TestApiWsNotFoundReturnsJson:
 
     def test_unregistered_api_path_returns_404_json(
         self,
-        project_client: TestClient,
+        spa_client: TestClient,
     ) -> None:
         """Any unmatched /api/* GET must return 404 JSON, not the SPA shell."""
-        resp = project_client.get("/api/some-nonexistent-endpoint")
+        resp = spa_client.get("/api/some-nonexistent-endpoint")
         assert resp.status_code == 404, (
             f"expected 404, got {resp.status_code}; body: {resp.text[:200]!r}"
         )
@@ -507,14 +524,14 @@ class TestApiWsNotFoundReturnsJson:
 
     def test_unregistered_ws_path_returns_404_json(
         self,
-        project_client: TestClient,
+        spa_client: TestClient,
     ) -> None:
         """GET /ws/<nonexistent> must return 404 JSON.
 
         Only /ws/sync exists as a WebSocket endpoint; a plain GET to any
         other /ws/* path must be caught before the SPA fallback.
         """
-        resp = project_client.get("/ws/nonexistent")
+        resp = spa_client.get("/ws/nonexistent")
         assert resp.status_code == 404, (
             f"expected 404, got {resp.status_code}; body: {resp.text[:200]!r}"
         )
@@ -525,7 +542,7 @@ class TestApiWsNotFoundReturnsJson:
 
     def test_registered_api_git_working_branch_still_works(
         self,
-        project_client: TestClient,
+        spa_client: TestClient,
     ) -> None:
         """Regression: the new /api/* catch-all must not shadow real API routes."""
         from unittest.mock import patch
@@ -538,35 +555,22 @@ class TestApiWsNotFoundReturnsJson:
             current_branch="pricing/alice/dev",
         )
         with patch("haute.routes.git.working_branch_status", return_value=fake):
-            resp = project_client.get("/api/git/working-branch")
+            resp = spa_client.get("/api/git/working-branch")
         assert resp.status_code == 200, (
             f"real route should still return 200, got {resp.status_code}"
         )
         assert resp.headers["content-type"].startswith("application/json")
 
-    def test_spa_still_served_for_non_api_routes(self) -> None:
-        """Regression: genuine SPA client routes must still return index.html.
-
-        Only asserted when a frontend build is present (``STATIC_DIR.exists()``);
-        otherwise skipped so CI without a built frontend still passes.
-        """
-        from fastapi.testclient import TestClient
-
-        from haute.server import STATIC_DIR
-
-        app = project_app()
-
-        if not STATIC_DIR.exists():
-            pytest.skip("No frontend build present — SPA serving not active")
-
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/some-frontend-route")
+    def test_spa_still_served_for_non_api_routes(self, spa_client: TestClient) -> None:
+        """Regression: genuine SPA client routes must still return index.html."""
+        resp = spa_client.get("/some-frontend-route")
         assert resp.status_code == 200, (
             f"SPA shell should be served for client routes, got {resp.status_code}"
         )
         assert resp.headers["content-type"].startswith("text/html"), (
             f"expected text/html for SPA route, got {resp.headers['content-type']!r}"
         )
+        assert resp.text == "<!doctype html><title>Haute</title>"
 
 
 # ---------------------------------------------------------------------------

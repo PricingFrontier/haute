@@ -165,7 +165,7 @@ When you open your project folder, you'll see files like these:
 
 ### Gitignore: keeping secrets safe
 
-The `.gitignore` file tells Git to ignore certain files - they won't be tracked, shared, or uploaded. Haute automatically adds `.env` to `.gitignore` so your passwords and tokens stay on your machine only. It also adds the `data/` folder, so data files stay out of the repository, and a few folders Haute writes its working files to (`.haute/`, `mlruns/`).
+The `.gitignore` file tells Git to ignore certain files - they won't be tracked, shared, or uploaded. Haute automatically adds `.env` to `.gitignore` so your passwords and tokens stay on your machine only. It also adds the project root's `files/` folder, so local data and run outputs stay out of the repository, and a few folders Haute writes its working files to (`.haute/`, `mlruns/`).
 
 You don't need to edit `.gitignore` - just know that it's there to protect you.
 

@@ -76,7 +76,7 @@ A file's columns take their names from its header row, or from **ARGUMENTS**, ne
 - **A CSV saved as UTF-16.** Windows PowerShell 5.1 writes UTF-16 when it redirects output to a file. Such a CSV is refused naming its encoding ("is saved as UTF-16 (little-endian), not UTF-8"): save it as UTF-8, or name its `encoding` in **ARGUMENTS** with mode `read`. A UTF-8 file that starts with a byte-order mark reads as it is.
 - **A JSON Lines file with a byte-order mark** is refused naming the file: Polars cannot read through the mark. Save it as UTF-8 without one.
 - **A JSON record that repeats a key** is read as Polars reads it: a top-level key keeps its first value, which differs from the [Quote Input](quote-input.md) and Load File, which keep the last, and a key repeated inside a nested object is refused.
-- **A path every copy of the project can open.** Saving, and `haute lint`, refuse a path that another computer's copy of the project, or a CI job on Linux, would not find: an absolute path, such as the one Windows Explorer's **Copy as path** gives, and a path whose letter case differs from the file's, such as `data/Synthetic.csv` for `data/synthetic.csv`. Windows and macOS open the file either way and Linux does not. The message names the node and the path to write instead.
+- **A path every copy of the project can open.** Saving, and `haute lint`, refuse a path that another computer's copy of the project, or a CI job on Linux, would not find: an absolute path, such as the one Windows Explorer's **Copy as path** gives, and a path whose letter case differs from the file's, such as `files/data/Synthetic.csv` for `files/data/synthetic.csv`. Windows and macOS open the file either way and Linux does not. The message names the node and the path to write instead.
 
 ## The TRANSFORM tab
 
@@ -109,7 +109,7 @@ The preview shows the file's first rows.
 
 A CSV file that uses `;` as its separator:
 
-1. Choose **CSV** as the **FORMAT**, and `data/claims.csv` as the **PATH**.
+1. Choose **CSV** as the **FORMAT**, and `files/data/claims.csv` as the **PATH**.
 2. Under **ARGUMENTS**, click **Add argument**, type `separator` as the name and `";"` as the value.
 
 The detected schema splits the columns on `;`. Click **Use detected schema** to fix their types, or leave the types to inference when Haute copies the file into its snapshot.

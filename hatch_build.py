@@ -61,7 +61,7 @@ class _LocalAssetParser(HTMLParser):
 class FrontendBuildHook(BuildHookInterface):
     PLUGIN_NAME = "frontend-build"
 
-    def initialize(self, version: str, build_data: dict) -> None:  # noqa: ARG002
+    def initialize(self, version: str, build_data: dict) -> None:
         build_frontend = self._should_build_frontend()
         # Editable installs happen during dependency sync; wheel builds still
         # validate packaged frontend assets below.

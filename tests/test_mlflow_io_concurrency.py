@@ -209,7 +209,7 @@ def _run_threads(workers: dict[str, Any], join_timeout: float = WAIT_MUST_HAPPEN
         def runner() -> None:
             try:
                 results[name] = fn()
-            except BaseException as exc:  # noqa: BLE001 — surfaced via assertions
+            except BaseException as exc:  # surfaced via assertions
                 errors[name] = exc
 
         return runner

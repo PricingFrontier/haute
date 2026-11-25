@@ -139,7 +139,7 @@ def _remove_staged(files: Any, staged_path: str, credentials: DatabricksCredenti
         files.delete(staged_path)
     except NotFound:
         pass  # The upload failed before the file existed.
-    except Exception as exc:  # noqa: BLE001 - cleanup must not mask the write
+    except Exception as exc:  # cleanup must not mask the write
         logger.warning(
             "databricks_staging_cleanup_failed",
             path=staged_path,

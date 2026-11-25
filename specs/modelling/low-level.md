@@ -527,7 +527,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates the job's owned
    artifact directory with `create_training_artifact_directory()` (a marked `train_*` child of
-   `training_artifact_root()`, `<system temp>/haute/artifacts/v1/modelling_training`), and
+   `training_artifact_root()`, `artifacts/v1/modelling_training` under Haute's temporary folder (`src/haute/_temp_folder.py::haute_temp_root`)), and
    starts a daemon supervisor thread around a spawn child. The node's `output_dir` applies only
    to scripted `TrainingJob` runs; canvas training artifacts are server-owned job state that
    users take away with Save model to file or Log run to MLflow.
@@ -1264,7 +1264,7 @@ Training never reads it; `build_training_job_kwargs` does not emit it.
 
 `haute.modelling._model_export` owns the destination rules, mirroring
 `resolve_data_output_path` for a file Data Output with the default model folder in place of
-`outputs/`. `MODEL_FILE_SUFFIXES` (`catboost` → `.cbm`, `glm` → `.rsglm`) is the single
+`files/outputs/`. `MODEL_FILE_SUFFIXES` (`catboost` → `.cbm`, `glm` → `.rsglm`) is the single
 extension map; `TrainingJob` names its model file from it.
 `resolve_model_export_destination(raw_path, *, model_suffix, project_root)` normalises
 separators (rejecting NUL bytes), places a path with no separator under

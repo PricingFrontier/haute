@@ -1690,7 +1690,7 @@ def test_a_select_written_a_slice_at_a_time_keeps_its_native_height(
 
     def node_fn(lf: pl.LazyFrame) -> pl.LazyFrame:
         scope: dict[str, Any] = {"pl": pl, "parent": lf}
-        exec(code, scope)  # noqa: S102 - the test's own literal code
+        exec(code, scope)  # the test's own literal code
         return scope["df"]
 
     # The recipe as lazy execution builds it from the classifier's decision.

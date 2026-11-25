@@ -790,7 +790,7 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
             return request, price_request(release, request)
         # A pipeline's own code can raise anything on a request: the save says why, as
         # every edge says it (a node's own failure naming its node, else an incident).
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             said = answer_pipeline_failure(exc, operation="workbench_test_quote").message
             raise _RefusedError(422, f"The quote did not price: {said}") from None
 
@@ -1008,7 +1008,7 @@ def _accept_one(
     try:
         answer = price_request(release, quote.input)
     # A pipeline's own code can raise anything on a request: the quote is named, not accepted.
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         said = answer_pipeline_failure(exc, operation="workbench_test_quote").message
         return f"it did not price: {said}"
     # An editor outside Haute takes no lock: the file is checked again just before it is

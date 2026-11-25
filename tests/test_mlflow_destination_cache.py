@@ -500,7 +500,7 @@ class TestConcurrentBackends:
         def run(name: str, destination: str) -> None:
             try:
                 results[name] = _load(destination=destination)
-            except BaseException as exc:  # noqa: BLE001 — surfaced via assertions
+            except BaseException as exc:  # surfaced via assertions
                 errors[name] = exc
 
         threads = [

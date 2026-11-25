@@ -649,7 +649,7 @@ def refuse_data_outside_pipeline_folder(
     """Refuse a file the quote output reads that lies outside the pipeline folder.
 
     Deploy ships only data stored in the pipeline folder (``rating/``); a file outside
-    it, such as the project's local ``data/``, is never shipped, so a deployment reading
+    it, such as the project's local ``files/data/``, is never shipped, so a deployment reading
     one could not score. A deployment drops every node the quote output does not
     depend on (the pruned graph no longer holds it: a training or optimisation branch, a
     data export, a source switch's non-live input), so those may read from anywhere.
@@ -660,7 +660,7 @@ def refuse_data_outside_pipeline_folder(
     """
     from haute._input_providers import named_source_files
     from haute._path_resolution import node_input_path_copies
-    from haute._project_layout import PIPELINE_FILES_FOLDER
+    from haute._project_layout import FILES_FOLDER
 
     folder = pipeline_dir.resolve()
     root = project_root.resolve()
@@ -688,7 +688,7 @@ def refuse_data_outside_pipeline_folder(
         raise DeployError(
             f"Data Input node {node_id!r} reads {raw_path!r}, outside the pipeline folder "
             f"{shown!r}, and the quote output depends on it. Deploy ships only data stored "
-            f"in the pipeline folder: move the file into {shown}/{PIPELINE_FILES_FOLDER}/data, "
+            f"in the pipeline folder: move the file into {shown}/{FILES_FOLDER}/data, "
             "or take this input off the path to the quote output (a deployment drops every "
             "node the quote output does not depend on, so those may read data from anywhere).",
             node_id=node_id,

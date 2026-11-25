@@ -277,7 +277,13 @@ select = [
     # its functions stay at 15 or below (EXEC-R05); the rule is scoped to that
     # module by the per-file ignore below.
     "C901",
+    # A `noqa` that suppresses nothing (its rule is not selected, or no longer
+    # fires) says nothing about what is checked, so it fails like the code would.
+    "RUF100",
 ]
+# Ruff's fix for RUF100 deletes the whole comment, a reason after the code with
+# it; the author keeps that reason as a plain comment instead.
+unfixable = ["RUF100"]
 
 [tool.ruff.lint.flake8-pytest-style]
 # PT011 defaults to flagging ValueError and OSError as well, which would demand a

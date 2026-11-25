@@ -156,7 +156,7 @@ def sliceable(lf: pl.LazyFrame) -> bool:
             elif kind not in _SLICE_TRANSPARENT_NODES:
                 return False
             traverser.set_node(inputs[0])
-    except Exception:  # noqa: BLE001 - an unreadable plan is simply not sliceable
+    except Exception:  # an unreadable plan is simply not sliceable
         return False
 
 

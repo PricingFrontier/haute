@@ -1042,7 +1042,7 @@ class TestUnresolvableButInspectableNodes:
 
         from haute.assistant._tools import node_schema
 
-        def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        def poisoned_collect(self, *args, **kwargs):
             raise AssertionError("the schema part must never collect data")
 
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
@@ -1094,7 +1094,7 @@ class TestUnresolvableButInspectableNodes:
         )
         monkeypatch.setattr(tools_module, "parse_pipeline_to_graph", lambda _path: graph)
 
-        def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        def poisoned_collect(self, *args, **kwargs):
             raise AssertionError("the schema part must never collect data")
 
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
@@ -1140,7 +1140,7 @@ class TestSubmodelBoundaryValidation:
 
         import haute.assistant._tools as tools_module
 
-        def must_not_execute(*args, **kwargs):  # noqa: ANN002, ANN003
+        def must_not_execute(*args, **kwargs):
             raise AssertionError("engine must not run for a boundary-rejected target")
 
         monkeypatch.setattr(tools_module, "execute_lazy_graph", must_not_execute)

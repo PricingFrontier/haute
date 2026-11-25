@@ -119,7 +119,7 @@ logger = get_logger(component="project_storage")
 #: ``catalog.schema.volume`` holding binding records (not project data).
 STATE_VOLUME_ENV = "HAUTE_STATE_VOLUME"
 #: Git credential for the bound remote, from an app secret resource.
-GIT_TOKEN_ENV = "HAUTE_GIT_TOKEN"  # noqa: S105 - env var name, not a secret
+GIT_TOKEN_ENV = "HAUTE_GIT_TOKEN"  # env var name, not a secret
 #: Optional username for HTTPS basic auth; token-as-password is the norm.
 GIT_USERNAME_ENV = "HAUTE_GIT_USERNAME"
 #: Comma-separated hosts the git credential may be sent to. Required whenever

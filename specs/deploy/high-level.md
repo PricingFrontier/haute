@@ -225,7 +225,7 @@ partition columns ship.
 **Only data in the pipeline folder ships.** A file-based Data Input (a file or lakehouse
 source) the quote output depends on, after pruning, must live inside the pipeline folder
 (`rating/` in a new project; the folder holding `[project].pipeline`), where the project
-versions it and CI checks it out. One outside it, such as the project's local `data/`, is
+versions it and CI checks it out. One outside it, such as the project's local `files/data/`, is
 never shipped: resolution refuses the deployment naming the node, its configured path and
 the folder, with the remedy (move the file into `<folder>/files/data`, or keep the input
 off the path to the quote output). Each file is judged where it lies, so a link inside the

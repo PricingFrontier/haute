@@ -539,7 +539,7 @@ export default function IoFormatEditor({
               key={field.name}
               label={`${field.label}${field.required ? " *" : ""}`}
               description={direction === "output" && group.name === "file"
-                ? "Filenames save in the project's outputs/ folder. Paths are relative to the project root. The selected format's extension is added if omitted."
+                ? "Filenames save in the project's files/outputs/ folder. Paths are relative to the project root. The selected format's extension is added if omitted."
                 : undefined}
               value={value}
               onSelect={(path) => updateField(field.name, path)}

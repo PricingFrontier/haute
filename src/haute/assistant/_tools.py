@@ -381,7 +381,7 @@ def _config_setting_message(
             if policy is None:
                 policy = _egress_policy()
             readable = _part_requirement(policy, "config") is None
-        except Exception:  # noqa: BLE001 - an unreadable policy withholds
+        except Exception:  # an unreadable policy withholds
             readable = False
         sent = _submitted_scalars(submitted)
         if not readable and not all(str(value) in sent for value in exc.values):
@@ -425,7 +425,7 @@ def _input_columns(
     try:
         flat = flatten_with_form_tables(graph, project_root=current_project().root)
         inputs = _node_inputs(graph, flat, node)
-    except Exception as exc:  # noqa: BLE001 - an unresolvable site discloses nothing
+    except Exception as exc:  # an unresolvable site discloses nothing
         logger.info("assistant_failure_schema_unresolved", node=node, error=type(exc).__name__)
         return {}
     outputs: dict[str, object] = {}
@@ -440,7 +440,7 @@ def _input_columns(
                     flat, graph, target=source, preserve=frozenset({source})
                 )[source]
             columns[item.name] = _frame_column_names(outputs[source], item.runtime_port)
-        except Exception as exc:  # noqa: BLE001 - an unresolvable frame discloses nothing
+        except Exception as exc:  # an unresolvable frame discloses nothing
             logger.info(
                 "assistant_failure_schema_unresolved", node=source, error=type(exc).__name__
             )
@@ -468,7 +468,7 @@ def _schema_metadata_names(site: _FailureSite) -> set[str]:
                 preserve=frozenset({site.node}),
             )[site.node]
             names.update(_frame_column_names(output, None))
-        except Exception as exc:  # noqa: BLE001 - an unresolvable frame discloses nothing
+        except Exception as exc:  # an unresolvable frame discloses nothing
             logger.info(
                 "assistant_failure_schema_unresolved", node=site.node, error=type(exc).__name__
             )
@@ -571,7 +571,7 @@ def _execution_failure(
         withheld_because = (
             "[assistant.egress].allow_row_samples is false and the text can quote row values"
         )
-    except Exception as policy_exc:  # noqa: BLE001 - an unreadable policy withholds
+    except Exception as policy_exc:  # an unreadable policy withholds
         allowed = False
         allow_executable_source = False
         withheld_because = "the egress policy could not be read: " + _error_message(
@@ -984,7 +984,7 @@ def _input_schemas_independently(
                 preserve=frozenset({item.runtime_source}),
             )
             resolved[item.name] = _port_schema(lazy_outputs[item.runtime_source], item.runtime_port)
-        except Exception as exc:  # noqa: BLE001 - one unresolvable input is reportable
+        except Exception as exc:  # one unresolvable input is reportable
             resolved[item.name] = {
                 "unresolved_reason": _execution_error_message(
                     exc, operation="inspect_node", site=_FailureSite(graph, item.runtime_source)
@@ -1036,7 +1036,7 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
         flat = flatten_with_form_tables(graph, project_root=current_project().root)
         inputs = _node_inputs(graph, flat, node)
         occurrence = resolve_submodel_instances(graph).get(node)
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         return _error(
             "schema_unresolvable",
             _error_message(exc, operation="inspect_node"),
@@ -1085,7 +1085,7 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
             "inputs": _input_schemas_independently(flat, graph, inputs),
             "project_revision": project_revision,
         }
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         # Like an empty node, a failing one still answers which columns arrive on
         # each input, and names the step that raised when that is known.
         step = _failing_step(graph, node, exc)
@@ -1129,7 +1129,7 @@ def _occurrence_schema(
             result["inputs"] = _input_schemas_from_outputs(inputs, outputs)
         result["project_revision"] = project_revision
         return result
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         # No site: the failing node is inside the submodel, whose code is not
         # the model's to read, so the message names no column.
         return _error(
@@ -1215,7 +1215,7 @@ def get_pipeline(source_file: str) -> dict[str, object]:
             **render_pipeline_graph(graph, egress=policy),
             "project_revision": project_revision,
         }
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
+    except Exception as exc:  # structured tool boundary
         return _error("pipeline_unavailable", _error_message(exc, operation="get_pipeline"))
 
 
@@ -1296,7 +1296,7 @@ def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, 
     outputs: Mapping[str, object] = {}
     try:
         outputs = _resolve_schema_outputs(flat, graph, target=None, preserve=flat_ids)
-    except Exception as exc:  # noqa: BLE001 - each node then resolves on its own
+    except Exception as exc:  # each node then resolves on its own
         logger.info("assistant_turn_context_graph_unresolved", error=type(exc).__name__)
     resolved: dict[str, tuple[object | None, Exception | None]] = {}
 
@@ -1314,7 +1314,7 @@ def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, 
                 # only when its schema is read, after resolution has returned.
                 _output_columns(output)
                 resolved[node_id] = (output, None)
-            except Exception as exc:  # noqa: BLE001 - an unresolved node is reported as such
+            except Exception as exc:  # an unresolved node is reported as such
                 logger.info(
                     "assistant_turn_context_node_unresolved",
                     node=node_id,
@@ -1435,7 +1435,7 @@ def _brief_input_freshness(flat: PipelineGraph) -> dict[str, object] | None:
 
     try:
         paths = runtime_input_signed_paths(flat)
-    except Exception as exc:  # noqa: BLE001 - a broken node only marks itself unresolved
+    except Exception as exc:  # a broken node only marks itself unresolved
         logger.info("assistant_turn_context_inputs_unlisted", error=type(exc).__name__)
         return None
     return {str(path): _freshness_token(str(path)) for path in paths}
@@ -1479,7 +1479,7 @@ def _preview_error(graph: PipelineGraph, node: str) -> PreviewError:
             target=node,
             preserve=frozenset({node}),
         )
-    except Exception as exc:  # noqa: BLE001 - the failure is what was asked for
+    except Exception as exc:  # the failure is what was asked for
         return PreviewError(
             node,
             _execution_error_message(exc, operation="turn_context", site=_FailureSite(graph, node)),
@@ -1623,7 +1623,7 @@ def node_config(source_file: str, node: str) -> dict[str, object]:
             ),
             "project_revision": project_revision,
         }
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
+    except Exception as exc:  # structured tool boundary
         return _error("node_config_unavailable", _error_message(exc, operation="inspect_node"))
 
 
@@ -1766,7 +1766,7 @@ def _prepare_column_profile(
         inputs = _node_inputs(
             graph, flatten_with_form_tables(graph, project_root=current_project().root), node
         )
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         return _error("profile_unavailable", _error_message(exc, operation="inspect_node"))
     if input_name is not None and all(item.name != input_name for item in inputs):
         return _error(
@@ -1846,7 +1846,7 @@ def _collect_column_profile(
         return _profile_frame(frame, execution_context=execution_context)
     except ExecutionCancelledError:
         return _error("profile_unavailable", "The column profile was stopped before it finished.")
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         return _error(
             "profile_unavailable",
             _execution_error_message(
@@ -1977,7 +1977,7 @@ async def column_profiles(
         )
     except (WorkerError, SupersededRequestError) as exc:
         return _profile_worker_failure(exc)
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         # Naming a failure's columns can resolve schemas, which runs the engine.
         failure = await asyncio.to_thread(
             _execution_error_message,
@@ -2042,7 +2042,7 @@ def _prepare_node_data(
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         return _error("data_unavailable", _error_message(exc, operation="inspect_node"))
     return NodeDataCheckRequest(graph, node, column, policy), project_revision
 
@@ -2111,7 +2111,7 @@ async def inspect_node(
         )
     try:
         policy = _egress_policy()
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         return _error("egress_policy_unavailable", _error_message(exc, operation="inspect_node"))
     requested = [part for part in INSPECT_NODE_PARTS if part in parts]
     withheld = [
@@ -2310,7 +2310,7 @@ def dataset_listing(
             "recursive": recursive,
             "truncated": truncated,
         }
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
+    except Exception as exc:  # structured tool boundary
         return _error("dataset_list_unavailable", _error_message(exc, operation="find_data"))
 
 
@@ -2354,7 +2354,7 @@ def dataset_schema(
             )
             result["project_revision"] = project_revision
         return result
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
+    except Exception as exc:  # structured tool boundary
         return _error(
             "dataset_schema_unavailable",
             _error_message(exc, operation="find_data"),
@@ -2455,7 +2455,7 @@ def read_reference(references: Sequence[str]) -> dict[str, object]:
             {"id": reference, "content": _reference_content(reference)} for reference in references
         ]
         return {"count": len(items), "references": items}
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
+    except Exception as exc:  # structured tool boundary
         return _error(
             "reference_unavailable",
             _error_message(exc, operation="read_reference"),
@@ -2506,7 +2506,7 @@ def get_project_knowledge(
         }
     except ValueError as exc:
         return _error("invalid_project_knowledge_query", str(exc))
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
+    except Exception as exc:  # structured tool boundary
         return _error(
             "project_knowledge_unavailable",
             _error_message(exc, operation="get_project_knowledge"),
@@ -2771,7 +2771,7 @@ async def dry_run_graph_edits(
             exc.where = {**exc.where, "recipe": batch.recipes[op_index]}
         # Naming a failure's columns can resolve schemas, which runs the engine.
         return await asyncio.to_thread(_operation_error, exc, operation="dry_run_graph_edits")
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         # `invalid_plan` is a specific authorization verdict raised by the
         # domain layer. Reusing it for an unexpected exception told the model
         # its plan was rejected when nothing had judged the plan at all.
@@ -2860,7 +2860,7 @@ async def apply_graph_plan(
         return failure
     except LocatedPlanError as exc:
         return await asyncio.to_thread(_operation_error, exc, operation="apply_graph_plan")
-    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+    except Exception as exc:  # tool boundary must not raise
         return _error("mutation_failed", _error_message(exc, operation="apply_graph_plan"))
 
 
@@ -3695,7 +3695,7 @@ def build_tool_executor(
         if name in _INTERNAL_PROJECT_TOOLS:
             try:
                 policy = _egress_policy()
-            except Exception as exc:  # noqa: BLE001 - executor must not raise
+            except Exception as exc:  # executor must not raise
                 return _attributed_tool_result(
                     name,
                     _error(
@@ -3750,7 +3750,7 @@ def build_tool_executor(
             # still holds; the model no longer sees the result it came from.
             try:
                 released = await asyncio.to_thread(ledger.release_stale_carried, project_root)
-            except Exception as exc:  # noqa: BLE001 - executor must not raise
+            except Exception as exc:  # executor must not raise
                 return _bounded_tool_result(
                     name, _error("operation_failed", _error_message(exc, operation=name))
                 )
@@ -3858,7 +3858,7 @@ def build_tool_executor(
                     project_root=project_root,
                 )
             return result
-        except Exception as exc:  # noqa: BLE001 - executor must never raise
+        except Exception as exc:  # executor must never raise
             return _bounded_tool_result(
                 name,
                 _error("tool_failed", _error_message(exc, operation=name)),

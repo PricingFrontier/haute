@@ -604,11 +604,15 @@ def serve(host: str | None, port: int, no_browser: bool) -> None:
 
     Whichever source wins, non-loopback values are rejected before startup.
     """
+    from haute._temp_folder import haute_temp_root
     from haute.discovery import discover_pipelines
 
     # The command's need is a project: the one holding the working directory.
     root = current_project().root
     settings = require_command_settings()
+    # A temporary folder that is not the user's own ends the command in its one line,
+    # before the server starts (the server's startup checks it again).
+    haute_temp_root()
     # A configured pipeline file that is missing or holds no pipeline ends the command in
     # one line here, before the server starts.
     discover_pipelines(root)

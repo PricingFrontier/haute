@@ -2131,9 +2131,9 @@ def _apply_ratebook(
                     )
             if not entries:
                 continue
-            # factor_tables format from save: list of
-            # {"__factor_group__": level, "optimal_scenario_value": value}
-            # Convert to the rating table format expected by _apply_rating_table
+            # Saved factor_tables are a list of entries, each mapping "__factor_group__"
+            # to a level and "optimal_scenario_value" to its value; convert them to the
+            # rating table format _apply_rating_table expects.
             table = _ratebook_lookup_table(_name, entries, dtype_records)
             out_col: str = table["output_column"]
             result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)

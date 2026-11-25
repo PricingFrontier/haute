@@ -4,9 +4,9 @@ Generated deterministically from the live test-debt scanners and mutation target
 
 | Signal | Count / max survivor rate | Enforcement/source |
 | --- | ---: | --- |
-| Backend skip/skipif | 69 | Backend AST scanner |
-| Backend importorskip | 62 | Backend AST scanner |
-| Backend xfail | 2 | Backend AST scanner |
+| Backend skip/skipif | 68 | Backend AST scanner |
+| Backend importorskip | 61 | Backend AST scanner |
+| Backend xfail | 3 | Backend AST scanner |
 | Backend flaky | 0 | Backend AST scanner (zero-budget fingerprint ratchet) |
 | Frontend marker debt | 2 | Frontend source scanner |
 | Playwright CI retries | 2 | frontend/playwright.config.ts: process.env.CI ? 2 : 0 |

@@ -4,18 +4,11 @@
  * helpers and pinned locales, and exempts only each
  * helper's owning module. These probes lint snippets through the real config.
  */
-import { ESLint } from "eslint"
-import { beforeAll, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
+import { lintProbe } from "./lintProbe"
 
-let eslint: ESLint
-
-beforeAll(() => {
-  eslint = new ESLint({ cwd: process.cwd() })
-})
-
-async function restrictedMessages(code: string, filePath = "src/panels/probe.ts"): Promise<string[]> {
-  const [result] = await eslint.lintText(code, { filePath })
-  return result.messages
+async function restrictedMessages(code: string, filePath?: string): Promise<string[]> {
+  return (await lintProbe(code, filePath))
     .filter((message) => message.ruleId === "no-restricted-syntax")
     .map((message) => message.message)
 }

@@ -56,6 +56,9 @@ In scope:
   environment-policy layer.
 - The shared `.gitignore` guard-entry list and the idempotent writer
   (`_gitignore_guard.py`) that keeps two independent call sites from drifting.
+- Haute's own folder under the system temporary folder (`_temp_folder.py`), which
+  every file Haute keeps outside a project in the temporary folder under a fixed name
+  goes through.
 
 Out of scope (owned elsewhere, linked where relevant):
 - What the validated/exec'd code is allowed to *do* semantically (which node types
@@ -92,7 +95,7 @@ Out of scope (owned elsewhere, linked where relevant):
   project root (`contained_path`, the runtime path resolution below); that
   containment protects haute's persistence from confused paths, not the machine
   from the author. The Files panels reach only the pipeline folder's `files/` and
-  the root's `data/` and `outputs/`, never a dot-name such as `.env` or `.git`, and
+  the root's `files/data/` and `files/outputs/`, never a dot-name such as `.env` or `.git`, and
   never through a link ([server-api](../server-api/high-level.md)).
 - **Environment exposure.** The process environment, including any credentials
   the deployment supplies to haute itself, is visible to project code.
@@ -107,6 +110,36 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Hosted mode.** Node code runs with the app's identity in its own container;
   the platform proxy boundary adapts traffic and never contains code, and access
   to a project is governed by the workspace permissions on the app.
+- **Pages of other sites.** A browser sends a page's requests with the cookies of the
+  site they go to, so each server that changes something for a signed-in user says
+  which page may ask. The three rules, side by side:
+  - *The local editor* (`haute serve`): every `/api/` request and sync socket from a
+    browser carries an Origin that is exactly the loopback origin of the request's own
+    Host, and the session cookie, which is `SameSite=Strict`. Turning the session gate
+    off (`HAUTE_DISABLE_LOCAL_SESSION_AUTH`) stops only the cookie check: an Origin that
+    is sent must still be that loopback origin.
+  - *The hosted editor* (`haute.hosted.create_app`): the platform's proxy signs users
+    in, so the session gate is off, and the proxy boundary refuses, before any route,
+    every request that changes state (any method but `GET`, `HEAD` and `OPTIONS`) and
+    every sync-socket handshake whose `Origin` is not the app's own URL
+    (`DATABRICKS_APP_URL`) or whose `Sec-Fetch-Site` is not `same-origin` or `none`. A
+    request with neither header (a client that is not a browser) passes. This holds
+    whatever the platform's sign-in cookie allows, another app on the hosting domain
+    (a page of the same site) included.
+  - *The underwriter app* (`haute app serve` and a hosted release): a write (any method
+    but `GET`, `HEAD` and `OPTIONS`) whose `Sec-Fetch-Site` is not `same-origin` or
+    `none`, or, from a browser that sends no `Sec-Fetch-Site`, whose Origin is not the
+    request's Host, is refused (403). It compares with the Host because a hosted
+    release is not told its own URL; it reads `Sec-Fetch-Site` first because a proxy in
+    front of it may pass it another Host than the page's. It has no socket.
+- **Haute's temporary folder.** The files Haute keeps outside a project (training and
+  optimiser artifacts, the project mutation, form folder, output and writer locks, and
+  a command's incident record outside a project) are under one folder of the user's own
+  in the system temporary folder, never under a fixed name another local user could
+  take first. On Linux and macOS it is `haute-<uid>`, made private to its owner (mode
+  `0700`), and Haute uses it only while it is a real folder owned by the user running
+  Haute and open to no one else; on Windows, whose temporary folder is the user's own,
+  it is `haute`.
 - **What real containment would require**, recorded so it is not implied: a
   privilege-separated worker with an explicit filesystem, credential, process and
   network policy enforced outside the Python object graph, per supported platform,
@@ -165,7 +198,12 @@ Out of scope (owned elsewhere, linked where relevant):
   (numpy array reconstruction, `copyreg` helpers, builtin container constructors),
   one tier for model/data *classes* that are resolved and then checked to actually
   be a `type` before being trusted. An allowlisted class entry that resolves to a
-  non-class callable is rejected, not silently accepted. Every file passed to
+  non-class callable is rejected, not silently accepted. NumPy 2 renamed `numpy.core`
+  to `numpy._core`; a pickle written under NumPy 1 names the reconstruction helpers by
+  their old path, and each `numpy.core.<rest>` spelling of an allowed `numpy._core.<rest>`
+  entry is read as that entry, resolved at its NumPy 2 path (NumPy's `numpy.core`
+  stand-in warns that it is deprecated). Nothing else under `numpy.core` is allowed.
+  This is a dependency's format, which the canonical-only policy keeps in scope. Every file passed to
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
   (`validate_project_path`, which resolves the configured path and checks it with
   `contained_path`). `restricted_joblib_load` is the same allowlisted
@@ -197,10 +235,14 @@ Out of scope (owned elsewhere, linked where relevant):
   Query-string token transport is unsupported. `OPTIONS` skips only the token check,
   never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` is an explicit
   local development escape hatch and the switch set process-wide by the hosted
-  Databricks Apps entry point (`haute.hosted.create_app`); in local mode the
-  loopback and forwarded-header gates remain active, while in hosted mode the
-  forwarded-header gate is satisfied by header rewriting at the proxy boundary
-  rather than by rejection.
+  Databricks Apps entry point (`haute.hosted.create_app`). It turns off only the
+  cookie: an `/api/` request or a WebSocket handshake whose Origin is sent and is not
+  the request's loopback origin is still refused, and one without an Origin passes. In
+  local mode the loopback and forwarded-header gates remain active, while in hosted
+  mode the forwarded-header gate is satisfied by header rewriting at the proxy boundary
+  rather than by rejection, and the boundary presents the app's own page's Origin as
+  the loopback origin it rewrites Host to, after refusing another site's
+  (Trust boundary, Pages of other sites).
   `HAUTE_TRUSTED_HOSTS` is a comma-separated list of normalized loopback authorities;
   entries may pin an exact port. The FastAPI app snapshots it when middleware is
   installed, invalid/non-loopback entries raise `ValueError`, and `haute serve`
@@ -340,6 +382,17 @@ Out of scope (owned elsewhere, linked where relevant):
   `DEFAULT_TRUSTED_HOSTS` ahead of its sign-in.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
+- Depended on by [hosted-databricks-app](../hosted-databricks-app/high-level.md): its
+  proxy boundary applies the hosted editor's cross-site rule (Trust boundary) and reads
+  origins through `_local_security.web_origin`.
+- Supplies Haute's temporary folder (`_temp_folder.haute_temp_root`) to the training
+  and optimiser artifact roots ([modelling](../modelling/high-level.md),
+  [optimiser](../optimiser/high-level.md)), the project mutation lock
+  ([server-api](../server-api/high-level.md)), the form folder lock
+  ([workbench](../workbench/high-level.md)), the Data Output destination lock and the
+  writers' locks ([io-layer](../io-layer/high-level.md)) and a command's incident
+  record outside a project ([cli](../cli/high-level.md)); the server's lifespan and
+  `haute serve` check it before they start.
 - Supplies numeric parsing helpers to callers across the codebase, including
   `executor.py`, `trace.py`, `_execution_admission.py`, `assistant/_loop.py`,
   `_input_preparation.py`, `_interactive_workers.py`,
@@ -365,11 +418,12 @@ Out of scope (owned elsewhere, linked where relevant):
   (`exc._user_code_line`) extracted from the node code's own frame of the traceback,
   purely for error-message quality — it does not alter control flow.
 - **Blocked pickle/joblib globals raise `pickle.UnpicklingError`** (in `_sandbox.py`)
-  with a message
-  that names the exact rejected `(module, qualname)` and points at
-  `_ALLOWED_PICKLE_CLASSES`/`_ALLOWED_PICKLE_GLOBALS` as the place to extend the
-  allowlist — this is a deliberate "reject and tell the developer how to fix it,"
-  not a silent skip.
+  with a message written for the analyst who chose the file: it names the file and the
+  exact rejected `module.qualname`, and says what they can do: write the file again from
+  an environment with current library versions, or keep data as Parquet; for an allowed
+  name whose package is not installed, install that package. It never names Haute's
+  source files or allowlists, which an analyst does not change. A refusal is never a
+  silent skip.
 - **Path containment failures raise `PathOutsideProjectError`** (and a NUL byte
   `InvalidPathError`) rather than returning `None`/a sentinel. The application
   handler answers a request with 403 "Cannot access paths outside the project root"
@@ -386,7 +440,15 @@ Out of scope (owned elsewhere, linked where relevant):
   `LocalSessionMiddleware`, host-header mismatches get a `400` from
   `LocalTrustedHostMiddleware`, and WebSocket rejections close with code `1008`
   and a reason string before `accept()` is ever called — an unauthenticated peer
-  never reaches the socket's message loop.
+  never reaches the socket's message loop. The hosted boundary answers another
+  site's request the same way, a `403` JSON body or a close with `1008` before
+  accept, and logs the refusal with the header that decided it, never its value.
+- **A temporary folder that is not the user's own stops Haute.** When `haute-<uid>`
+  exists but is not a folder (a link included), belongs to another user, or is open to
+  other users, `haute serve` ends before the server starts, the editor's and the hosted
+  app's server refuse to start, and any other use refuses, each with a message naming
+  the folder and what to do; Haute never moves to another name or widens what it
+  trusts.
 - **Invalid values passed through `_env.py` fail loudly.** Unset variables retain
   their documented defaults, but malformed, non-finite, zero, and negative explicit
   values raise `RuntimeError`; `optional_int_env` returns `None` only when absent.

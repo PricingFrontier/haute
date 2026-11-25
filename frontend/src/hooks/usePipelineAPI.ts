@@ -1922,7 +1922,7 @@ export default function usePipelineAPI({
           }
           failedSave(err)
           // The project moved to another branch: the toolbar and the branch dialog follow it.
-          if (apiErrorCode(err) === "branch_changed") gitBranchMayHaveChanged()
+          if (apiErrorCode(err) === "branch_changed") void gitBranchMayHaveChanged()
           // Refused, it never landed: what is typed now is saved. Still held, its fate is
           // unknown, and nothing newer is sent before it.
           if (then !== undefined && hold.held() === null) saved = await then()

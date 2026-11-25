@@ -279,8 +279,8 @@ unexpected existing sidecar is reported as a conflict rather than silently repla
 
 File Data Output destinations are relative to the project root, independent of the
 pipeline's directory and process working directory. A bare filename goes in the root's
-`outputs/` folder: `output` or `output.parquet` with Parquet selected resolves to
-`outputs/output.parquet`. An explicit relative path such as `exports/output.parquet`
+`files/outputs/` folder: `output` or `output.parquet` with Parquet selected resolves to
+`files/outputs/output.parquet`. An explicit relative path such as `exports/output.parquet`
 is project-relative; an absolute path must remain inside the project, and a save and
 `haute lint` refuse one, naming the path from the project root to write, as they refuse
 every node path another checkout would read otherwise (a Windows drive letter, another
@@ -310,6 +310,11 @@ data and as a loaded object, and a file a feed writes is not refused for its for
   take a pass over every file before Polars reads it.
 - A `.json` request file or Load File holding nothing is refused as empty, naming the
   file; a request file of no quotes is `[]`, and an empty JSON Lines file holds none.
+  Polars reads a `.json` table (a Data Input, and deploy reading a request file's schema)
+  in one place, `read_json_table`; when it cannot, a file whose bytes are not JSON (holding
+  nothing, cut short, with a trailing comma or content after its value, not UTF-8) is
+  refused in the request shredder's words, with its line and column, as the run refuses
+  the same file; JSON that Polars cannot read as a table keeps Polars' words.
 - A CSV file saved as UTF-16 or UTF-32 (a byte-order mark of either, or null bytes in its
   first line, judged in the text a gzip, zlib or zstd file decompresses to, as Polars
   decompresses it) is refused naming the file and the encoding found and saying to save it as
@@ -416,7 +421,7 @@ than treating it as an I/O failure or replacing the destination.
 
 Two Data Output nodes cannot target one destination. A destination's identity
 (`_executable_names.data_output_destination`) is, for a file or lakehouse target, the path the
-writer resolves (`resolve_data_output_path`: a bare file name under `outputs/`, the format's
+writer resolves (`resolve_data_output_path`: a bare file name under `files/outputs/`, the format's
 default extension added, a relative path anchored as the writer anchors it, so a relative and
 an absolute spelling of one file are one destination), compared ignoring case on Windows and
 macOS; for a database target, its connection (or

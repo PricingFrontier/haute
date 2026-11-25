@@ -2017,7 +2017,7 @@ def test_a_single_flight_waiter_inherits_the_owners_typed_failure(
     def run_owner() -> None:
         try:
             _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=owner_spawn)
-        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion below
+        except BaseException as exc:  # recorded for the assertion below
             owner_failure.append(exc)
 
     owner = context_thread(run_owner)

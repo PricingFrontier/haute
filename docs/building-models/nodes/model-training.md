@@ -777,7 +777,7 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `name` | Names the training artifacts; when absent, uses the node's executable name, including its instance prefix. |
     | `feature_weights` | CatBoost feature weights. |
     | `fold_column`, `id_columns` | Columns kept as training metadata rather than features. |
-    | `output_dir` | Where scripted training writes its files (`outputs` by default). Editor training keeps files with the job until you export them. |
+    | `output_dir` | Where scripted training writes its files (`files/outputs` by default). Editor training keeps files with the job until you export them. |
     | `cv_seed` | The GLM penalty's cross-validation seed; the editor writes 42 when you choose a regularisation. |
     | `evaluation.seed` | The split seed; the editor writes 42. |
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |

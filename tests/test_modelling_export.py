@@ -468,7 +468,7 @@ class TestEmptyOptionalParamsExcluded:
 class TestOutputDir:
     def test_default_output_dir(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        assert "output_dir='outputs'" in script
+        assert "output_dir='files/outputs'" in script
 
     def test_custom_output_dir(self):
         config = {**MINIMAL_CONFIG, "output_dir": "results/v2"}
@@ -500,7 +500,7 @@ class TestGLMExportParity:
     def _script_job(self, script: str):
         """Execute the generated script (without __main__) and return the job."""
         namespace = {"__name__": "haute_export_test"}
-        exec(compile(script, "<generated>", "exec"), namespace)  # noqa: S102
+        exec(compile(script, "<generated>", "exec"), namespace)
         return namespace["job"]
 
     def test_top_level_glm_config_lands_in_script_params(self):

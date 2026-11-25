@@ -73,7 +73,7 @@ export default function ProjectControls({
           icon={FolderOpen}
           aria-pressed={filesPlace === "local"}
           onClick={() => setFilesPlace(filesPlace === "local" ? null : "local")}
-          title="Files on this machine: data/ and outputs/"
+          title="Files on this machine, in the project's files/"
         >
           Local files
         </ToolbarButton>

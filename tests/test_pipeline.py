@@ -1403,7 +1403,7 @@ class TestDuplicateNodeName:
         with pytest.raises(ValueError, match="Duplicate node name 'src'"):
 
             @p.polars
-            def src(df: pl.DataFrame) -> pl.DataFrame:  # noqa: F811 - intentional collision
+            def src(df: pl.DataFrame) -> pl.DataFrame:  # intentional collision
                 return df
 
 

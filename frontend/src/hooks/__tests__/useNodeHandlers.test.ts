@@ -866,26 +866,25 @@ describe("useNodeHandlers", () => {
     expect(params.setNodes).toHaveBeenCalledOnce()
   })
 
-  it("resets pending auto-layout state after a layout failure", async () => {
-    const layoutError = new Error("ELK failed")
+  it("says a layout that failed, moves nothing and frees the button for the next", async () => {
+    // A press nothing waits for: the failure is the toast, not a rejection.
     vi.mocked(getLayoutedElements)
-      .mockRejectedValueOnce(layoutError)
+      .mockRejectedValueOnce(new Error("Failed to fetch dynamically imported module"))
       .mockImplementationOnce(async (nodes: Node[]) => nodes)
     const params = makeParams()
     const n1 = makeNode("n1")
     showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
-    let thrown: unknown
 
     await act(async () => {
-      try {
-        await result.current.handleAutoLayout()
-      } catch (error) {
-        thrown = error
-      }
+      await result.current.handleAutoLayout()
     })
 
-    expect(thrown).toBe(layoutError)
+    const toasts = useToastStore.getState().toasts
+    expect(toasts[toasts.length - 1]).toMatchObject({
+      type: "error",
+      text: "Auto-layout failed: Failed to fetch dynamically imported module",
+    })
     expect(result.current.isAutoLayouting).toBe(false)
     expect(params.setNodes).not.toHaveBeenCalled()
 

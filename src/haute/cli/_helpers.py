@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
@@ -20,6 +19,7 @@ from haute._project_context import (
     resolve_project,
 )
 from haute._project_settings import ProjectSettings, has_settings, read_project_settings
+from haute._temp_folder import TemporaryFolderError, haute_temp_root
 
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
@@ -76,18 +76,22 @@ def _write_incident(incident: str, exc: BaseException, *, command: str) -> str:
     from haute._project_context import installed_project
 
     project = installed_project()
-    folder = (
-        project.root.joinpath(*INCIDENTS_FOLDER)
-        if project is not None
-        else Path(tempfile.gettempdir()) / "haute-incidents"
-    )
-    target = folder / f"{incident}.txt"
     record = f"haute {command}\nincident {incident}\n\n{failure_traceback(exc)}"
+    target: Path | None = None
     try:
+        # Outside a project the folder is Haute's temporary folder, and any write takes
+        # the process's writer lock there: either can find it is not the user's own.
+        folder = (
+            project.root.joinpath(*INCIDENTS_FOLDER)
+            if project is not None
+            else haute_temp_root() / "incidents"
+        )
+        target = folder / f"{incident}.txt"
         folder.mkdir(parents=True, exist_ok=True)
         atomic_write_text(target, record)
-    except OSError as cannot:
-        return f"Its details could not be written to {target} ({cannot}), so they follow.\n{record}"
+    except (OSError, TemporaryFolderError) as cannot:
+        where = "" if target is None else f" to {target}"
+        return f"Its details could not be written{where} ({cannot}), so they follow.\n{record}"
     shown = target.relative_to(project.root).as_posix() if project is not None else str(target)
     return f"The details are in {shown}."
 

@@ -404,43 +404,61 @@ _ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]] = frozenset(
 )
 
 
-def _blocked_pickle_error(module: str, name: str, reason: str) -> pickle.UnpicklingError:
-    """Build the uniform ``UnpicklingError`` raised when a global is rejected."""
-    return pickle.UnpicklingError(
-        f"Blocked unpickling of {module}.{name} — {reason}. If this is a "
-        f"legitimate model/data class, add its exact (module, qualname) to "
-        f"_ALLOWED_PICKLE_CLASSES in src/haute/_sandbox.py; add only vetted "
-        f"scaffolding functions to _ALLOWED_PICKLE_GLOBALS"
-    )
+#: NumPy 2 renamed ``numpy.core`` to ``numpy._core``, and a pickle written under NumPy 1
+#: names the reconstruction helpers by their old path. Each NumPy 1 spelling of an
+#: allowed ``numpy._core`` entry is read as that entry, resolved at its NumPy 2 path
+#: rather than through NumPy's deprecated ``numpy.core`` stand-in; derived from the two
+#: tiers, so nothing under ``numpy.core`` is allowed that its NumPy 2 path is not.
+_NUMPY_1_SPELLINGS: dict[tuple[str, str], tuple[str, str]] = {
+    ("numpy.core." + module.removeprefix("numpy._core."), name): (module, name)
+    for module, name in _ALLOWED_PICKLE_GLOBALS | _ALLOWED_PICKLE_CLASSES
+    if module.startswith("numpy._core.")
+}
+
+#: What an analyst can do about a file written in another environment.
+_WRITE_AGAIN = "Write the file again from an environment with current library versions"
+
+
+def _blocked_pickle_error(source: Path, detail: str) -> pickle.UnpicklingError:
+    """The refusal of a pickle or joblib file, written for the analyst who chose it."""
+    return pickle.UnpicklingError(f"Cannot load {source}: {detail}.")
 
 
 def _resolve_allowed_global(
     resolver: Any,
     module: str,
     name: str,
+    *,
+    source: Path,
 ) -> Any:
     """Resolve ``module.name`` through *resolver* iff it clears both tiers.
 
     *resolver* is the underlying ``pickle.Unpickler.find_class`` (bound or the
-    joblib ``NumpyUnpickler`` original).  An exact scaffolding entry is returned
-    verbatim; an exact class entry is returned only when it resolves to a
-    class. Everything else raises ``UnpicklingError``.
+    joblib ``NumpyUnpickler`` original), and *source* the file being read, which a
+    refusal names. A NumPy 1 spelling is read as its NumPy 2 entry. An exact
+    scaffolding entry is returned verbatim; an exact class entry is returned only
+    when it resolves to a class. Everything else raises ``UnpicklingError``.
     """
+    module, name = _NUMPY_1_SPELLINGS.get((module, name), (module, name))
     if (module, name) in _ALLOWED_PICKLE_GLOBALS:
-        return _resolve_installed(resolver, module, name)
+        return _resolve_installed(resolver, module, name, source=source)
     if (module, name) in _ALLOWED_PICKLE_CLASSES:
-        obj = _resolve_installed(resolver, module, name)
+        obj = _resolve_installed(resolver, module, name, source=source)
         if isinstance(obj, type):
             return obj
         raise _blocked_pickle_error(
-            module,
-            name,
-            f"expected an allowlisted class, but {module}.{name} resolved to a non-class callable",
+            source,
+            f"it refers to {module}.{name} as a class, and in this environment that is "
+            f"not a class. {_WRITE_AGAIN}",
         )
-    raise _blocked_pickle_error(module, name, "not in the allowlist")
+    raise _blocked_pickle_error(
+        source,
+        f"it refers to {module}.{name}, which Haute does not load from a pickle or joblib "
+        f"file. {_WRITE_AGAIN}, or keep data as Parquet",
+    )
 
 
-def _resolve_installed(resolver: Any, module: str, name: str) -> Any:
+def _resolve_installed(resolver: Any, module: str, name: str, *, source: Path) -> Any:
     """Resolve an allowlisted ``module.name``, naming a package that is absent.
 
     The allowlist names other projects' module paths, some of which may not
@@ -456,9 +474,9 @@ def _resolve_installed(resolver: Any, module: str, name: str) -> Any:
         if exc.name != package:
             raise
         raise _blocked_pickle_error(
-            module,
-            name,
-            f"allowlisted, but `{package}` is not installed in this environment",
+            source,
+            f"it needs {module}.{name}, and `{package}` is not installed in this "
+            f"environment. Install `{package}`, then load the file again",
         ) from exc
 
 
@@ -518,8 +536,12 @@ class _RestrictedUnpickler(pickle.Unpickler):
     that arbitrary untrusted pickle payloads are safe.
     """
 
+    def __init__(self, file: Any, *, source: Path) -> None:
+        super().__init__(file)
+        self._source = source
+
     def find_class(self, module: str, name: str) -> Any:
-        return _resolve_allowed_global(super().find_class, module, name)
+        return _resolve_allowed_global(super().find_class, module, name, source=self._source)
 
 
 def safe_unpickle(path: str | Path) -> Any:
@@ -531,7 +553,7 @@ def safe_unpickle(path: str | Path) -> Any:
     """
     validated = validate_project_path(path)
     with open(validated, "rb") as f, _estimator_version_mismatch_is_an_error():
-        return _RestrictedUnpickler(f).load()
+        return _RestrictedUnpickler(f, source=validated).load()
 
 
 def safe_joblib_load(path: str | Path) -> Any:
@@ -577,6 +599,7 @@ def restricted_joblib_load(path: str | Path, *, offset: int = 0) -> Any:
                 lambda m, n: super(RestrictedNumpyUnpickler, self).find_class(m, n),
                 module,
                 name,
+                source=validated,
             )
 
     filename = str(validated)

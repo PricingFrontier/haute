@@ -248,11 +248,11 @@ def test_schema_only_output_never_collects_or_assembles(
 
     assemble_calls: list[object] = []
 
-    def counting_assemble(field_frames):  # noqa: ANN001, ANN202
+    def counting_assemble(field_frames):
         assemble_calls.append(field_frames)
         raise AssertionError("a schema-only OUTPUT must never assemble its document")
 
-    def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    def poisoned_collect(self, *args, **kwargs):
         raise AssertionError("a schema-only execution must never collect")
 
     monkeypatch.setattr(assembler_module, "_assemble_document", counting_assemble)

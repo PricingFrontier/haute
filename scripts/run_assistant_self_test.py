@@ -1246,7 +1246,7 @@ def _golden_frame(code: str) -> pl.DataFrame:
     """Run plain-Polars golden *code* in the project directory and return its ``df``."""
 
     namespace: dict[str, object] = {"pl": pl}
-    exec(code, namespace, namespace)  # noqa: S102 - checked-in case golden, run by the harness
+    exec(code, namespace, namespace)  # checked-in case golden, run by the harness
     frame = namespace.get("df")
     if isinstance(frame, pl.LazyFrame):
         return frame.collect()

@@ -55,11 +55,11 @@ def seed_job(
 ) -> None:
     """Install a validated test fixture under a deterministic, unused ID."""
     job = _normalise_lifecycle(record)
-    with store._write_lock:  # noqa: SLF001 - explicit test-only boundary
-        if job_id in store._jobs:  # noqa: SLF001
+    with store._write_lock:  # explicit test-only boundary
+        if job_id in store._jobs:
             raise ValueError(f"Test job already exists: {job_id!r}")
-        store._jobs[job_id] = job  # noqa: SLF001
-        store._running_activity_at.pop(job_id, None)  # noqa: SLF001
+        store._jobs[job_id] = job
+        store._running_activity_at.pop(job_id, None)
 
 
 def replace_job(store: JobStore, job_id: str, transform: JobTransform) -> None:
@@ -69,14 +69,14 @@ def replace_job(store: JobStore, job_id: str, transform: JobTransform) -> None:
     return ``None``, or return a replacement mapping.  Validation happens before
     the backing record is swapped, so a failed transform leaves the store intact.
     """
-    with store._write_lock:  # noqa: SLF001 - explicit test-only boundary
-        current = store._jobs[job_id]  # noqa: SLF001
+    with store._write_lock:  # explicit test-only boundary
+        current = store._jobs[job_id]
         working = cast(dict[str, Any], _detach_builtin(current))
         replacement = transform(working)
         next_record = working if replacement is None else replacement
         job = _normalise_lifecycle(next_record)
-        store._jobs[job_id] = job  # noqa: SLF001
-        store._record_running_activity_locked(  # noqa: SLF001
+        store._jobs[job_id] = job
+        store._record_running_activity_locked(
             job_id,
             job,
             now=time.time(),
@@ -90,7 +90,7 @@ def discard_corrupt_job(store: JobStore, job_id: str) -> None:
     the production cleanup path.  Valid records must use :meth:`JobStore.delete_job`
     so owned files and timers are released normally.
     """
-    with store._write_lock:  # noqa: SLF001 - explicit test-only boundary
-        store._jobs.pop(job_id, None)  # noqa: SLF001
-        store._running_activity_at.pop(job_id, None)  # noqa: SLF001
-        store._cancel_heavy_object_timer_locked(job_id)  # noqa: SLF001
+    with store._write_lock:  # explicit test-only boundary
+        store._jobs.pop(job_id, None)
+        store._running_activity_at.pop(job_id, None)
+        store._cancel_heavy_object_timer_locked(job_id)

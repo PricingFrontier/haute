@@ -127,7 +127,8 @@ SameSite=Strict cookie plus `{ok:true}` under no-store headers. Other `/api/*` r
 that cookie; an absent Origin is allowed only with a valid existing cookie.
 `OPTIONS` still requires a trusted Origin but bypasses the token check. WebSocket
 handshakes always require an explicit matching Origin plus cookie credential and close
-with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only session auth.
+with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only the session cookie: an Origin that is sent must
+still be trusted.
 An inbound `x-request-id` is retained only when it is a 1–64 character ASCII token matching
 `[A-Za-z0-9][A-Za-z0-9._:-]*`; missing or invalid values are replaced with a generated ID.
 Rejected values are logged only by bounded reason and numeric length, never by their bytes.
@@ -304,8 +305,9 @@ toolbar's Pipeline files and Local files panels show, in two places
 folder's `files/`: it is versioned, so a file written or deleted there is recorded at once as
 a save on the ledger, and a file larger than 100 MiB, or one `.gitignore` would ignore, is
 refused. Without git, or in a project that is not a repository, the place refuses every
-listing and write, saying which, rather than promise a history it cannot keep. The local place is the root's `data/`, which takes and deletes files, and `outputs/`,
-which only downloads. Neither local folder is versioned, and a hosted app refuses files there
+listing and write, saying which, rather than promise a history it cannot keep. The local place is the project root's `files/`, the same name kept
+outside the pipeline folder: its `data/` takes and deletes files and its `outputs/` only
+downloads. Neither local folder is versioned, and a hosted app refuses files there
 because its disk does not survive a restart
 ([hosted-project-storage](../hosted-project-storage/high-level.md)). Every operation refuses
 a path that leaves its place, names a dot-file or `__pycache__`, or passes through a link. A

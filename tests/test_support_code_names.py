@@ -577,7 +577,7 @@ def test_save_refuses_a_node_named_like_a_preamble_helper(tmp_path: Path) -> Non
     assert "takes the name `rate_lookup`, which the preamble (line 1) binds" in excinfo.value.detail
 
 
-def _save_rates(client: TestClient, project: Path, content: str):  # noqa: ANN202
+def _save_rates(client: TestClient, project: Path, content: str):
     """Save utility/rates.py through the route, against its revision on disk."""
     revision = file_revision((project / "utility" / "rates.py").stat())
     return client.put("/api/utility/rates", json={"content": content, "revision": revision})

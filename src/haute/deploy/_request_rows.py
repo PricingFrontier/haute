@@ -472,7 +472,7 @@ class _Walk:
                 prefix = tuple(_array_prefix(_parse_output_path(entry["output_path"])))
                 port = entry["source_port"]
                 prefixes[port] = max(prefixes.get(port, ()), prefix, key=len)
-        except Exception:  # noqa: BLE001 - the assembler refuses the mapping when it runs
+        except Exception:  # the assembler refuses the mapping when it runs
             return (
                 self.refuse(node, "response mapping", "unproven")
                 if from_request
@@ -523,7 +523,7 @@ class _Walk:
             base_index, join_index = resolve_edge_join_role_indices(
                 [edge.targetHandle for edge in edges]
             )
-        except Exception:  # noqa: BLE001 - the builder refuses the config when it runs
+        except Exception:  # the builder refuses the config when it runs
             return self.refuse(node, "Edge Join", "unproven") if request_in else _lost_like(inputs)
         how = str(kwargs["how"])
         order = str(kwargs["maintain_order"])
@@ -638,7 +638,7 @@ class _Walk:
                 submodels=self.graph.submodels,
                 alias_first_as_df=alias_first_as_df,
             )
-        except Exception:  # noqa: BLE001 - the executor refuses the binding when it runs
+        except Exception:  # the executor refuses the binding when it runs
             bindings = None
         if bindings is None:
             return (

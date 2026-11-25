@@ -36,6 +36,7 @@ from haute._input_files import (
 )
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
+from haute.errors import InputFileError
 
 logger = get_logger(component="json_shred")
 
@@ -480,6 +481,24 @@ def _iter_records(
         yield from _iter_json_records(data_path, stats)
     except orjson.JSONDecodeError as exc:
         raise file_json_error(data_path, exc.pos, exc.msg) from exc
+
+
+def json_file_refusal(data_path: Path) -> InputFileError | None:
+    """The refusal of the JSON file *data_path* when its bytes are not JSON, else ``None``.
+
+    The file is read as a request file is (:func:`_iter_records`), so a reader whose own
+    parser refused it (Polars, in words that name no file or place) says what every edge
+    says of it: the file, the fault, its line and column, or that it holds nothing. A
+    record past the structured-input bound is no fault of the bytes, and answers ``None``.
+    """
+    try:
+        for _record in _iter_records(data_path):
+            pass
+    except InputFileError as refusal:
+        return refusal
+    except ApiInputSchemaError:
+        return None
+    return None
 
 
 def _iter_json_records(data_path: Path, stats: ShredSkipStats | None) -> Iterator[dict[str, Any]]:

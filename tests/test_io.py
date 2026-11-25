@@ -146,6 +146,75 @@ class TestReadSourceJSON:
 
         read_json.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b'[{"quote_id": "q1",\n  "fixture_value": 10',
+            b'[{"a": 1},]',
+            b'[{"a": 1}] {"b": 2}',
+            b"",
+            b"\xef\xbb\xbf  \n",
+            b'[{"a": "\xff"}]',
+        ],
+        ids=["cut-short", "trailing-comma", "trailing-content", "empty", "only-a-mark", "not-utf8"],
+    )
+    def test_bytes_that_are_not_json_are_refused_alike_by_every_reader(
+        self, tmp_path: Path, raw: bytes
+    ) -> None:
+        """Polars' own words ("Syntax at character 39", "Eof at character 0") name no file:
+        a read of the file as a table, by read_source or a Data Input, says what the
+        request shredder says of it."""
+        from haute._json_shred._records import _iter_records
+        from haute._polars_io_registry import read_polars_input
+
+        path = tmp_path / "quote.json"
+        path.write_bytes(raw)
+        with pytest.raises(InputFileError) as as_a_request:
+            list(_iter_records(path))
+
+        with pytest.raises(InputFileError) as by_read_source:
+            read_source(str(path))
+        with pytest.raises(InputFileError) as by_a_data_input:
+            read_polars_input({"format": "json", "path": str(path)}).collect()
+
+        said = str(as_a_request.value)
+        assert said.startswith("quote.json ") or "/quote.json " in said
+        assert str(by_read_source.value) == said
+        assert str(by_a_data_input.value) == said
+
+    @pytest.mark.parametrize("record_bound", [None, "8"], ids=["json", "a-record-past-the-bound"])
+    def test_json_polars_cannot_read_as_a_table_keeps_polars_words(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_bound: str | None
+    ) -> None:
+        """A record past the structured-input bound is no fault of the bytes either."""
+        if record_bound is not None:
+            monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", record_bound)
+        path = tmp_path / "odd.json"
+        path.write_text('{"a": [1, {"b": 2}]}', encoding="utf-8")
+
+        with pytest.raises(pl.exceptions.ComputeError, match="error deserializing"):
+            read_source(str(path))
+
+    @pytest.mark.meta
+    def test_polars_reads_a_json_table_only_through_read_json_table(self) -> None:
+        """A read that called Polars' JSON reader itself would refuse in Polars' words."""
+        import ast
+
+        from tests._source_files import REPO_ROOT, source_files
+
+        callers = []
+        for path in source_files(REPO_ROOT / "src" / "haute"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for function in ast.walk(tree):
+                if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                callers.extend(
+                    f"{path.relative_to(REPO_ROOT).as_posix()}::{function.name}"
+                    for call in ast.walk(function)
+                    if isinstance(call, ast.Call) and ast.unparse(call.func) == "pl.read_json"
+                )
+        assert callers == ["src/haute/_io.py::read_json_table"]
+
     def test_deploy_live_can_read_plain_json(self, tmp_path: Path) -> None:
         path = tmp_path / "data.json"
         pl.DataFrame({"name": ["alice"]}).write_json(str(path))

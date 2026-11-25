@@ -1283,9 +1283,9 @@ no longer has; and `InputSource` in
     pipeline folder they watch holds it.
 16. **The form, read.** `GET /api/workbench/form` reads the config through `_enabled_config`
     (404 while disabled) and `read_form_document` (the folder module) in the thread pool. A
-    read holds the form folder's lock, a `FileLock` of the project's own (a file under the
-    system temp folder named by the hash of the project root's resolved, case-normalised
-    path), which every save holds from its stale check to its last write and every reader
+    read holds the form folder's lock, a `FileLock` of the project's own (a file under
+    Haute's temporary folder (`src/haute/_temp_folder.py::haute_temp_root`)'s `form-locks/`, named by the hash of the project root's resolved,
+    case-normalised path), which every save holds from its stale check to its last write and every reader
     holds while it reads, in the editor's server, in another server process and in the
     CLI (`haute app build`, deploy) alike, so no reader sees a save half written; the
     server's routes also read under `repository_mutation`, which a branch switch holds. It

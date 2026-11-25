@@ -66,6 +66,7 @@ from haute._project_context import (
 )
 from haute._project_settings import ProjectSettingsError
 from haute._sandbox import contained_path
+from haute._temp_folder import haute_temp_root
 from haute._workbench_config import read_workbench_config
 from haute.errors import ConfigError, NotFoundError, PathOutsideProjectError
 from haute.routes._background_jobs import stop_background_jobs
@@ -327,7 +328,7 @@ def _prepare_ws_document_resync(
         document_fingerprint = pipeline_document_fingerprint(document_payload)
         if client_document_fingerprint == document_fingerprint:
             return _WsDocumentResyncResult(source_file=source_file, unchanged=True)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _WsDocumentResyncResult(
             error=answer_failure(exc, operation="pipeline_document_load").message,
             source_file=source_file,
@@ -507,6 +508,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from haute.deploy._config import _load_env
 
     configure_logging()
+    # Haute's temporary folder must be the user's own before anything is put in it: a
+    # folder another user made first stops the server here.
+    haute_temp_root()
     configure_process_high_qos()
     _load_env(current_project().root)
     configure_execution_telemetry()
@@ -708,7 +712,7 @@ async def _watcher_forever() -> None:
             return
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "file_watcher_crashed",
                 error=str(exc),
@@ -770,7 +774,7 @@ def _pipeline_document_event(path: Path, *, skip_unchanged: bool) -> _BusEvent |
                 "source_file": wire_source_file(path),
             },
         )
-    except Exception as e:  # noqa: BLE001 — one unreadable pipeline must not silence the rest
+    except Exception as e:  # one unreadable pipeline must not silence the rest
         # Only a document-load or serialization defect lands here; authored
         # errors were already representable above.  Send its answer's words, never
         # the raw exception.
@@ -1195,7 +1199,7 @@ async def _file_watcher() -> None:
             if requeue_on_error and not taken:
                 pending_changes.update(to_process)
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if requeue_on_error:
                 pending_changes.update(to_process)
             raise _FlushBatchError(exc, to_process) from exc
