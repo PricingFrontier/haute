@@ -12,7 +12,7 @@ import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
 import { answer, watch } from "../utils/answers"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
+import { APP_SET_COLUMNS, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
 import { IDENTITY_COLUMNS } from "../utils/quoteIdentity"
 import { carriesIdentity, holdsOutput, outputMisfit, type PricedSample } from "../utils/workbenchTables"
@@ -177,7 +177,7 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get, api)
     const { pricer } = get()
     const { form, status } = useWorkbenchFormStore.getState()
     if (pricer === null || form === null || status !== "ready") return
-    if (!quoteEligible(form, form.sample)) {
+    if (!quoteEligible(form, form.sample, APP_SET_COLUMNS)) {
       set({ price: null, error: null })
       return
     }

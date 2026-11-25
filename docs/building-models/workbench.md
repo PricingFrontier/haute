@@ -296,8 +296,9 @@ The pipeline receives **quote_reference**, **quote_option**, **created_date** an
 **created_by**, and every other column of `quote_details`, whatever the sheets hide.
 **stage**, **assignee**, **archived**, **modified_date**, **modified_by**,
 **haute_version** and **validation_passed** are kept with the quote and never reach the pipeline, so assigning or
-archiving a quote never changes what it was priced on. In Preview the columns the pipeline
-receives hold what you type into the sample, to try a rule that reads them; an app without
+archiving a quote never changes what it was priced on. Preview acts as the app does: the
+columns the app sets, and **quote_name**, take no typing on a sheet there either, and
+**quote_reference** and **quote_option** show `PREVIEW` and 1; an app without
 a quote store leaves them blank. Assigning, archiving, restoring, marking final and
 amending a quote change those details alone, its values and price kept, and its activity
 shows when a quote moved. A quote takes

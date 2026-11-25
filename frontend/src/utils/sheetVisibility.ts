@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { hasInputs, isOutputColumn, ownInputs, QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns, tableColumns, tableIndex, typedInputs } from "./quoteIdentity"
+import { hasInputs, isOutputColumn, ownInputs, QUOTE_DETAILS, QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns, tableColumns, tableIndex, typedInputs } from "./quoteIdentity"
 import { isDay } from "./isoDate"
 import {
   filled,
@@ -828,6 +828,15 @@ export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): F
 }
 
 const NO_COLUMNS: ReadonlySet<string> = new Set()
+
+/**
+ * The quote_details columns the app sets itself, by `columnKey`, which take no typing on a
+ * sheet, in Preview as in the app: `QUOTE_DETAILS_MANAGED` and the quote's name, given in
+ * the New quote window as the quote is made and never changed after.
+ */
+export const APP_SET_COLUMNS: ReadonlySet<string> = new Set(
+  [...QUOTE_DETAILS_MANAGED, QUOTE_DETAILS.quote_name].map((id) => columnKey(QUOTE_DETAILS_NAME, id)),
+)
 
 /**
  * Whether a quote has anything typed to price or save, as the server counts it: a value in

@@ -6,18 +6,12 @@ import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { answer, watch } from "../utils/answers"
 import { newQuoteValues } from "../utils/sheetValues"
-import { columnKey } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
+import { APP_SET_COLUMNS } from "../utils/sheetVisibility"
+import type { SampleRow } from "../utils/workbenchForm"
 import { appErrorMessage, releaseMoved, storeMisfits } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
-/**
- * The quote_details columns the app sets itself, which take no typing on its sheets, and the
- * quote's name, given in the New quote window as the quote is made and never changed after.
- */
-export const APP_SET_COLUMNS: ReadonlySet<string> = new Set(
-  [...QUOTE_DETAILS_MANAGED, QUOTE_DETAILS.quote_name].map((id) => columnKey(QUOTE_DETAILS_NAME, id)),
-)
+export { APP_SET_COLUMNS }
 
 /**
  * Put the underwriter app's release (specs/workbench) in the stores Preview draws from:

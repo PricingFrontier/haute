@@ -1,15 +1,16 @@
 /**
- * quote_details' validation_passed on the sheets (specs/workbench): worked out from the
- * checks in Preview and the app, whatever the cell holds, and taking no typing.
+ * The cells of quote_details the app sets, on the sheets (specs/workbench): locked in
+ * Preview as in the app, validation_passed worked out from the checks whatever the cell
+ * holds, and Preview showing the identity its sample is priced under.
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { cleanup, renderHook } from "@testing-library/react"
+import { act, cleanup, renderHook } from "@testing-library/react"
 import type { FormSpec } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type SamplePrice } from "../../stores/useWorkbenchPricingStore"
 import fixture from "../../utils/__tests__/fixtures/quoteChecks.json"
-import { columnKey } from "../../utils/sheetVisibility"
+import { APP_SET_COLUMNS, columnKey } from "../../utils/sheetVisibility"
 import { useQuoteValues, useSampleValues } from "../useSheetValues"
 
 const form = fixture.form as unknown as FormSpec
@@ -39,8 +40,25 @@ describe("validation_passed on the sheets", () => {
 
     const { result } = renderHook(() => useSampleValues())
 
-    expect(result.current.rows.quote_details[0]).toEqual({ quote_name: "Fleet", validation_passed: passed })
+    expect(result.current.rows.quote_details[0]).toEqual({ quote_name: "Fleet", validation_passed: passed, quote_reference: "PREVIEW", quote_option: "1" })
     expect(result.current.locked.has(KEY)).toBe(true)
+  })
+
+  it("locks in Preview every column the app locks, typing into one changing nothing", () => {
+    const sample = { ...values("40", true), quote_details: [{ quote_name: "Fleet", quote_reference: "typed before", stage: "final" }] }
+    useWorkbenchFormStore.setState({ form: { ...form, sample }, status: "ready" })
+
+    const { result } = renderHook(() => useSampleValues())
+
+    expect(result.current.locked).toBe(APP_SET_COLUMNS)
+    for (const name of ["quote_reference", "quote_option", "quote_name", "stage", "assignee", "archived", "created_date", "created_by", "modified_date", "modified_by", "haute_version", "validation_passed"]) {
+      expect(APP_SET_COLUMNS.has(columnKey("quote_details", name))).toBe(true)
+      act(() => result.current.setCell("quote_details", 0, name, "typed"))
+    }
+    for (const name of ["insured", "broker", "inception_date", "expiry_date", "is_renewal"]) expect(APP_SET_COLUMNS.has(columnKey("quote_details", name))).toBe(false)
+    expect(useWorkbenchFormStore.getState().form?.sample).toEqual(sample)
+    // The identity shown is the one the sample is priced under, whatever it held.
+    expect(result.current.rows.quote_details[0]).toMatchObject({ quote_reference: "PREVIEW", quote_option: "1" })
   })
 
   it("is unticked in Preview until the sample is priced, a validation the pipeline fills being unfilled", () => {
