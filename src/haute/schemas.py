@@ -5304,13 +5304,13 @@ class OptimiserRatebookCdTrace(BaseModel):
 
 
 class OptimiserBisectionProbe(BaseModel):
-    """One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's
-    ``point_history``), in the order it ran."""
+    """One fixed-λ apply a bisection ran, a one-constraint solve's or a 1-D frontier
+    point's (price-contour's ``history`` or ``point_history``), in the order it ran."""
 
     model_config = _STRICT_ROW
 
     step: int = Field(ge=0)
-    """0-based probe number within the point."""
+    """0-based probe number within the solve or point."""
     phase: Literal["bracket", "bisect"]
     """``bracket``: the λ=0 probe or a doubling before the target is bracketed;
     ``bisect``: the midpoint of the established bracket."""
@@ -5323,8 +5323,8 @@ class OptimiserBisectionProbe(BaseModel):
     all_constraints_satisfied: bool
     """The probe met the target one-sidedly."""
     accepted: bool
-    """The probe became the point's answer; the point's λ and totals are its last accepted
-    probe's."""
+    """The probe became the answer; the solve's or point's λ and totals are its last
+    accepted probe's."""
 
     @model_validator(mode="after")
     def _one_constraint_and_its_bracket(self) -> OptimiserBisectionProbe:
@@ -5656,6 +5656,9 @@ class OptimiserFrontierPointSummary(BaseModel):
     cd_iterations: int | None
     clamp_rate: float | None
     history: list[OptimiserHistoryEntry] | None
+    # Always ``None``: a point's own trace is loaded on request (frontier select with
+    # ``include_history``), so applying the summary removes the solve's bisection.
+    bisection_history: None
     ratebook_cd_trace: OptimiserRatebookCdTrace | None
     # Always ``None``: a point's report is loaded on request (frontier select
     # with ``include_adjustments``), so applying the summary removes the solve's.
@@ -5732,8 +5735,11 @@ class OptimiserSolveResult(BaseModel):
     n_steps: int | None = None
     cd_iterations: int | None = None
     factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
-    # Online only: every online solve records its per-iteration history.
+    # Online, more than one constraint or none: the subgradient solve's iterations.
     history: list[OptimiserHistoryEntry] | None = None
+    # Online, one constraint: the solve's bisection on λ, probe by probe, as a bisection
+    # frontier point's trace (price-contour 0.11.0). Never beside ``history``.
+    bisection_history: list[OptimiserBisectionProbe] | None = Field(default=None, min_length=1)
     # Ratebook only: the live solve's coordinate-descent trace.
     ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
@@ -5782,6 +5788,16 @@ class OptimiserSolveResult(BaseModel):
         _require_convergence_record_of_its_mode(
             self.mode, self.history, self.ratebook_cd_trace, list(self.constraints)
         )
+        if self.bisection_history is not None:
+            if self.mode != "online" or self.history is not None:
+                raise ValueError(
+                    "bisection_history is a one-constraint online solve's, never beside history"
+                )
+            _require_constraint_names(
+                self.bisection_history[0].lambdas,
+                list(self.constraints),
+                field="bisection_history",
+            )
         return self
 
 

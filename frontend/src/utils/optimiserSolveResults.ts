@@ -152,6 +152,8 @@ export function frontierPointSummaryFromSelect(selectResult: FrontierSelectRespo
     cd_iterations: selectResult.cd_iterations ?? null,
     clamp_rate: selectResult.clamp_rate ?? null,
     history: selectResult.history ?? null,
+    // A point's own trace is loaded on request by the Convergence tab; it has no solve's bisection.
+    bisection_history: null,
     ratebook_cd_trace: selectResult.ratebook_cd_trace ?? null,
     // A point's report is loaded on request by the Adjustments tab, never kept in its summary.
     adjustments: null,

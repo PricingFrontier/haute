@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { constraintAttainment, constraintAttainmentRows } from "../constraintAttainment"
+import { breachReport, constraintAttainment, constraintAttainmentRows } from "../constraintAttainment"
 
 describe("constraintAttainment", () => {
   it.each([
@@ -100,5 +100,51 @@ describe("constraintAttainmentRows", () => {
       achieved: { volume: 5.2, margin: 1 },
       lambdas: { volume: 0.4, margin: 0 },
     })).toThrow(/margin/)
+  })
+})
+
+describe("breachReport", () => {
+  const rows = (bounds: Parameters<typeof constraintAttainmentRows>[0]["bounds"], achieved: Record<string, number>) =>
+    constraintAttainmentRows({
+      bounds,
+      achieved,
+      lambdas: Object.fromEntries(Object.keys(achieved).map((name) => [name, 1])),
+    })
+
+  it("is null for a result that meets every bound", () => {
+    expect(breachReport(rows({ volume: { kind: "min", bound: 100 } }, { volume: 100 }))).toBeNull()
+    expect(breachReport([])).toBeNull()
+  })
+
+  it("words a minimum the result ends short of", () => {
+    expect(breachReport(rows({ volume: { kind: "min", bound: 1868.27 } }, { volume: 1835.1 }))).toEqual({
+      status: "1 bound breached",
+      sentences: ["volume 1,835.1 is 1.78% under its minimum of 1,868.27."],
+    })
+  })
+
+  it("words each breach, a maximum's too, and leaves out the bounds that are met", () => {
+    const report = breachReport(rows(
+      {
+        volume: { kind: "min", bound: 100 },
+        claims: { kind: "max", bound: 50 },
+        income: { kind: "min", bound: 10 },
+      },
+      { volume: 90, claims: 55, income: 12 },
+    ))
+
+    expect(report).toEqual({
+      status: "2 bounds breached",
+      sentences: [
+        "volume 90 is 10.00% under its minimum of 100.",
+        "claims 55 is 10.00% over its maximum of 50.",
+      ],
+    })
+  })
+
+  it("gives no percentage against a zero bound", () => {
+    expect(breachReport(rows({ cost: { kind: "max", bound: 0 } }, { cost: 3 }))?.sentences).toEqual([
+      "cost 3 is over its maximum of 0.",
+    ])
   })
 })

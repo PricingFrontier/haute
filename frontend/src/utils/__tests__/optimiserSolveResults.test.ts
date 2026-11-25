@@ -76,6 +76,7 @@ describe("optimiserSolveResults", () => {
       cd_iterations: null,
       clamp_rate: null,
       history: null,
+      bisection_history: null,
       ratebook_cd_trace: null,
       adjustments: null,
       factor_tables: null,

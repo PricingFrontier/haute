@@ -223,7 +223,7 @@ class TestValidateConfig:
 
 @pytest.mark.usefixtures("_in_solver_worker_context")
 class TestFinalizeSolveResult:
-    def _make_solve_result(self, *, converged=True):
+    def _make_solve_result(self, *, converged=True, reason="iteration_budget_exhausted"):
         # A per-quote frame over SOLVE_SCENARIO_GRID (0.9, 1.0, 1.1).
         df = pl.DataFrame(
             {
@@ -243,7 +243,37 @@ class TestFinalizeSolveResult:
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
             converged=converged,
+            non_convergence_reason=None if converged else reason,
         )
+
+    @pytest.mark.parametrize(
+        ("reason", "warning"),
+        [("iteration_budget_exhausted", "iteration limits"), ("above_envelope", "scenario grid")],
+    )
+    def test_a_non_converged_solve_says_why(self, reason, warning):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
+        _finalize_solve_result(
+            self._make_solve_result(converged=False, reason=reason),
+            mode="online",
+            solver=MagicMock(),
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        assert warning in store.require_job(job_id)["result"]["warning"]
 
     def test_convergence_warning_when_not_converged(self):
         from haute.routes._job_store import JobStore
@@ -1339,7 +1369,23 @@ class TestSolveOnlineUnit:
             iterations=15,
             n_quotes=50,
             n_steps=5,
-            history=[{"iteration": 0, "total_objective": 80.0}],
+            solver_path="bisection",
+            non_convergence_reason=None,
+            # price-contour 0.11.0's record, the same keys on both paths.
+            history=[
+                {
+                    "iteration": 0,
+                    "phase": "bracket",
+                    "bracket_lo": None,
+                    "bracket_hi": None,
+                    "lambdas": {"volume": 0.0},
+                    "total_objective": 80.0,
+                    "total_constraints": {"volume": 0.8},
+                    "all_constraints_satisfied": False,
+                    "accepted": False,
+                    "max_lambda_change": None,
+                }
+            ],
             grid=mock_grid,
             dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
@@ -1378,7 +1424,21 @@ class TestSolveOnlineUnit:
         job = store.require_job(job_id)
         assert job["status"] == "completed"
         assert job["result"]["iterations"] == 15
-        assert job["result"]["history"] == [{"iteration": 0, "total_objective": 80.0}]
+        # One constraint bisects: its probes are the bisection history, in a point's shape.
+        assert job["result"]["history"] is None
+        assert job["result"]["bisection_history"] == [
+            {
+                "step": 0,
+                "phase": "bracket",
+                "bracket_lo": None,
+                "bracket_hi": None,
+                "lambdas": {"volume": 0.0},
+                "total_objective": 80.0,
+                "total_constraints": {"volume": 0.8},
+                "all_constraints_satisfied": False,
+                "accepted": False,
+            }
+        ]
         assert job["result"]["ratebook_cd_trace"] is None
 
     def test_solve_online_without_library_history_fails_loudly(self):

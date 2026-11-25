@@ -622,6 +622,61 @@ class JobStore:
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
         return result
 
+    def expire_heavy_objects_before(
+        self,
+        job_id: str,
+        choose: Callable[[JobSnapshot, list[tuple[str, JobSnapshot]]], Iterable[str]],
+    ) -> tuple[str, ...]:
+        """In one write, slim the jobs *choose* picks among those that completed before
+        *job_id* and still hold heavy objects, exactly as the retention window's expiry
+        slims them; resource-owning heavy values are released after the lock.
+
+        Nothing is slimmed unless *job_id* is completed and still holds heavy objects, and
+        a job that completed after it is never a candidate, so an older completion cannot
+        slim a newer one and a job already slimmed slims nothing. *choose* receives the job
+        and the candidates, least recently used first (earliest retention end, then id),
+        as snapshots; it runs under the store's lock and must only select, and an id that
+        is not a candidate raises. Returns the ids slimmed.
+        """
+        expired: list[str] = []
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            now = time.time()
+            self._evict_stale_locked(now, artifact_cleanups)
+            job = self._jobs.get(job_id)
+            if (
+                job is None
+                or job.get("status") != "completed"
+                or not any(key in job for key in _HEAVY_OBJECT_KEYS)
+            ):
+                return ()
+            completed_at = float(job["completed_at"])
+            earlier = sorted(
+                (
+                    (self._heavy_objects_expires_at(other), other_id, other)
+                    for other_id, other in self._jobs.items()
+                    if other.get("status") == "completed"
+                    and float(other["completed_at"]) < completed_at
+                    and any(key in other for key in _HEAVY_OBJECT_KEYS)
+                ),
+                key=lambda entry: (entry[0], entry[1]),
+            )
+            candidates = {other_id: other for _expires_at, other_id, other in earlier}
+            chosen = list(
+                choose(
+                    self._snapshot(job),
+                    [(other_id, self._snapshot(other)) for _at, other_id, other in earlier],
+                )
+            )
+            unknown = [other_id for other_id in chosen if other_id not in candidates]
+            if unknown:
+                raise ValueError(
+                    f"Jobs {unknown} are not earlier completed jobs holding heavy objects"
+                )
+            for other_id in dict.fromkeys(chosen):
+                self._clear_heavy_objects_locked(other_id, candidates[other_id], now=now)
+                expired.append(other_id)
+        return tuple(expired)
+
     def transition_terminal(
         self,
         job_id: str,

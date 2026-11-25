@@ -1339,6 +1339,16 @@ describe("OptimiserPreview", () => {
     it("shows no warning strip for a result without a warning", () => {
       renderPreview()
       expect(screen.queryByRole("status", { name: "Result warning" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("status", { name: "Bound breached" })).not.toBeInTheDocument()
+    })
+
+    it("says a converged result that breaches a bound is breached, in its status and a strip", () => {
+      renderPreview({ data: makeData({ result: makeSolveResult({ constraints: { loss_ratio: 1.1 } }) }) })
+
+      expect(screen.getByText("Converged | 1 bound breached | 15 iters | 50,000 quotes")).toBeInTheDocument()
+      expect(screen.getByRole("status", { name: "Bound breached" })).toHaveTextContent(
+        "loss_ratio 1.1 is 4.76% over its maximum of 1.05.",
+      )
     })
   })
 

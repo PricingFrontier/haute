@@ -4188,6 +4188,81 @@ class TestHeavyResourceRelease:
         assert owned.releases == 1
         assert "solver_session" not in job
 
+    def test_an_earlier_completion_is_slimmed_as_the_window_slims_it(self) -> None:
+        timers: list = []
+        store = JobStore(
+            heavy_object_ttl_seconds=10,
+            heavy_object_timer_factory=_manual_timer_factory(timers),
+        )
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            earlier, owned = self._completed_with_session(store)
+            slim = _create_job(store, {"status": "completed", "result": {"total": 1.0}})
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            later, later_owned = self._completed_with_session(store)
+            running = _create_job(store, {"status": "running"})
+            store.update_job(running, solver_session=_OwnedProcess())
+        seen: list[list[str]] = []
+
+        def choose_all(job, candidates):
+            seen.append([candidate_id for candidate_id, _snapshot in candidates])
+            return [candidate_id for candidate_id, _snapshot in candidates]
+
+        with patch("haute.routes._job_store.time.time", return_value=103.0):
+            expired = store.expire_heavy_objects_before(later, choose_all)
+            job = store.require_job(earlier)
+            still_running = store.require_job(running)
+            already_slim = store.require_job(slim)
+
+        # Only the earlier completion holding heavy objects is a candidate.
+        assert seen == [[earlier]]
+        assert expired == (earlier,)
+        assert owned.releases == 1
+        assert later_owned.releases == 0
+        assert "solver_session" not in job
+        assert "heavy_objects_expires_at" not in job
+        assert job["heavy_objects_cleared_at"] == 103.0
+        assert job["heavy_objects_retention_seconds"] == 10
+        assert timers[0].cancelled is True
+        assert "solver_session" in still_running
+        assert already_slim["result"] == {"total": 1.0}
+
+    def test_a_completion_never_slims_a_later_one_and_a_slim_one_slims_nothing(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=10)
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            first, first_owned = self._completed_with_session(store)
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            second, second_owned = self._completed_with_session(store)
+
+            def choose_all(job, candidates):
+                return [candidate_id for candidate_id, _snapshot in candidates]
+
+            # The first to finish cannot see the second, whatever order they release in.
+            assert store.expire_heavy_objects_before(first, choose_all) == ()
+            assert store.expire_heavy_objects_before(second, choose_all) == (first,)
+            assert store.expire_heavy_objects_before(first, choose_all) == ()
+        assert (first_owned.releases, second_owned.releases) == (1, 0)
+
+    def test_candidates_are_least_recently_used_first_and_a_stranger_is_refused(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=10)
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            first, _ = self._completed_with_session(store)
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            second, _ = self._completed_with_session(store)
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            newest, _ = self._completed_with_session(store)
+            # Reading the first solve's runtime makes it the most recently used.
+            assert store.touch_heavy_objects(first, required_keys=("solver_session",))
+            orders: list[list[str]] = []
+
+            def record(job, candidates):
+                orders.append([candidate_id for candidate_id, _snapshot in candidates])
+                return []
+
+            assert store.expire_heavy_objects_before(newest, record) == ()
+            assert orders == [[second, first]]
+            with pytest.raises(ValueError, match="not earlier completed jobs"):
+                store.expire_heavy_objects_before(newest, lambda job, candidates: [newest])
+
     def test_correcting_a_completed_job_to_error_releases_it(self) -> None:
         store = JobStore()
         job_id, owned = self._completed_with_session(store)

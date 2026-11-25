@@ -996,18 +996,34 @@ class TestSolveResultContract:
         assert result["adjustments"]["n_quotes"] == 5
 
     def test_every_online_solve_records_its_history(self, client, tmp_path):
-        """Q5: there is no flag; the history is always recorded, bounded by max_iter."""
+        """Q5: there is no flag. A one-constraint solve records its bisection's probes;
+        more constraints record their subgradient iterations, bounded by max_iter."""
         path = tmp_path / "online_history.parquet"
-        _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)
-        job_id = _solve_completed(client, _online_graph(str(path)))
+        _scored_frame(n_quotes=5, n_steps=3, extra_constraint_columns=True).write_parquet(path)
+        one = _poll_until_done(client, _solve_completed(client, _online_graph(str(path))))
+        two = _poll_until_done(
+            client,
+            _solve_completed(
+                client,
+                _online_graph(
+                    str(path),
+                    {"constraints": {"volume": {"min": 0.9}, "conversion": {"min": 0.4}}},
+                ),
+            ),
+        )
 
-        result = _poll_until_done(client, job_id)["result"]
+        probes = one["result"]["bisection_history"]
+        assert one["result"]["history"] is None
+        assert len(probes) == one["result"]["iterations"]
+        assert [probe["step"] for probe in probes] == list(range(len(probes)))
+        assert all(set(probe["total_constraints"]) == {"volume"} for probe in probes)
 
-        history = result["history"]
+        history = two["result"]["history"]
+        assert two["result"]["bisection_history"] is None
         assert 1 <= len(history) <= 20
         assert history[-1]["iteration"] == history[0]["iteration"] + len(history) - 1
-        assert all(set(entry["total_constraints"]) == {"volume"} for entry in history)
-        assert result["ratebook_cd_trace"] is None
+        assert all(set(entry["total_constraints"]) == {"volume", "conversion"} for entry in history)
+        assert one["result"]["ratebook_cd_trace"] is None
 
     def test_ratebook_solve_carries_its_coordinate_descent_trace(self, client, tmp_path):
         """One record per (CD pass, factor), named by the library, finite, and
@@ -1475,3 +1491,95 @@ class TestEstimateSingleScanContract:
         assert resp.status_code == 400
         assert "Null quote_id values found in optimiser input (2 rows)." in (resp.json()["detail"])
         assert route_collect.call_count + service_collect.call_count == 1
+
+
+def _book_of_quotes(n_quotes: int, n_steps: int) -> tuple[pl.DataFrame, float, float]:
+    """A book whose quotes each have their own premium, elasticity and conversion, the
+    volume each quote's best-income step gives, and the most volume the grid allows."""
+    rng = np.random.default_rng(7)
+    grid = np.linspace(0.8, 1.2, n_steps).astype(np.float32)
+    base = rng.uniform(200, 800, n_quotes)
+    elasticity = rng.uniform(2, 9, n_quotes)
+    at_one = rng.uniform(0.3, 0.9, n_quotes)
+    quote = np.repeat(np.arange(n_quotes), n_steps)
+    value = np.tile(grid, n_quotes)
+    conversion = 1 / (1 + (1 / at_one[quote] - 1) * np.exp(elasticity[quote] * (value - 1)))
+    income = (conversion * base[quote] * (value - 0.75)).astype(np.float32)
+    volume = conversion.astype(np.float32)
+    frame = pl.DataFrame(
+        {
+            "quote_id": [f"q_{q:05d}" for q in quote],
+            "scenario_index": pl.Series(np.tile(np.arange(n_steps), n_quotes), dtype=pl.Int32),
+            "scenario_value": pl.Series(value, dtype=pl.Float32),
+            "expected_income": pl.Series(income, dtype=pl.Float32),
+            "volume": pl.Series(volume, dtype=pl.Float32),
+        }
+    )
+    wide_income = income.reshape(n_quotes, n_steps)
+    wide_volume = volume.reshape(n_quotes, n_steps).astype(np.float64)
+    at_best = float(wide_volume[np.arange(n_quotes), wide_income.argmax(axis=1)].sum())
+    return frame, at_best, float(wide_volume.max(axis=1).sum())
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestOneConstraintSolve:
+    """OPM-02: a one-constraint solve finds what its frontier's first point finds."""
+
+    def test_a_binding_solve_meets_its_bound_and_is_its_frontiers_first_point(
+        self, client, tmp_path
+    ):
+        frame, at_best, most = _book_of_quotes(5000, 9)
+        path = tmp_path / "book.parquet"
+        frame.write_parquet(path)
+        bound = 0.5 * (at_best + most)
+
+        def node_defaults(config: dict) -> dict:
+            graph = _online_graph(str(path), config)
+            node_config = graph["nodes"][1]["data"]["config"]
+            del node_config["max_iter"], node_config["tolerance"]
+            return graph
+
+        solved = _poll_until_done(
+            client,
+            _solve_completed(client, node_defaults({"constraints": {"volume": {"min": bound}}})),
+        )["result"]
+        swept = _poll_until_done(
+            client,
+            _solve_completed(
+                client,
+                node_defaults(
+                    {"constraints": {"volume": {"min": bound}}, **_volume_frontier(bound, most, 3)}
+                ),
+            ),
+        )
+        first = swept["frontier"]["points"][0]
+
+        # The subgradient method ended 5.9% under this bound with these settings.
+        assert solved["converged"] is True
+        assert solved["warning"] is None
+        assert solved["constraints"]["volume"] >= bound
+        assert solved["bisection_history"] is not None
+        assert first["converged"] is True
+        assert first["bounds"]["volume"] == pytest.approx(bound)
+        assert first["totals"] == solved["constraints"]
+        assert first["total_objective"] == solved["total_objective"]
+        assert swept["result"]["constraints"] == solved["constraints"]
+        assert swept["result"]["total_objective"] == solved["total_objective"]
+
+    def test_a_bound_beyond_the_grid_says_so(self, client, tmp_path):
+        frame, _at_best, most = _book_of_quotes(200, 5)
+        path = tmp_path / "book.parquet"
+        frame.write_parquet(path)
+
+        result = _poll_until_done(
+            client,
+            _solve_completed(
+                client, _online_graph(str(path), {"constraints": {"volume": {"min": most * 1.01}}})
+            ),
+        )["result"]
+
+        assert result["converged"] is False
+        assert result["warning"] == (
+            "A bound is beyond what the scenario grid allows, so the result is as close to it "
+            "as the grid reaches. Widen the scenario range or relax the bound."
+        )

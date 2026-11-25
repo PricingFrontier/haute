@@ -17083,7 +17083,7 @@
     },
     "OptimiserBisectionProbe": {
       "additionalProperties": false,
-      "description": "One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's\n``point_history``), in the order it ran.",
+      "description": "One fixed-λ apply a bisection ran, a one-constraint solve's or a 1-D frontier\npoint's (price-contour's ``history`` or ``point_history``), in the order it ran.",
       "properties": {
         "accepted": {
           "title": "Accepted",
@@ -17731,6 +17731,10 @@
           "title": "Adjustments",
           "type": "null"
         },
+        "bisection_history": {
+          "title": "Bisection History",
+          "type": "null"
+        },
         "cd_iterations": {
           "anyOf": [
             {
@@ -17874,6 +17878,7 @@
         "cd_iterations",
         "clamp_rate",
         "history",
+        "bisection_history",
         "ratebook_cd_trace",
         "adjustments",
         "factor_tables",
@@ -19493,6 +19498,22 @@
           "title": "Baseline Objective",
           "type": "number"
         },
+        "bisection_history": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/OptimiserBisectionProbe"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bisection History"
+        },
         "cd_iterations": {
           "anyOf": [
             {
@@ -19725,6 +19746,7 @@
         "cd_iterations",
         "factor_tables",
         "history",
+        "bisection_history",
         "ratebook_cd_trace",
         "warning",
         "adjustments",

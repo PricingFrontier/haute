@@ -111,7 +111,17 @@ class OnlineSolveResultLike(SolveResultLike, Protocol):
     @property
     def n_steps(self) -> int: ...
     @property
-    def history(self) -> list[dict[str, float]] | None: ...
+    def solver_path(self) -> str:
+        """``"bisection"`` for one constraint (price-contour 0.11.0), else ``"subgradient"``."""
+        ...
+
+    @property
+    def non_convergence_reason(self) -> str | None: ...
+    @property
+    def history(self) -> list[dict[str, Any]] | None:
+        """One record per probe or iteration, the same keys on both paths."""
+        ...
+
     @property
     def grid(self) -> Any: ...  # QuoteGrid — Rust opaque type
 

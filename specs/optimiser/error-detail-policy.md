@@ -1,7 +1,7 @@
 # OPT-D01 — Optimiser Error-Detail Policy
 
 **Status:** Accepted
-**Date:** 2026-07-27, amended 2026-11-18
+**Date:** 2026-07-27, amended 2026-11-18 and 2026-11-25
 
 ## Context
 
@@ -35,9 +35,17 @@ Python exception class, and every boundary words a failure through
 | A file the operating system refused, out of memory in any form | 409, 422 or 507 / `contract_error` or `memory_limited` | The file named relative to the project, or the memory limit and what to change. |
 | Unknown pipeline or grid-construction catch-all | 500 / `error` | `unexpected_failure`: words and an incident id, the job's message too; the exception and its traceback recorded under the id. |
 | Solver input whose quotes are not one after another (checked once the grid builder refuses the file) | 400 / `contract_error` | Names the quote column, the scenario index column and the first quote out of place. |
+| Solver input whose scenario values do not rise with the scenario index, or whose quotes do not share the first quote's values (checked once the grid builder refuses the file, after the layout) | 400 / `contract_error` | Names the scenario value and scenario index columns, the first step that does not rise and its value beside the step before, and says an Expander's Min must be below its Max; or names the quote, the step, its value and the first quote's. |
 | Invalid server-owned apply/ratebook artifact handle | 500 | A fixed “artifact reference is invalid; re-run the solve” detail. |
 | Valid handle whose artifact is absent | 410 | A fixed “artifact is no longer available; re-run the solve” detail. |
 | Present artifact that cannot be read as its declared format | 500 | A fixed “artifact is corrupt; re-run the solve” detail. |
+
+Every optimiser setup and auto-range step that runs the pipeline is a pipeline boundary:
+writing the solver input and the quote-analysis table sink the pipeline's frames, so a failure
+there (a 128-bit integer column, which no Parquet file Haute writes can hold) is the
+pipeline's, said as a preview says it, and so is one that reaches the setup and auto-range
+classification. The grid build reads only the file Haute wrote, so a refusal of it that is
+neither named cause above stays an incident.
 
 A failure in the analyst's own node is public: it is their code, the message
 is the one a preview shows, and naming the node is what lets them fix it. A

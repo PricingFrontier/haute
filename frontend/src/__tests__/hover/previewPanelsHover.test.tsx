@@ -473,6 +473,7 @@ function makeSolveResult(): OptimiserSolveResult {
     baseline_objective: 1.0,
     constraints: { c1: 0.5 },
     baseline_constraints: { c1: 0.4 },
+    effective_bounds: { c1: { kind: "max", bound: 0.5 } },
     lambdas: { c1: 0.1 },
     converged: true,
     iterations: 10,

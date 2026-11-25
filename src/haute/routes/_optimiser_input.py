@@ -10,6 +10,7 @@ publication; the solve service orchestrates these steps.
 from __future__ import annotations
 
 import contextlib
+import math
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -25,14 +26,18 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
 )
-from haute._failure_answers import answer_failure
+from haute._failure_answers import answer_failure, answer_pipeline_failure
 from haute._graph_utils import (
     incoming_edge_bindings,
     incoming_edge_for_name,
     select_edge_source_output,
 )
 from haute._logging import get_logger
-from haute._polars_dtypes import is_string_or_categorical
+from haute._polars_dtypes import (
+    is_string_or_categorical,
+    wide_integer_column,
+    wide_integer_message,
+)
 from haute._polars_utils import (
     bounded_sink,
     current_streaming_chunk_size,
@@ -785,6 +790,18 @@ def validate_input_value_contracts(
         raise OptimiserSetupError(400, null_value_detail)
 
 
+def _refuse_wide_analysis_columns(schema: Any, columns: Iterable[str]) -> None:
+    """Refuse an analysis column holding a 128-bit integer, by its own name.
+
+    The quote-analysis table is a Parquet file, which cannot hold one; the solver input
+    carries the column under ``carried_analysis_column``, so the writer's own refusal would
+    name the copy, not the column the analyst chose.
+    """
+    wide = wide_integer_column({column: schema[column] for column in columns})
+    if wide is not None:
+        raise OptimiserSetupError(400, wide_integer_message(*wide))
+
+
 _CARRIED_ANALYSIS_PREFIX = f"{RESERVED_ANALYSIS_COLUMN_PREFIX}analysis:"
 
 
@@ -839,6 +856,7 @@ def validate_and_project(
             f"Missing analysis columns in the data input: {missing_analysis}. "
             f"Available: {sorted(available_cols)}",
         )
+    _refuse_wide_analysis_columns(schema, kept_analysis_columns)
 
     constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
     qid_dtype = schema[qid_col]
@@ -932,6 +950,7 @@ def resolve_analysis_frame(
             f"Missing analysis columns in the analysis input {configured_name!r}: {missing}. "
             f"Available: {sorted(schema.names())}",
         )
+    _refuse_wide_analysis_columns(schema, plan.columns)
     return frame.filter(pl.col(qid_col).is_not_null()).select(
         pl.col(qid_col).cast(pl.String), *[pl.col(column) for column in plan.columns]
     )
@@ -1121,11 +1140,15 @@ def extract_ratebook_factors(
 
 
 @contextlib.contextmanager
-def grid_construction_failures(node_id: str) -> Iterator[None]:
+def grid_construction_failures(node_id: str, *, runs_pipeline: bool) -> Iterator[None]:
     """Translate a failure while writing the solver input or building its grid.
 
     Refusals already typed (``OptimiserSetupError``, ``RequestRefusedError``) and
-    execution admission, cancellation and memory errors pass through.
+    execution admission, cancellation and memory errors pass through. A step that
+    *runs_pipeline* (writing the solver input or the quote-analysis table sinks the
+    pipeline's frames) answers anything else as the pipeline's own failure, as a preview
+    of the node says it; the grid build reads only the file Haute wrote, so a failure
+    nothing names there is an incident.
     """
     try:
         yield
@@ -1152,8 +1175,11 @@ def grid_construction_failures(node_id: str) -> Iterator[None]:
             422, f"Grid construction cannot run in bounded streaming mode: {exc}"
         ) from exc
     except Exception as exc:
-        # A file the operating system refused, a node's own failure, or an incident.
-        answer = answer_failure(exc, operation="optimiser_grid_build")
+        # The pipeline's own contracts and data (a step that runs it), a file the operating
+        # system refused, a node's own failure, or an incident.
+        answer = (answer_pipeline_failure if runs_pipeline else answer_failure)(
+            exc, operation="optimiser_grid_build"
+        )
         raise OptimiserSetupError(
             answer.status,
             answer.detail,
@@ -1177,7 +1203,7 @@ def write_solver_input(
     caller's still-open seed-plan lease) is returned instead of copied.
     """
     with (
-        grid_construction_failures(node_id),
+        grid_construction_failures(node_id, runs_pipeline=True),
         _execution_stage(execution_context, "optimiser_write_solver_input", node_id=node_id),
     ):
         borrowed_path = _projected_parquet_input_path(scored_lf) if allow_borrow else None
@@ -1214,13 +1240,15 @@ def build_quote_grid(
             n_steps=n_steps,
         )
     except ValueError as exc:
-        # The builder refuses a file whose quotes are mixed; say so, naming the columns.
-        fault = (
-            None
-            if n_steps is None
-            else quote_layout_fault(
-                Path(input_path), str(qid_col), str(step_col), n_steps, execution_context
-            )
+        # The builder refuses a file whose quotes are mixed, or whose scenario grid it cannot
+        # use; say which, naming the columns.
+        if n_steps is None:
+            raise
+        path = Path(input_path)
+        fault = quote_layout_fault(
+            path, str(qid_col), str(step_col), n_steps, execution_context
+        ) or scenario_grid_fault(
+            path, str(qid_col), str(step_col), str(mult_col), n_steps, execution_context
         )
         if fault is not None:
             raise OptimiserSetupError(400, fault) from exc
@@ -1285,6 +1313,74 @@ def quote_layout_fault(
         f"'{quote_id}', as the Scenario Expander writes them. The rows of quote {quote!r} "
         "are not. A join or group-by after the Expander that does not keep row order mixes "
         "quotes' rows."
+    )
+
+
+#: How far a quote's scenario value may be from its step's in the first quote's grid: the
+#: grid builder's own tolerance on the Float32 values (price-contour ``SCENARIO_VALUE_TOL``).
+_SCENARIO_VALUE_TOLERANCE = 1e-6
+
+
+def _float32_text(value: float) -> str:
+    """*value* as the shortest text that reads back as the same Float32, as the solver sees it."""
+    import numpy as np
+
+    return str(np.float32(value))
+
+
+def scenario_grid_fault(
+    path: Path,
+    quote_id: str,
+    scenario_index: str,
+    scenario_value: str,
+    n_steps: int,
+    execution_context: ExecutionContext | None = None,
+) -> str | None:
+    """Why the solver input's scenario values are not one grid the solver can use, or None.
+
+    The grid builder takes the first quote's ``n_steps`` rows as the grid: its values must
+    rise strictly with ``scenario_index``, and every other quote's value at a step must be
+    the grid's, within the builder's tolerance on Float32 values. Runs only once the builder
+    has refused a file whose quotes are laid out as it reads them (``quote_layout_fault``),
+    so row ``row`` holds step ``row % n_steps``. The first quote is read from the file's
+    head; the other quotes in one streaming scan that stops at the first value off the grid.
+    A non-finite value is not one of these causes: setup refuses it before the build.
+    """
+    import polars as pl
+
+    rows = pl.scan_parquet(path).select(
+        pl.col(quote_id).cast(pl.String).alias("quote"),
+        pl.col(scenario_index).alias("step"),
+        pl.col(scenario_value).cast(pl.Float32).alias("value"),
+    )
+    head = streaming_collect(rows.head(n_steps), execution_context=execution_context)
+    grid = head["value"].to_list()
+    if not all(math.isfinite(value) for value in grid):
+        # Setup refuses a non-finite value before the build (``validate_and_project``).
+        return None
+    for step in range(1, n_steps):
+        if not grid[step] > grid[step - 1]:
+            return (
+                f"The '{scenario_value}' values must rise with '{scenario_index}', as an "
+                "Expander's do when its Min is below its Max. "
+                f"Step {step} is {_float32_text(grid[step])}, not above step {step - 1}'s "
+                f"{_float32_text(grid[step - 1])}."
+            )
+    expected = pl.col("step").replace_strict(dict(enumerate(grid)), return_dtype=pl.Float32)
+    off_grid = streaming_collect(
+        rows.filter(
+            pl.col("value").is_finite()
+            & ((pl.col("value") - expected).abs() > _SCENARIO_VALUE_TOLERANCE)
+        ).head(1),
+        execution_context=execution_context,
+    )
+    if not off_grid.height:
+        return None
+    quote, step, value = off_grid.row(0)
+    return (
+        f"Every quote must have the same '{scenario_value}' at each '{scenario_index}' step, "
+        f"as an Expander gives them. Quote {quote!r} has {_float32_text(value)} at step {step}, "
+        f"where the first quote, {head['quote'][0]!r}, has {_float32_text(grid[step])}."
     )
 
 

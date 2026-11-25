@@ -2216,6 +2216,7 @@ describe("OptimiserConfig", () => {
         baseline_objective: 900,
         constraints: { loss_ratio: 0.65 },
         baseline_constraints: { loss_ratio: 0.6 },
+        effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
         lambdas: { loss_ratio: 0.005 },
         converged: true,
         iterations: 15,
@@ -2231,6 +2232,7 @@ describe("OptimiserConfig", () => {
         baseline_objective: 900,
         constraints: { loss_ratio: 0.65 },
         baseline_constraints: { loss_ratio: 0.6 },
+        effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
         lambdas: { loss_ratio: 0.005 },
         converged: true,
         iterations: 15,
@@ -2347,6 +2349,28 @@ describe("OptimiserConfig", () => {
           }))
       expect(screen.getByText(/Solver did not converge/)).toBeInTheDocument()
       expect(screen.getByText(/Did not converge/)).toBeInTheDocument()
+    })
+
+    it("says a converged solve that breaches a bound is breached", () => {
+      const breached = makeSolveResult({
+        ...convergedResult.originalResult,
+        mode: "ratebook",
+        constraints: { loss_ratio: 1.1 },
+        iterations: null,
+        cd_iterations: 4,
+      })
+      useNodeResultsStore.setState({
+        solveResults: { opt_1: { ...convergedResult, result: breached, originalResult: breached } },
+      })
+      renderConfig(makeProps({
+        config: { mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+      }))
+
+      expect(screen.getByText("1 bound breached")).toBeInTheDocument()
+      expect(screen.getByText("loss_ratio 1.1 is 4.76% over its maximum of 1.05.")).toBeInTheDocument()
+      expect(screen.getByText(/^Converged in .*, 1 bound breached \(5,000 quotes, 3 steps\)$/))
+        .toBeInTheDocument()
+      expect(screen.queryByText(/Solver did not converge/)).not.toBeInTheDocument()
     })
 
     it("describes the solve, not the frontier point the preview selected", () => {
