@@ -1242,8 +1242,9 @@ alone; in Team you can narrow the list to who a quote is with, and order it by w
 saved, by **Quote reference** (A to Z, each reference's options in order) or by its
 insured. The list names the quote details' columns as the schema does, by their labels. The
 list, the search and the order are in the page's address, so a link or Back returns to the
-same list. Each row has **Read**, which opens the quote to look at it, changing nothing,
-**Edit**, which opens it to work on it, and a **⋯** menu holding what you do to the quote as
+same list. Under **Validation** a row shows a green tick when the quote as last saved
+passes every check and a red cross when it does not. Each row has **Read**, which opens the quote to look at it, changing nothing,
+**Edit**, which opens it to work on it, and an **Actions** menu holding what you do to the quote as
 a whole; clicking the row itself opens nothing. One person edits a quote at a time: **Edit**
 on a quote someone else is editing says who, and **Read** still opens it. A quote is free
 again as its editor leaves it, or a few minutes after their page closes:

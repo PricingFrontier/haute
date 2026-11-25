@@ -2398,12 +2398,14 @@ Out of scope:
   else its reference and option), each under its column's name as the schema names
   quote_details' columns (its label, else its name read as words: Quote reference, Quote
   name), as the order names them too, its insured, broker and inception date under their columns'
-  labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
+  labels on the sheets, the date as a day, its stage, under Validation a green tick where
+  its `validation_passed` is true and a red cross where it is false (neither for a quote
+  whose row holds none), who it is with and when it was saved,
   relative, with the time on hover. Relative times in the app read as everywhere in Haute:
   "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
   ago") below a week, then the day and month, with the year when it is not this year. A row opens nothing, its reference included, and
-  always shows Read, Edit for one who may change quotes, a filled button in the accent blue,
-  and a menu of what is done to the quote as a whole:
+  always shows, a little apart, Read, Edit for one who may change quotes, a filled button in the accent blue,
+  and Actions, a button of that word opening a menu of what is done to the quote as a whole:
   Duplicate, Renew, Create alternative, Archive or Restore, and Copy link, Copy link alone
   for one who may only read quotes. Archive and Restore reload, once answered, the list
   showing then, whichever list the underwriter has moved to. These are the list's, not the
