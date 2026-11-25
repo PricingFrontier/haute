@@ -495,7 +495,9 @@ async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResp
     finally:
         reservation.release()
     return AssistantUndoResponse(
-        change_id=change.id, git_sha=result.git_sha, build_plan=session.build_plan.current
+        change_id=change.id,
+        build_plan=session.build_plan.current,
+        **result.capture.model_dump(),
     )
 
 

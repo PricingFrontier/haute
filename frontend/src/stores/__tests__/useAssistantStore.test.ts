@@ -21,7 +21,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ApiError } from "../../api/client"
+import { resetIdentityPromptForTests } from "../identityPrompt"
 import useDocumentStatusStore from "../useDocumentStatusStore"
+import useGitStore from "../useGitStore"
 import useGraphStore from "../useGraphStore"
 import useToastStore from "../useToastStore"
 import useUIStore from "../useUIStore"
@@ -64,7 +66,18 @@ const READY_STATUS = {
 
 const SEND_OPTS = { isInsideSubmodel: false, currentSourceFile: "main.py", readOnly: false }
 
+/** What `reportSaveCapture` does with a capture: each warning in a toast, the files it
+ * left out kept for the next capture, and the identity prompt opened when one is needed. */
+function expectReportedAsASave(capture: typeof NO_IDENTITY) {
+  const toasts = useToastStore.getState().toasts.map((toast) => [toast.type, toast.text])
+  for (const warning of capture.warnings) expect(toasts).toContainEqual(["warning", warning])
+  expect(useGitStore.getState().uncaptured).toEqual(capture.uncaptured)
+  expect(useGitStore.getState().modal).toBe(capture.identity_required ? "identity" : null)
+}
+
 function resetStores() {
+  useGitStore.setState({ uncaptured: [], modal: null })
+  resetIdentityPromptForTests()
   useAssistantStore.setState({
     sessionId: null,
     pipelineSource: null,
@@ -280,6 +293,18 @@ describe("sendMessage transcript flow", () => {
     expect(entries[3]).toEqual({ kind: "change", change: CHANGE })
   })
 
+  it("reports an applied change's version capture as a save's", async () => {
+    const change = { ...CHANGE, ...NO_IDENTITY }
+    scriptStream([
+      { type: "change_applied", change },
+      completed({ kind: "applied", detail: null, changes: [change.id] }),
+    ])
+
+    await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
+
+    expectReportedAsASave(NO_IDENTITY)
+  })
+
   it("renders a backend cancelled event as a stopped marker without a toast", async () => {
     scriptStream([{ type: "text_delta", text: "part" }, { type: "cancelled" }])
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
@@ -354,10 +379,22 @@ const CHANGE: AssistantChangeRecord = {
     truncated: false,
   },
   warnings: [],
+  identity_required: false,
+  uncaptured: [],
   git_sha: "c".repeat(40),
   parent_sha: "d".repeat(40),
   revision: "e".repeat(64),
   data_check: null,
+}
+
+/** An undo's capture that took its files. */
+const CAPTURED = { warnings: [], git_sha: "f".repeat(40), identity_required: false, uncaptured: [] }
+/** A capture skipped for want of a git identity, leaving the change's files out. */
+const NO_IDENTITY = {
+  warnings: ["Changes saved, but version capture needs a git identity."],
+  git_sha: null,
+  identity_required: true,
+  uncaptured: ["main.py", "config/banding/age_band.json"],
 }
 
 async function liveEntries(events: AssistantStreamEvent[]): Promise<TranscriptEntry[]> {
@@ -1209,9 +1246,18 @@ describe("undo", () => {
     expect(undoDisabledReason({ ...gate, change: { ...CHANGE, parent_sha: null } })).toMatch(/not saved to Git/)
   })
 
+  it("reports an undo's version capture as a save's", async () => {
+    openChat()
+    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, capture: NO_IDENTITY, buildPlan: null })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expectReportedAsASave(NO_IDENTITY)
+  })
+
   it("posts the undo and notes it in the transcript", async () => {
     openChat()
-    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, gitSha: "f".repeat(40), buildPlan: null })
+    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, capture: CAPTURED, buildPlan: null })
 
     await useAssistantStore.getState().undoChange(CHANGE)
 
@@ -1332,7 +1378,7 @@ describe("build plan", () => {
     useDocumentStatusStore.setState({ sourceRevision: CHANGE.revision })
     vi.mocked(undoAssistantChange).mockResolvedValue({
       changeId: CHANGE.id,
-      gitSha: "f".repeat(40),
+      capture: CAPTURED,
       buildPlan: reopened,
     })
 

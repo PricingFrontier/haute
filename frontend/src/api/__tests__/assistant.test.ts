@@ -60,6 +60,8 @@ const CHANGE: AssistantChangeRecord = {
     truncated: false,
   },
   warnings: [],
+  identity_required: false,
+  uncaptured: [],
   git_sha: null,
   parent_sha: null,
   revision: "e".repeat(64),
@@ -163,13 +165,12 @@ describe("getAssistantStatus", () => {
 
 describe("undoAssistantChange", () => {
   it("posts the chat, the change and the canvas source file", async () => {
-    mockFetch.mockReturnValueOnce(
-      jsonResponse({ change_id: CHANGE.id, git_sha: "f".repeat(40), build_plan: PLAN }),
-    )
+    const capture = { warnings: ["capture failed"], git_sha: null, identity_required: false, uncaptured: ["main.py"] }
+    mockFetch.mockReturnValueOnce(jsonResponse({ change_id: CHANGE.id, build_plan: PLAN, ...capture }))
 
     await expect(undoAssistantChange("abc123", CHANGE.id, "main.py")).resolves.toEqual({
       changeId: CHANGE.id,
-      gitSha: "f".repeat(40),
+      capture,
       buildPlan: PLAN,
     })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -183,7 +184,9 @@ describe("undoAssistantChange", () => {
   })
 
   it("requires the build plan the undo left, null without one", async () => {
-    mockFetch.mockReturnValueOnce(jsonResponse({ change_id: CHANGE.id, git_sha: null }))
+    mockFetch.mockReturnValueOnce(
+      jsonResponse({ change_id: CHANGE.id, warnings: [], git_sha: null, identity_required: false, uncaptured: [] }),
+    )
     await expect(undoAssistantChange("abc123", CHANGE.id, "main.py")).rejects.toThrow(
       "AssistantUndoResponse: invalid contract at /build_plan: required",
     )

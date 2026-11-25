@@ -1198,12 +1198,21 @@ class TestUndo:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> list[tuple[str, AssistantChangeRecord]]:
         from haute.assistant._application import PipelineApplicationService, UndoResult
+        from haute.schemas import SaveCapture
 
         calls: list[tuple[str, AssistantChangeRecord]] = []
 
         async def undo(self, source_file, change):
             calls.append((source_file, change))
-            return UndoResult(git_sha="f" * 40, revision="g" * 64)
+            # A capture that left a file out, for want of an identity: the route answers
+            # every capture field as a save does (AST-02).
+            capture = SaveCapture(
+                warnings=["needs a git identity"],
+                git_sha="f" * 40,
+                identity_required=True,
+                uncaptured=["main.py"],
+            )
+            return UndoResult(capture=capture, revision="g" * 64)
 
         monkeypatch.setattr(PipelineApplicationService, "undo", undo)
         return calls
@@ -1232,7 +1241,14 @@ class TestUndo:
         response = self._undo(client, session_id)
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"change_id": "a" * 64, "git_sha": "f" * 40, "build_plan": None}
+        assert response.json() == {
+            "change_id": "a" * 64,
+            "build_plan": None,
+            "warnings": ["needs a git identity"],
+            "git_sha": "f" * 40,
+            "identity_required": True,
+            "uncaptured": ["main.py"],
+        }
         assert undo_calls == [("main.py", AssistantChangeRecord.model_validate(_CHANGE))]
         _persistent_store(monkeypatch, project_root)  # the note survives a restart
         history = client.post(

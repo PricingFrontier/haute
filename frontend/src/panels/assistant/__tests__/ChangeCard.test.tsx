@@ -72,6 +72,8 @@ function record(overrides: Partial<AssistantChangeRecord> = {}): AssistantChange
       truncated: false,
     },
     warnings: ["Changes saved; version capture failed (git error — see server log)."],
+    identity_required: false,
+    uncaptured: [],
     git_sha: "0123456789abcdef0123456789abcdef01234567",
     parent_sha: "fedcba9876543210fedcba9876543210fedcba98",
     revision: "e".repeat(64),

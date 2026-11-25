@@ -473,7 +473,7 @@ class TestUndo:
             unsubscribe()
 
         assert _owned_files(project_root) == before
-        assert result.git_sha == _git(project_root, "rev-parse", ledger)
+        assert result.capture.git_sha == _git(project_root, "rev-parse", ledger)
         assert _git(project_root, "log", "-1", "--format=%s", ledger) == (
             "Undo: Add an age band after quotes."
         )
@@ -502,6 +502,58 @@ class TestUndo:
         assert exc.value.code == "undo_superseded"
         assert _owned_files(project_root) == after_later
         assert _git(project_root, "rev-parse", ledger) == tip
+
+    @pytest.mark.parametrize("cause", ["lock_left_behind", "no_identity"])
+    async def test_an_apply_and_an_undo_report_a_failed_capture_as_a_save_does(
+        self,
+        project_root: Path,
+        mutations_ready,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cause: str,
+    ):
+        """AST-02: each answers the save's capture fields: its warning, the files left
+        out of version history, and whether a git identity is needed."""
+
+        from haute import _git as git
+        from haute.assistant._tools import application_service
+
+        _git(project_root, "init", "-b", "main")
+        _git(project_root, "config", "user.name", "Test Actuary")
+        _git(project_root, "config", "user.email", "test@example.com")
+        _git(project_root, "add", "main.py", "haute.toml")
+        _git(project_root, "commit", "-m", "initial pipeline")
+        git.set_working_branch("pricing-dev", project_root, cwd=project_root, create=True)
+        service = application_service(session_id="chat")
+        plan = service.dry_run("main.py", ADD_NODE_OPS, summary="Add an age band.").plan
+        change = (await service.apply("main.py", plan.plan_hash)).change
+        assert change.git_sha is not None and change.uncaptured == []
+
+        if cause == "lock_left_behind":
+            (project_root / ".git" / "index.lock").write_text("", encoding="utf-8")
+        else:
+            empty = tmp_path / "git-home"
+            empty.mkdir()
+            monkeypatch.setenv("HOME", str(empty))
+            monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty / "gitconfig"))
+            monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty / "gitconfig-system"))
+            for name in ("AUTHOR", "COMMITTER"):
+                monkeypatch.delenv(f"GIT_{name}_NAME", raising=False)
+                monkeypatch.delenv(f"GIT_{name}_EMAIL", raising=False)
+            _git(project_root, "config", "--unset", "user.name")
+            _git(project_root, "config", "--unset", "user.email")
+
+        undone = (await service.undo("main.py", change)).capture
+        # Another change: the same one again would restore what the ledger's tip holds.
+        other_ops = [{**ADD_NODE_OPS[0], "name": "Region band"}, ADD_NODE_OPS[1]]
+        other = service.dry_run("main.py", other_ops, summary="Add a region band.").plan
+        applied = (await service.apply("main.py", other.plan_hash)).change
+
+        for capture in (undone, applied):
+            assert capture.git_sha is None
+            assert capture.warnings, capture
+            assert "main.py" in capture.uncaptured
+            assert capture.identity_required is (cause == "no_identity")
 
     async def test_a_change_not_saved_to_git_cannot_be_undone(self, project_root: Path):
         from haute.assistant._ops import AssistantOperationError

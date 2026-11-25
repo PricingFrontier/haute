@@ -380,7 +380,7 @@
     },
     "AssistantChangeRecord": {
       "additionalProperties": false,
-      "description": "The value-free change card of one saved plan.\n\n``id`` is the hash of the plan it saved; a plan applies once, so it names\nthis change. ``summary`` and ``assumptions`` are the model's own words from\nthe plan's dry-run; everything else is built from what was saved.\n``data_check`` is the plan's data check, or ``None`` when no check was\nattempted or its findings describe another graph.",
+      "description": "The value-free change card of one saved plan, with its save's version capture.\n\n``id`` is the hash of the plan it saved; a plan applies once, so it names\nthis change. ``summary`` and ``assumptions`` are the model's own words from\nthe plan's dry-run; everything else is built from what was saved, the\ncapture fields (`SaveCapture`) as the save answered them, which the editor\nreports as it reports any save's.\n``data_check`` is the plan's data check, or ``None`` when no check was\nattempted or its findings describe another graph.",
       "properties": {
         "assumptions": {
           "default": [],
@@ -421,6 +421,11 @@
           "title": "Id",
           "type": "string"
         },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
         "parent_sha": {
           "anyOf": [
             {
@@ -442,8 +447,14 @@
           "title": "Summary",
           "type": "string"
         },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
         "warnings": {
-          "default": [],
           "items": {
             "type": "string"
           },
@@ -452,12 +463,14 @@
         }
       },
       "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
         "id",
         "summary",
         "assumptions",
         "changes",
-        "warnings",
-        "git_sha",
         "parent_sha",
         "revision",
         "data_check"
@@ -1089,6 +1102,7 @@
       "type": "object"
     },
     "AssistantUndoResponse": {
+      "description": "The change an undo undid, with the undo's save capture (``git_sha`` its commit, or\nNone when it was not captured in Git).",
       "properties": {
         "build_plan": {
           "anyOf": [
@@ -1113,12 +1127,35 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
         }
       },
       "required": [
-        "change_id",
+        "warnings",
         "git_sha",
+        "identity_required",
+        "uncaptured",
+        "change_id",
         "build_plan"
       ],
       "title": "AssistantUndoResponse",

@@ -471,7 +471,13 @@ saved more than once. The undo is recorded in the chat as a note after the lates
 the transcript shows it, and the next turn's context tells the model that the analyst
 undid that change, so the model does not assume its earlier change is still in place. The
 undo also updates the session's build plan as **Build plans for multi-stage requests**
-describes, and its response carries the resulting plan for the checklist.
+describes, and its response carries the resulting plan for the checklist. An apply and an
+undo are saves, and each answers its version capture as every save does: an applied
+change's record and an undo's response carry the save's warnings, its commit, the files a
+skipped or failed capture left out of version history, and whether git needs an
+identity, which the editor reports through the one function every write uses, so a
+capture that failed is said, its files are kept for the next capture, and a missing
+identity opens the identity prompt.
 A plan's single-use record never outlives the revision it applied to: after an undo
 restores that revision, dry-running the same change again issues a fresh plan with the
 same hash, which applies once more. This amends the rule that a stored plan "is

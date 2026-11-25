@@ -97,6 +97,7 @@ from haute.schemas import (
     AssistantChangeDataCheck,
     AssistantChangeRecord,
     AssistantGraphChanges,
+    SaveCapture,
     SavePipelineRequest,
 )
 
@@ -173,9 +174,9 @@ class ApplicationResult:
 
 @dataclass(frozen=True, slots=True)
 class UndoResult:
-    """The forward save that undid one change: its commit and document revision."""
+    """The forward save that undid one change: its version capture and document revision."""
 
-    git_sha: str | None
+    capture: SaveCapture
     revision: str
 
 
@@ -1463,8 +1464,7 @@ class PipelineApplicationService:
                         plan.plan_hash,
                         receipt,
                         changes,
-                        warnings=response.warnings or (),
-                        git_sha=response.git_sha,
+                        capture=response,
                         parent_sha=parent_sha,
                         revision=response.source_revision,
                         data_check=card_check,
@@ -1561,7 +1561,10 @@ class PipelineApplicationService:
         async with save_lock:
             response = await asyncio.to_thread(self._undo, source_file, change, parent_sha)
             self._publish_document_update(source_file, change)
-        return UndoResult(git_sha=response.git_sha, revision=response.source_revision)
+        return UndoResult(
+            capture=response.save_capture(),
+            revision=response.source_revision,
+        )
 
 
 __all__ = [

@@ -3,11 +3,7 @@
 ## Scope
 
 The assistant inside Haute, as [the assistant
-specification](../assistant/high-level.md) describes it. `AST-02` is about what an
-applied or undone change tells the editor of its version capture. It comes
-from the second run of the review plan's sweep of failed writes on
-10 November 2026 and was reproduced through the assistant's service with a real git lock.
-`AST-04` comes from the plan's phase 5, a reader from a second model
+specification](../assistant/high-level.md) describes it. `AST-04` comes from the plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit.
 A worker ran it through the editor's assistant routes with a stand-in
 for the provider, and the main session ran it again on 13 November.
@@ -18,50 +14,9 @@ for the provider, and the main session ran it again on 13 November.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| AST-02 | Planned | P3 | An applied or undone assistant change whose version capture fails says so and names its files, as a save does. |
 | AST-04 | Planned | P2 | A provider is sent only what its own policy allows: not the earlier answers of a chat begun under a wider policy, and not what a policy saved during the turn allows. |
 
 ## Planned improvements
-
-### AST-02 — An assistant change reports its version capture as a save does
-**Why:** Reproduced on 10 November 2026 with a real cause, a
-`.git/index.lock` left behind, through the assistant's own
-service as its tests drive it. An assistant change is applied and captured.
-Then, with the lock in place, it is undone. The undo's answer holds a null
-commit and nothing else about the capture: no warning, and no list of the
-files left out of version history. History stays at the applied change
-while the files hold the undone state, and nothing in the editor says so. A
-pipeline save under the same lock answers "Changes saved; version capture
-failed (git error — see server log)." and names its three files, which the
-editor keeps so that the next save captures them. The undo's answer has no
-field for either.
-
-An applied change keeps the warning in its result but not the list of files
-(read from the service; what the route and the message stream pass on was
-not run). Neither carries the flag that opens the identity prompt, which the
-capture code describes as the only way a restored hosted container learns
-that it has no git identity. Every other write in the editor reports its
-capture through one function: the pipeline's save, the form's save, a
-Pipeline file, a utility module, a test quote. The assistant's apply and
-undo do not call it.
-
-**Plan:** Give the assistant's apply and undo answers the save's capture
-fields (the warnings, the files left out, whether an identity is needed),
-and report them in the editor through the function every other write uses.
-
-**Acceptance:** With version capture failing, once for a lock left behind
-and once for a missing identity, an applied change and an undone one each
-show the save's warning, add their files to the editor's list for the next
-capture, and open the identity prompt when that is the cause.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_application.py`;
-`src/haute/schemas.py::AssistantUndoResponse`;
-`src/haute/routes/assistant.py`;
-`src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
-`frontend/src/stores/saveCapture.ts::reportSaveCapture`;
-`frontend/src/stores/useAssistantStore.ts`.
 
 ### AST-04 — What a provider is sent follows that provider's policy, for the whole chat and the whole turn
 **Why:** Reproduced on 13 November 2026 in two runs through the editor's
