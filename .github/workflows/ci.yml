@@ -632,14 +632,15 @@ jobs:
       - name: Wheel install smoke
         run: |
           uv venv .pkg-wheel --python 3.12
-          uv pip install --python .pkg-wheel/bin/python dist-smoke/*.whl
+          # Compiled as pip compiles by default: the assistant's examples load beside the caches.
+          uv pip install --compile-bytecode --python .pkg-wheel/bin/python dist-smoke/*.whl
           ./.pkg-wheel/bin/python scripts/package_smoke_check.py
           ./.pkg-wheel/bin/haute --help >/dev/null
 
       - name: Sdist install smoke
         run: |
           uv venv .pkg-sdist --python 3.12
-          uv pip install --python .pkg-sdist/bin/python dist-smoke/*.tar.gz
+          uv pip install --compile-bytecode --python .pkg-sdist/bin/python dist-smoke/*.tar.gz
           ./.pkg-sdist/bin/python scripts/package_smoke_check.py
           ./.pkg-sdist/bin/haute --help >/dev/null
 

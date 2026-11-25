@@ -10,7 +10,7 @@
 | `.python-version` | Pins the checkout's selected Python interpreter version for version-manager tooling. |
 | `.gitattributes` | Enforces LF checkout normalisation, including byte-sensitive JSON test fixtures, so generated and golden-file inputs are stable across platforms. |
 | `uv.lock` | Locks the repository's Python dependency resolution used by the build, docs, and quality workflows. |
-| `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency of the builder's page and the underwriter app's (`_APP_PAGE`, through `_require_pages_ready`), explicitly rebuilds embedded frontend assets, resolves Node and npm from PATH (failing with the CLI's install hint when either is missing), and turns failed prerequisites/commands into runtime errors. |
+| `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency of the builder's page and the underwriter app's (`_APP_PAGE`, through `_require_pages_ready`), explicitly rebuilds embedded frontend assets, resolves Node and npm from PATH (failing with the CLI's install hint when either is missing), and turns failed prerequisites/commands into runtime errors. Before any of that, a non-editable build stops when an assistant example bundle's folder holds a file its manifest does not name, naming the file, by the rule `src/haute/assistant/_bundle_inventory.py` holds (loaded by path, so the hook imports nothing it builds): the wheel takes every file under the assets whether git ignores it or not. Hatchling leaves bytecode cache folders out of the wheel itself. |
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
 | `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build && vite build --config vite.app.config.ts`, the builder's page then the underwriter app's), the app's development server (`dev:app`), explicit contract generation/check commands, and build-time dependencies. Ajv, json-schema-to-typescript, and esbuild are exact-pinned development generators, not production runtime dependencies. |
@@ -196,7 +196,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   additions/deletions/content changes, recursive TypeScript references,
   absent/corrupt/mismatched input manifests, direct and transitive/dynamic
   missing output assets, manifest-key/path/schema failures, path escapes,
-  validation mode, explicit-build skip/rebuild behavior, unconditional locked
+  validation mode, an example bundle's compiled modules passing and any other
+  undeclared file stopping the build by name (editable installs unchecked),
+  explicit-build skip/rebuild behavior, unconditional locked
   installation, safe subprocess decoding and timeout translation, a build
   without Node or npm on `PATH` stopped with the CLI's install hint before any
   command runs, the atomic
@@ -243,7 +245,11 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `haute.assistant._assets.validate_example_bundles(execute_fast=True)` entry
   point. It uses only installed resources, validates closed manifests and
   content hashes, parses every valid bundle, and executes the `fast` tier's
-  production graph, trace, and no-write dry-run checks when declared.
+  production graph, trace, and no-write dry-run checks when declared. CI installs
+  the wheel and the sdist with `--compile-bytecode`, as pip installs by default and
+  as the hosted editor installs at each start, and the check fails unless the
+  installed examples hold compiled modules, every teaching example loads through
+  `read_reference`, and a file written into an installed bundle is refused naming it.
 - `scripts/update_assistant_example_manifests.py` is the source-authoring
   boundary for bundle inventories. Its default check mode fails on stale
   digests or inventory drift; `--write` is the only supported digest refresh

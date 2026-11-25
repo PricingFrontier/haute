@@ -1,14 +1,19 @@
-"""Hatchling custom build hook for packaged frontend assets.
+"""Hatchling custom build hook for packaged frontend and assistant assets.
 
 By default the hook packages already-built files in ``src/haute/static/``
 and verifies that their output graph and recorded production inputs match the
 checkout. Release or preflight builds that need to refresh those assets can
 opt in with ``HAUTE_BUILD_FRONTEND=1``.
+
+It also stops a build whose assistant example bundle holds a file its manifest
+does not name: the wheel takes every file under the assets whether git ignores
+it or not, and the installed assistant refuses such a bundle.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -17,6 +22,7 @@ import subprocess
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -40,6 +46,11 @@ _SOURCE_TEST_FILE = re.compile(r"[.](?:test|spec)[.][^.]+$")
 # The hint the CLI's ``_node_env`` and ``_npm`` fail with
 # (src/haute/cli/_helpers.py); the hook cannot import the package it builds.
 _NODE_INSTALL_HINT = "Install Node.js from https://nodejs.org and restart your terminal."
+_ASSISTANT_DIR = Path("src") / "haute" / "assistant"
+# The rule the assistant's loader applies, loaded by path: the hook cannot import the
+# package it builds.
+_BUNDLE_INVENTORY = _ASSISTANT_DIR / "_bundle_inventory.py"
+_EXAMPLES_DIR = _ASSISTANT_DIR / "assets" / "examples"
 
 
 class _LocalAssetParser(HTMLParser):
@@ -67,6 +78,8 @@ class FrontendBuildHook(BuildHookInterface):
         # validate packaged frontend assets below.
         if version == "editable":
             return
+
+        self._require_declared_example_files(Path(self.root))
 
         frontend_dir = Path(self.root) / "frontend"
         if not frontend_dir.exists():
@@ -104,6 +117,47 @@ class FrontendBuildHook(BuildHookInterface):
         )
         self._require_pages_ready(index_html)
         self._require_current_input_manifest(frontend_dir, index_html)
+
+    @staticmethod
+    def _require_declared_example_files(root: Path) -> None:
+        """Stop the build when an example bundle holds a file its manifest does not name.
+
+        A tree without the examples folder ships none, which the package smoke check
+        refuses; an editable install is not checked, so a checkout's stray file stops
+        no ``uv sync``.
+        """
+
+        examples = root / _EXAMPLES_DIR
+        if not examples.is_dir():
+            return
+        inventory = FrontendBuildHook._bundle_inventory(root)
+        for bundle in sorted(path for path in examples.iterdir() if path.is_dir()):
+            manifest_path = bundle / inventory.MANIFEST_NAME
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Assistant example bundle {bundle.name!r} has an unreadable manifest: {exc}"
+                ) from exc
+            if undeclared := inventory.undeclared_files(bundle, manifest):
+                raise RuntimeError(
+                    f"Assistant example bundle {bundle.name!r} holds files its manifest does "
+                    f"not name: {', '.join(undeclared)}. Remove them from "
+                    f"{bundle.relative_to(root).as_posix()}/ or declare them, then build again."
+                )
+
+    @staticmethod
+    def _bundle_inventory(root: Path) -> ModuleType:
+        spec = importlib.util.spec_from_file_location(
+            "_haute_build_bundle_inventory", root / _BUNDLE_INVENTORY
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load {_BUNDLE_INVENTORY.as_posix()}.")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     @staticmethod
     def _should_build_frontend() -> bool:

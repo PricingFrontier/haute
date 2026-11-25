@@ -623,3 +623,52 @@ def test_mlflow_is_core_and_databricks_extra_only_adds_databricks_sdks() -> None
 
     assert "mlflow" in core_names
     assert databricks_names == {"databricks-sdk", "databricks-sql-connector"}
+
+
+def _seed_example_bundle(root: Path) -> Path:
+    """One example bundle and the inventory rule the hook loads by path from the tree."""
+    real = Path(__file__).resolve().parents[1] / "src" / "haute" / "assistant"
+    assistant = root / "src" / "haute" / "assistant"
+    assistant.mkdir(parents=True)
+    (assistant / "_bundle_inventory.py").write_bytes((real / "_bundle_inventory.py").read_bytes())
+    bundle = assistant / "assets" / "examples" / "one"
+    bundle.mkdir(parents=True)
+    (bundle / "pipeline.py").write_text('"""One."""\n', encoding="utf-8")
+    (bundle / "manifest.json").write_text(
+        json.dumps({"resources": [{"path": "pipeline.py"}]}), encoding="utf-8"
+    )
+    return bundle
+
+
+def test_build_ignores_an_examples_compiled_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_hatch_build(monkeypatch)
+    bundle = _seed_example_bundle(tmp_path)
+    (bundle / "__pycache__").mkdir()
+    (bundle / "__pycache__" / "pipeline.cpython-312.pyc").write_bytes(b"\x00")
+
+    # No frontend folder: the sdist-to-wheel path, which returns after the bundle check.
+    module.FrontendBuildHook.initialize(_hook(module, tmp_path), "standard", {})
+
+
+def test_build_stops_on_an_undeclared_example_file_naming_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_hatch_build(monkeypatch)
+    bundle = _seed_example_bundle(tmp_path)
+    (bundle / "mlruns" / "0").mkdir(parents=True)
+    (bundle / "mlruns" / "0" / "meta.yaml").write_text("x\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"'one' holds files .* not name: mlruns/0/meta\.yaml"):
+        module.FrontendBuildHook.initialize(_hook(module, tmp_path), "standard", {})
+
+
+def test_an_editable_install_does_not_check_the_example_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_hatch_build(monkeypatch)
+    bundle = _seed_example_bundle(tmp_path)
+    (bundle / "notes.txt").write_text("x\n", encoding="utf-8")
+
+    module.FrontendBuildHook.initialize(_hook(module, tmp_path), "editable", {})
