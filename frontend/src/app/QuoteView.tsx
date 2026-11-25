@@ -1,7 +1,7 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
- * to Quotes, its reference and option, name and stage, Save and Mark final or Amend,
- * Validation, History, the zoom, and why it has no price), a line of who saved it,
+ * to Quotes, its reference and option, name and stage, Save over History, Validation
+ * over Mark final or Amend, the zoom, and why it has no price), a line of who saved it,
  * where it came from and who it is with, and the notices of
  * anything that stands in the way. The quote is priced as it is typed. Values not saved are
  * kept in the browser and leaving with them asks first.
@@ -350,6 +350,12 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || unkeyed !== null || nothingNew} title={!closed && nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
           {saving ? "Saving…" : "Save"}
         </button>
+        <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
+          History
+        </ToolbarButton>
+      </ToolbarColumn>
+      <ToolbarColumn role="group" aria-label="Validation">
+        <ValidationButton form={form} values={values} tables={price?.tables ?? null} disabled={!ready} />
         {quote?.stage === "final" ? (
           <ToolbarButton icon={LockOpen} onClick={() => void amend()} disabled={working || reason !== "final"} title={reason === "final" ? "Take the quote back to draft to amend it, giving a reason" : closedWhy}>
             Amend
@@ -367,14 +373,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           </ToolbarButton>
         </ToolbarColumn>
       )}
-      <ToolbarColumn role="group" aria-label="Validation">
-        <ValidationButton form={form} values={values} tables={price?.tables ?? null} disabled={!ready} />
-      </ToolbarColumn>
-      <ToolbarColumn role="group" aria-label="History">
-        <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
-          History
-        </ToolbarButton>
-      </ToolbarColumn>
       <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />
       {error !== null && (
         <span data-testid="app-pricing-error" className="max-w-96 truncate text-xs" style={{ color: "var(--warning)" }} title={error}>

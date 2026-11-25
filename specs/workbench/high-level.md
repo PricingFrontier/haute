@@ -2433,8 +2433,9 @@ Out of scope:
   under its bar: back to Quotes, its reference and option, its name (its
   `quote_details.quote_name`, given in the New quote window as the quote is made and
   never changed after), its stage, Draft or Final, and, when archived, Archived (restored from the Quotes page's menu alone, as its notice says), who it is with (reassigned
-  from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
-  Amend, which asks why, Validation, History, and why the quote has no price. Validation
+  from the people quotes are with, or a name typed), Save with History under it, beside them
+  Validation with, under it, Mark final or, for a final quote, Amend, which asks why, and why
+  the quote has no price. Validation
   is outlined green while the quote on the sheets passes every check marking it final
   makes (the store, below), red while it fails any, and says how many fail; pressed, it
   opens a box under it listing the checks failing, and none of those passing: a
