@@ -17,13 +17,15 @@ from __future__ import annotations
 import polars as pl
 from polars import CompatLevel
 
+from haute._polars_dtypes import ColumnKind, column_kind
+
 VIEW_BYTES = 16
 """The view every String and Binary value has."""
 VIEW_INLINE_BYTES = 12
 """The longest value a view holds itself; a longer one is in a data buffer."""
 
-_VIEW_TYPES = (pl.String, pl.Binary)
-_NESTED_TYPES = (pl.List, pl.Array, pl.Struct)
+#: The kinds Polars holds in views: String and Binary.
+_VIEW_KINDS: frozenset[ColumnKind] = frozenset({"text", "binary"})
 
 
 def series_bytes(series: pl.Series) -> int:
@@ -39,11 +41,12 @@ def series_bytes(series: pl.Series) -> int:
     estimated = int(series.estimated_size())
     if estimated < 0:
         raise ValueError(f"Polars estimated_size returned {estimated} bytes for {series.name!r}")
-    if series.dtype in _VIEW_TYPES:
-        lengths = _value_lengths(series)
+    kind = column_kind(series.dtype)
+    if kind in _VIEW_KINDS:
+        lengths = series.bin.size() if kind == "binary" else series.str.len_bytes()
         inlined = int(lengths.filter(lengths <= VIEW_INLINE_BYTES).sum() or 0)
         return estimated - inlined + VIEW_BYTES * series.len()
-    if isinstance(series.dtype, _NESTED_TYPES):
+    if kind == "nested":
         return _arrow_buffer_bytes(series)
     return estimated
 
@@ -60,14 +63,8 @@ def series_bytes_per_row(series: pl.Series) -> float:
     if not isinstance(series, pl.Series):
         raise TypeError("series must be a Polars Series")
     if series.len() == 0:
-        return float(VIEW_BYTES) if series.dtype in _VIEW_TYPES else 0.0
+        return float(VIEW_BYTES) if column_kind(series.dtype) in _VIEW_KINDS else 0.0
     return series_bytes(series) / series.len()
-
-
-def _value_lengths(series: pl.Series) -> pl.Series:
-    if series.dtype == pl.Binary:
-        return series.bin.size()
-    return series.str.len_bytes()
 
 
 def _arrow_buffer_bytes(series: pl.Series) -> int:

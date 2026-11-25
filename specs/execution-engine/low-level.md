@@ -1262,6 +1262,11 @@ baseline fell from 14.4 GB to 5.1 GB and XGBoost's from 9.4 GB to 2.9 GB, both i
 6.6 GiB `model_thread_address_space_allowance()` gives that host, which is left as measured
 above. Polars' `polars-ooc-cleaner` thread starts when Polars is imported, so it is in every
 baseline whatever the spilling settings.
+`tests/test_training_worker_protocol.py::test_real_spawn_catboost_training_runs_under_the_rlimit_fallback`
+runs a four-thread CatBoost job under a 650 MiB `RLIMIT_AS` base on Linux. It completes with
+the model-library allowance, and with no allowance at all under the child's two arenas. It
+fails with no allowance when an operator's `MALLOC_ARENA_MAX=64` is kept, which shows the cap
+binds and that the arena limit is what holds the job within it.
 
 Known gaps, left for follow-ups: an allowance that is still too small does not fail
 cleanly. CatBoost, under a cap it cannot fit, stalls until the worker's timeout rather than
