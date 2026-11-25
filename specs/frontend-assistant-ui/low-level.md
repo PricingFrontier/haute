@@ -234,7 +234,9 @@ document revision from `useDocumentStatusStore`) is `null`; it sets `undoingChan
 posts `undoAssistantChange(sessionId, change.id, pipelineSource)`, and on success
 appends `{ kind: "undo", change }` to the transcript and sets `buildPlan` to the response's
 plan, in which the backend has marked the change undone and reopened a stage left without
-a live change, and reports the response's version capture through `reportSaveCapture`. A
+a live change, and reports the response's version capture through `reportSaveCapture`;
+an undo answered after the panel moved to another chat still reports its capture, the
+project's, while its transcript note and plan are dropped. A
 refusal sets `notice` to the
 `ApiError` detail; the transcript is unchanged. `undoingChangeId` clears in `finally`.
 The canvas update arrives through `/ws/sync` with the assistant origin, as an apply's

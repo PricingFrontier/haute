@@ -1255,6 +1255,20 @@ describe("undo", () => {
     expectReportedAsASave(NO_IDENTITY)
   })
 
+  it("reports an undo's capture though the chat changed before it answered", async () => {
+    openChat()
+    let answerUndo: (value: Awaited<ReturnType<typeof undoAssistantChange>>) => void = () => {}
+    vi.mocked(undoAssistantChange).mockReturnValue(new Promise((resolve) => { answerUndo = resolve }))
+
+    const undoing = useAssistantStore.getState().undoChange(CHANGE)
+    useAssistantStore.setState({ sessionId: "session-2", entries: [] })
+    answerUndo({ changeId: CHANGE.id, capture: NO_IDENTITY, buildPlan: null })
+    await undoing
+
+    expectReportedAsASave(NO_IDENTITY)
+    expect(useAssistantStore.getState().entries).toEqual([])
+  })
+
   it("posts the undo and notes it in the transcript", async () => {
     openChat()
     vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, capture: CAPTURED, buildPlan: null })

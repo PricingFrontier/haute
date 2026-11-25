@@ -15,7 +15,8 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
@@ -343,6 +344,18 @@ class _TurnPolicy:
 _TOOL_CALL_POLICY: ContextVar[_TurnPolicy | None] = ContextVar(
     "assistant_tool_call_policy", default=None
 )
+
+
+@contextmanager
+def _answering_under(policy: _TurnPolicy) -> Iterator[None]:
+    """Everything below answers under *policy*: a tool call of the turn, or the context a
+    turn is sent, whose error texts decide what they quote from it as a tool's do."""
+
+    token = _TOOL_CALL_POLICY.set(policy)
+    try:
+        yield
+    finally:
+        _TOOL_CALL_POLICY.reset(token)
 
 
 def _egress_policy() -> EgressPolicy:
@@ -1503,6 +1516,32 @@ def build_turn_context(
     undone: Sequence[AssistantChangeRecord] = (),
     build_plan: AssistantBuildPlan | None = None,
 ) -> TurnContext:
+    """Gather the turn context's facts for the saved pipeline, under the turn's *egress*.
+
+    The preview error's text decides what it quotes by *egress*, never by a
+    ``haute.toml`` saved since the turn's provider was resolved.
+    """
+
+    with _answering_under(_TurnPolicy(egress)):
+        return _gather_turn_context(
+            source_file,
+            egress,
+            selected_node_ids=selected_node_ids,
+            preview_error_node_id=preview_error_node_id,
+            undone=undone,
+            build_plan=build_plan,
+        )
+
+
+def _gather_turn_context(
+    source_file: str,
+    egress: EgressPolicy,
+    *,
+    selected_node_ids: Sequence[str],
+    preview_error_node_id: str | None,
+    undone: Sequence[AssistantChangeRecord],
+    build_plan: AssistantBuildPlan | None,
+) -> TurnContext:
     """Gather the turn context's facts for the saved pipeline.
 
     The graph brief, revision, selection and preview error are `internal`
@@ -1557,6 +1596,17 @@ def build_turn_context(
 
 
 def build_context_update(
+    source_file: str,
+    egress: EgressPolicy,
+    changes: Sequence[AssistantChangeRecord],
+) -> ContextUpdate:
+    """Gather the turn context update's facts after *changes*, under the turn's *egress*."""
+
+    with _answering_under(_TurnPolicy(egress)):
+        return _gather_context_update(source_file, egress, changes)
+
+
+def _gather_context_update(
     source_file: str,
     egress: EgressPolicy,
     changes: Sequence[AssistantChangeRecord],
@@ -1868,11 +1918,10 @@ def _run_column_profile_worker(
     """The preview worker's half: profile under the budget the server admitted."""
 
     context = create_isolated_execution_context(budget)
-    policy_token = _TOOL_CALL_POLICY.set(_TurnPolicy(request.policy))
     try:
-        return _collect_column_profile(request, context)
+        with _answering_under(_TurnPolicy(request.policy)):
+            return _collect_column_profile(request, context)
     finally:
-        _TOOL_CALL_POLICY.reset(policy_token)
         context.release_admission(preserve_primary_error=True)
 
 
@@ -3691,11 +3740,8 @@ def build_tool_executor(
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         started = time.monotonic()
-        token = _TOOL_CALL_POLICY.set(turn_policy)
-        try:
+        with _answering_under(turn_policy):
             result = _with_retryable(await _dispatch_tool(name, arguments))
-        finally:
-            _TOOL_CALL_POLICY.reset(token)
         _log_tool_outcome(name, result, elapsed_ms=(time.monotonic() - started) * 1000)
         return result
 

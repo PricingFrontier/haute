@@ -896,7 +896,10 @@ the turn that follows.
    records it on the session (`SessionStore.record_egress`, persisted as the session's
    `egress_policies`) before the first provider request, and
    `build_tool_executor(egress=...)` sets it as every call's policy (`_TOOL_CALL_POLICY`),
-   so no tool call of the turn reads `haute.toml` again.
+   so no tool call of the turn reads `haute.toml` again. The turn context and its update
+   (`build_turn_context`, `build_context_update`) gather under the same `egress` through the
+   same scope (`_answering_under`), so a preview error's text quotes row values only when
+   the turn's policy permits them, whatever `haute.toml` says by then.
 3. Resolve the provider configuration and construct the adapter, then build the provider
    request. The system prompt (`build_system_prompt(source_file=...)`) takes only the
    session's source file and the installed capabilities, so it is byte-identical on every

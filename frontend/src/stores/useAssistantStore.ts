@@ -826,6 +826,11 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         const detail = error instanceof ApiError ? error.detail : null
         set({ notice: detail ?? "The change could not be undone." })
       },
+      // The undo saved whichever chat the panel shows by its answer: its capture is the
+      // project's, so it is reported though the transcript it would have noted is gone.
+      stale: (settled) => {
+        if ("value" in settled) reportSaveCapture(settled.value.capture)
+      },
     }, { inFlight: (flying) => set({ undoingChangeId: flying ? change.id : null }) })
   },
 }))
