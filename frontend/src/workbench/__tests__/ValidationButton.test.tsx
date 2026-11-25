@@ -1,6 +1,6 @@
 /**
  * Validation in a toolbar (specs/workbench): outlined green or red as the quote on the
- * sheets passes or fails the checks marking it final makes, and the box listing them.
+ * sheets passes or fails the checks marking it final makes, and the box listing those it fails.
  */
 import { afterEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -16,7 +16,7 @@ afterEach(cleanup)
 const lines = (testId: string) => within(screen.getByTestId(testId)).getAllByRole("listitem").map((item) => item.textContent)
 
 describe("ValidationButton", () => {
-  it("is outlined green while every check passes, and lists them all as passing", () => {
+  it("is outlined green while every check passes, its box saying nothing is failing and listing no check", () => {
     render(<ValidationButton form={form} {...PASSING} />)
     const button = screen.getByRole("button", { name: "Validation" })
     expect(button).toHaveAttribute("data-state", "passing")
@@ -24,12 +24,11 @@ describe("ValidationButton", () => {
     expect(screen.queryByTestId("validation-box")).toBeNull()
 
     fireEvent.click(button)
-    expect(screen.queryByTestId("validation-failing")).toBeNull()
-    expect(lines("validation-passing")).toContain("policy · Age 17 to 99")
-    expect(lines("validation-passing")).toContain("policy · Premium check The premium is below the minimum")
+    expect(screen.getByTestId("validation-box")).toHaveTextContent(/^Nothing is failing\.$/)
+    expect(screen.queryByRole("listitem")).toBeNull()
   })
 
-  it("is outlined red, counting the checks that fail, and lists those first with the rows failing", () => {
+  it("is outlined red, counting the checks that fail, and lists those alone with the rows failing", () => {
     render(
       <ValidationButton
         form={form}
@@ -44,7 +43,9 @@ describe("ValidationButton", () => {
     fireEvent.click(button)
     expect(lines("validation-failing")).toEqual(["policy · Age 17 to 99", "policy · Premium check The premium is below the minimum", "drivers · Name Needs a value · Row 2"])
     expect(screen.getByText("Failing (3)")).toBeInTheDocument()
-    expect(lines("validation-passing")).toContain("policy · Region Needs a value")
+    // What passes is not listed.
+    expect(screen.getAllByRole("listitem")).toHaveLength(3)
+    expect(screen.getByTestId("validation-box")).not.toHaveTextContent("Region")
   })
 
   it("fails a priced quote's output checks while it has no price", () => {
@@ -66,13 +67,13 @@ describe("ValidationButton", () => {
     expect(screen.queryByTestId("validation-box")).toBeNull()
   })
 
-  it("says a form with no rules has nothing to check, and is green", () => {
+  it("is green for a form with no rules", () => {
     const plain: FormSpec = { ...form, schema: { tables: [] }, pages: [] }
     render(<ValidationButton form={plain} values={{}} tables={null} />)
     const button = screen.getByRole("button", { name: "Validation" })
     expect(button).toHaveAttribute("data-state", "passing")
     fireEvent.click(button)
-    expect(screen.getByTestId("validation-box")).toHaveTextContent("The form has nothing to check.")
+    expect(screen.getByTestId("validation-box")).toHaveTextContent("Nothing is failing.")
   })
 
   it("is plain and opens nothing while disabled, or before the form is read", () => {

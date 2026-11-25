@@ -773,7 +773,7 @@ Out of scope:
     zoom, then Build over Preview, Schema over Display, Reset over Test quotes and
     Validation, then, in
     Preview, why pricing the sample last failed; there is no Price and no Clear. Validation
-    says whether the sample would be marked final and lists what it passes and fails
+    says whether the sample would be marked final and lists what it fails
     (Validation, under the underwriter app's quote, below). Reset
     starts the sample again as a new quote (the sample, below), and Test quotes opens and
     closes the test quotes' panel (Test quotes, below), pressed while it is open. Schema opens and closes the
@@ -2433,17 +2433,17 @@ Out of scope:
   Amend, which asks why, Validation, History, and why the quote has no price. Validation
   is outlined green while the quote on the sheets passes every check marking it final
   makes (the store, below), red while it fails any, and says how many fail; pressed, it
-  opens a box under it listing the checks, those failing first, then those passing: each
-  required column (needs a value), each column with a range (the range) or allowed values,
-  and each validation, by its table's name and its column's label, a failing one of a
-  many-row table naming its rows, a failing validation showing its message. The checks are
+  opens a box under it listing the checks failing, and none of those passing: a
+  required column (needs a value), a column with a range (the range) or allowed values,
+  and a validation (its message), each by its table's name and its column's label, one of a
+  many-row table naming its rows; with nothing failing it says so. The checks are
   made in the browser on what the sheets hold, the values typed and the price as last made,
   which follows the typing once it pauses, so the button does not turn red at each key, by
   the rules the server marks a quote final by
   (`frontend/src/utils/quoteChecks.ts` and `src/haute/_workbench_checks.py`, both held to
   `frontend/src/utils/__tests__/fixtures/quoteChecks.json`), so the button says what Mark
   final would for the quote once saved as it stands; the server's answer is the one that
-  counts. A form with nothing to check is green, its box saying so. Pressing outside the
+  counts. A form with nothing to check is green. Pressing outside the
   box, or Escape, closes it. Preview's toolbar has the same button over the sample.
   Beneath are who saved it
   and when and the quote it came from. The quote is priced as it is
@@ -3818,8 +3818,8 @@ Out of scope:
   over yet: every check stops Mark final (decided 2026-11-25; warnings are `WB-78`).
 - **Validation is shown before it is asked.** Mark final's refusal alone would tell an
   underwriter what a quote lacks only once they asked, one press at a time. The toolbar's
-  button says it as the quote is typed, red or green, and lists what passes too, so a
-  form's checks can be read. It is worked out in the browser, since Preview prices the
+  button says it as the quote is typed, red or green, and lists what fails alone: what
+  passes asks nothing of the underwriter (decided 2026-11-25). It is worked out in the browser, since Preview prices the
   sample through the editor's preview and the app through its own route, and neither
   answer holds the values typed as the server would store them; the server's check at
   Mark final is the one that counts, and one set of cases holds the two alike.

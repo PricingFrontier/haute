@@ -1,8 +1,8 @@
 /**
  * Validation in a toolbar (specs/workbench): outlined green while the quote on the sheets
  * passes every check marking it final makes, red while it fails any, saying how many fail,
- * and the box it opens under it, as Display opens one: the checks, those failing first, then
- * those passing, each by its table and its column's label with what it asks for. The checks
+ * and the box it opens under it, as Display opens one: the checks failing, each by its table
+ * and its column's label with what it asks for, or that nothing is failing. The checks
  * are `quoteChecks`' on the `values` typed and the `tables` their price gave as last made
  * (null for none). Pressing outside the box, or Escape, closes it, Escape
  * giving the focus back to the button.
@@ -29,7 +29,6 @@ const NO_CHECKS: QuoteCheck[] = []
 export default function ValidationButton({ form, values, tables, disabled = false }: ValidationButtonProps) {
   const checks = useMemo(() => (form === null ? NO_CHECKS : quoteChecks(form, values, tables)), [form, values, tables])
   const failing = checks.filter((check) => !check.passed)
-  const passing = checks.filter((check) => check.passed)
   const [open, setOpen] = useState(false)
   if (disabled && open) setOpen(false)
   const box = useRef<HTMLDivElement>(null)
@@ -76,42 +75,34 @@ export default function ValidationButton({ form, values, tables, disabled = fals
           aria-label="Validation"
           tabIndex={-1}
           data-testid="validation-box"
-          className="absolute top-full left-0 z-50 mt-1 flex max-h-[28rem] w-[26rem] flex-col gap-3 overflow-y-auto rounded-lg p-3 text-xs shadow-2xl"
+          className="absolute top-full left-0 z-50 mt-1 flex max-h-[28rem] w-[26rem] flex-col gap-1.5 overflow-y-auto rounded-lg p-3 text-xs shadow-2xl"
           style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
         >
-          {checks.length === 0 && <span style={{ color: "var(--text-muted)" }}>The form has nothing to check.</span>}
-          <CheckList title="Failing" checks={failing} form={form} colour="var(--danger-text)" testId="validation-failing" />
-          <CheckList title="Passing" checks={passing} form={form} colour="var(--success)" testId="validation-passing" />
+          {passes ? (
+            <span style={{ color: "var(--text-muted)" }}>Nothing is failing.</span>
+          ) : (
+            <>
+              <EditorLabel as="div">Failing ({failing.length})</EditorLabel>
+              <ul className="flex flex-col gap-1" data-testid="validation-failing">
+                {failing.map((check) => {
+                  const line = checkLine(form, check)
+                  return (
+                    <li key={`${check.table}:${check.column}:${check.kind}`} className="flex items-baseline gap-2">
+                      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "var(--danger-text)" }} />
+                      <span className="min-w-0">
+                        <span className="font-medium" style={{ color: "var(--text-primary)" }}>
+                          {line.name}
+                        </span>
+                        {(line.rule !== "" || line.rows !== "") && <span style={{ color: "var(--text-secondary)" }}> {[line.rule, line.rows].filter((part) => part !== "").join(" · ")}</span>}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </>
+          )}
         </div>
       )}
-    </div>
-  )
-}
-
-/** The checks of one kind of answer, under their count; nothing for none. */
-function CheckList({ title, checks, form, colour, testId }: { title: string; checks: readonly QuoteCheck[]; form: FormSpec; colour: string; testId: string }) {
-  if (checks.length === 0) return null
-  return (
-    <div className="flex flex-col gap-1.5">
-      <EditorLabel as="div">
-        {title} ({checks.length})
-      </EditorLabel>
-      <ul className="flex flex-col gap-1" data-testid={testId}>
-        {checks.map((check) => {
-          const line = checkLine(form, check)
-          return (
-            <li key={`${check.table}:${check.column}:${check.kind}`} className="flex items-baseline gap-2">
-              <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: colour }} />
-              <span className="min-w-0">
-                <span className="font-medium" style={{ color: "var(--text-primary)" }}>
-                  {line.name}
-                </span>
-                {(line.rule !== "" || line.rows !== "") && <span style={{ color: "var(--text-secondary)" }}> {[line.rule, line.rows].filter((part) => part !== "").join(" · ")}</span>}
-              </span>
-            </li>
-          )
-        })}
-      </ul>
     </div>
   )
 }

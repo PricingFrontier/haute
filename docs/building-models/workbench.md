@@ -839,8 +839,8 @@ the quote, as nobody could fill it in. A validation is always checked, whether o
 sheet shows it.
 
 **Validation** in the toolbar is outlined green while the sample passes every check and
-red while it fails any, with the number failing. Press it to list the checks, those
-failing first, each by its table and column with what it asks for, the rows failing in a
+red while it fails any, with the number failing. Press it to list the checks that fail,
+each by its table and column with what it asks for, the rows failing in a
 table with many rows, and a failing validation's message. An output's checks fail until
 the sample is priced. The underwriter app's quote has the same button.
 
@@ -1297,8 +1297,7 @@ after: a `quote_name` cell on the sheets is read only), its stage, and:
   someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
   replaces the final quotation.
 - **Validation** is outlined green while the quote on the sheets passes every check and
-  red while it fails any, with the number failing; press it to list what passes and what
-  fails. It reads what is on the sheets now, saved or not.
+  red while it fails any, with the number failing; press it to list what fails. It reads what is on the sheets now, saved or not.
 - **History**: the handover note, the quotes it came from or that were made from it, and
   what was done to the quote, by whom and when, with the reasons given for amending it.
 

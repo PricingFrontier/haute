@@ -37,7 +37,7 @@ interface WorkbenchToolbarProps {
  * the sheets' colours it opens, disabled in Preview; Reset, in Preview, starting the sample
  * again as a new quote, one undo step, over Test quotes, in Preview, opening and closing the
  * test quotes' panel; Validation, in Preview, saying whether the sample would be marked
- * final and listing what it passes and fails; in Preview, why pricing the sample last failed; and
+ * final and listing what it fails; in Preview, why pricing the sample last failed; and
  * the project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
