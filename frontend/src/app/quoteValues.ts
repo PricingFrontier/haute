@@ -241,31 +241,46 @@ export function beingEditedBy(error: unknown): string | null {
 export const storeRefused = (error: unknown): boolean =>
   apiErrorStatus(error) === 503 && (apiErrorCode(error) ?? "").startsWith("quote_store_")
 
-/** A misfit as the page says it: a column by its label on `form`'s sheets and its name, a table's own as the table's. */
-function misfitSaid(misfit: StoreMisfit, form: FormSpec | null): string {
-  if (misfit.column === null) return `The table ${misfit.problem}`
+/** What a misfit is of, as the page names it: a column by its label on `form`'s sheets and its table and name, a table by its name. */
+function misfitNamed(misfit: StoreMisfit, form: FormSpec | null): string {
+  if (misfit.column === null) return misfit.table
   const found = form === null ? null : fieldColumn(form, { table: misfit.table, column: misfit.column })
   const label = found?.column.label || readableName(misfit.column)
-  return `${label} (${misfit.column}) ${misfit.problem}`
+  return `${label} (${misfit.table}.${misfit.column})`
+}
+
+/** The server's words for a table or a column the database does not hold. */
+const MISSING = "is missing"
+
+/**
+ * `misfits` grouped by what is wrong, in the order each is first met: what is wrong said
+ * once ("Missing fields", "Missing tables", any other problem in its own words) before
+ * everything it is wrong of. A table's problem and a column's are never one group.
+ */
+function misfitGroups(misfits: StoreMisfit[], form: FormSpec | null): string[] {
+  const groups = new Map<string, string[]>()
+  for (const misfit of misfits) {
+    const of = misfit.column === null ? "tables" : "fields"
+    const wrong = misfit.problem === MISSING ? `Missing ${of}` : misfit.problem.charAt(0).toUpperCase() + misfit.problem.slice(1)
+    const key = `${of}\n${wrong}`
+    groups.set(key, [...(groups.get(key) ?? [wrong]), misfitNamed(misfit, form)])
+  }
+  return [...groups.values()].map(([wrong, ...named]) => `${wrong}: ${named.join(", ")}`)
 }
 
 /**
- * What the app says of a route's failure (specs/workbench): tables that do not fit named
- * misfit by misfit under each table, each column by its label on `form`'s sheets and its
- * name; any other failure as its message. On one line with `oneLine`, as a bar shows it.
+ * What the app says of a route's failure (specs/workbench): tables that do not fit said by
+ * what is wrong, each thing wrong once with everything it is wrong of after it, a column by
+ * its label on `form`'s sheets and its table and name; any other failure as its message. On
+ * one line with `oneLine`, as a bar shows it.
  */
 export function appErrorMessage(error: unknown, form: FormSpec | null, { oneLine = false }: { oneLine?: boolean } = {}): string {
   const found = storeMisfits(error)
   if (found === null) return apiErrorMessage(error)
   const database = found.environment === null ? "The quote store's database" : `The ${found.environment} database`
-  const tables = new Map<string, string[]>()
-  for (const misfit of found.misfits) tables.set(misfit.table, [...(tables.get(misfit.table) ?? []), misfitSaid(misfit, form)])
-  if (oneLine) {
-    const listed = [...tables].map(([table, said]) => `${table}: ${said.join(", ")}`)
-    return `${database} doesn't match the form: ${listed.join("; ")}.`
-  }
-  const listed = [...tables].flatMap(([table, said]) => [`  ${table}`, ...said.map((each) => `    ${each}`)])
-  return [`${database} doesn't match the form:`, ...listed].join("\n")
+  const groups = misfitGroups(found.misfits, form)
+  if (oneLine) return `${database} doesn't match the form: ${groups.join("; ")}.`
+  return [`${database} doesn't match the form:`, ...groups.map((each) => `  ${each}`)].join("\n")
 }
 
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */

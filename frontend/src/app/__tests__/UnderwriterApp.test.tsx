@@ -168,8 +168,7 @@ describe("UnderwriterApp", () => {
       expect(said.textContent).toBe(
         [
           "The quotes could not be read: The dev database doesn't match the form:",
-          "  policy",
-          "    State (state) is missing",
+          "  Missing fields: State (policy.state)",
         ].join("\n"),
       )
       expect(screen.queryByTestId("notice-quotes-closed")).toBeNull()

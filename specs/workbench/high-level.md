@@ -2324,8 +2324,11 @@ Out of scope:
   each (`differences`, as `policy_details.is_renewal is missing`), and names the environment
   whose database it is. `GET /api/app/release` says whether the whole store fits (`quotes`),
   every table and privilege, as a rollout checks it; the page does not close on it. The page
-  shows a refusal where it was met, each misfit under its table, a column by its label on
-  the sheets and its name ("Renewal (is_renewal) is missing"), and nothing more, as whoever
+  shows a refusal where it was met, each thing wrong said once with everything it is wrong
+  of after it, a column by its label on the sheets and its table and name ("Missing fields:
+  Renewal (policy_details.is_renewal), Excess (policy.excess)", "Missing tables: drivers",
+  any other by its own words, as "Holds string, not integer: Year built (policy.year)"), and
+  nothing more, as whoever
   reads it knows who looks after the database: the Quotes page says why where its list would
   be, and asks for it again every 10
   seconds until it is read; a quote that cannot be opened says why where it would open, and
