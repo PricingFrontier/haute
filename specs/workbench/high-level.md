@@ -1123,7 +1123,8 @@ Out of scope:
   column's type drops the rules and the format the new type cannot have, a validation
   and its message when it stops being True/false among them, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
-  Ticking Validation unticks Required.
+  Ticking Validation unticks Required. Required's and Validation's boxes show no words
+  beside them: their row's name says what each is.
   To the right of a column's name and its buttons, a line sums it up whenever there is
   something to say, cut short as the pane narrows and whole on hover: for any
   column, required, or validation for one; for an input, its range in its own format, its default (in its format, or

@@ -10,6 +10,12 @@ describe("ConfigCheckbox", () => {
     expect(screen.getByText("Enable feature")).toBeTruthy()
   })
 
+  it("keeps a hidden label as the box's name without showing it", () => {
+    render(<ConfigCheckbox checked={false} onChange={() => {}} label="premium is required" labelHidden />)
+    expect(screen.getByRole("checkbox", { name: "premium is required" })).toBeInTheDocument()
+    expect(screen.getByText("premium is required")).toHaveClass("sr-only")
+  })
+
   it("checkbox reflects checked=true", () => {
     render(<ConfigCheckbox checked={true} onChange={vi.fn()} label="Toggle" />)
     const cb = screen.getByRole("checkbox") as HTMLInputElement

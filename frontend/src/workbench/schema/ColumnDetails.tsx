@@ -157,7 +157,7 @@ export function ColumnDetails({
       {requirable && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Required</span>
-          <ConfigCheckbox label={`${column.name} is required`} checked={column.required} onChange={(required) => set({ required })} />
+          <ConfigCheckbox label={`${column.name} is required`} labelHidden checked={column.required} onChange={(required) => set({ required })} />
         </>
       )}
       {validatable && (
@@ -165,6 +165,7 @@ export function ColumnDetails({
           <span style={{ color: "var(--text-muted)" }}>Validation</span>
           <ConfigCheckbox
             label={`${column.name} is a validation`}
+            labelHidden
             checked={column.validation}
             // A validation is required already; one no longer a validation holds no message.
             onChange={(validation) => set(validation ? { validation, required: false } : { validation, validation_message: "" })}
