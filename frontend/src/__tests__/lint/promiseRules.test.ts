@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest"
 import { lintProbe } from "./lintProbe"
 
 async function promiseRules(code: string): Promise<string[]> {
-  return (await lintProbe(code))
+  return (await lintProbe(code, undefined, { types: true }))
     .map((message) => message.ruleId ?? "")
     .filter((rule) => rule.includes("promise"))
 }

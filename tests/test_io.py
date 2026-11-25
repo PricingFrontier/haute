@@ -182,7 +182,13 @@ class TestReadSourceJSON:
         assert str(by_read_source.value) == said
         assert str(by_a_data_input.value) == said
 
-    def test_json_polars_cannot_read_as_a_table_keeps_polars_words(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("record_bound", [None, "8"], ids=["json", "a-record-past-the-bound"])
+    def test_json_polars_cannot_read_as_a_table_keeps_polars_words(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_bound: str | None
+    ) -> None:
+        """A record past the structured-input bound is no fault of the bytes either."""
+        if record_bound is not None:
+            monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", record_bound)
         path = tmp_path / "odd.json"
         path.write_text('{"a": [1, {"b": 2}]}', encoding="utf-8")
 
