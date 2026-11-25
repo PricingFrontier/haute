@@ -1341,6 +1341,16 @@ HTTPS; external policy is public-only and cannot enable executable source, row
 samples or aggregate statistics. Project configuration may narrow but never
 widen these class ceilings.
 
+**One policy per turn, and per chat.** A turn runs under the policy of the provider it
+began with: every tool call of the turn answers under that policy, so a `haute.toml`
+saved while the turn runs changes nothing the turn's provider is sent; the next turn
+reads it. A chat records each policy its turns ran under, and what it holds (its earlier
+answers, its build plan, the evidence its turns gathered) was produced under them, so a
+message to a chat is refused with 409 before anything is sent when the current policy
+allows less than one of them, naming each narrowed `[assistant.egress]` setting: the
+analyst starts a new chat, or restores those settings to continue this one. A policy that
+allows as much or more continues the chat.
+
 **Aggregate statistics.** `allow_aggregate_statistics` authorises the
 [data check](#data-checks): executing the lineage of
 the nodes a plan changes, or of the saved node `inspect_node`'s data part names,

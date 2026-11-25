@@ -18,7 +18,7 @@ from haute._project_context import current_project
 from haute._sandbox import contained_path, is_contained
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._catalog import tool_title
-from haute.assistant._config import AssistantConfig, resolve_assistant_config
+from haute.assistant._config import AssistantConfig, EgressPolicy, resolve_assistant_config
 from haute.assistant._ops import AssistantOperationError
 from haute.assistant._providers import AssistantProvider, create_provider
 from haute.assistant._render import render_turn_context
@@ -284,6 +284,7 @@ async def _event_stream(
     *,
     request: AssistantMessageRequest,
     provider: AssistantProvider,
+    egress: EgressPolicy,
     execute_tool: _loop.ToolExecutor,
     system_prompt: str,
     reservation: _loop.TurnReservation,
@@ -297,6 +298,7 @@ async def _event_stream(
         request.session_id,
         request.message,
         provider=provider,
+        egress=egress,
         tools=TOOL_DEFINITIONS,
         execute_tool=execute_tool,
         system_prompt=system_prompt,
@@ -382,6 +384,16 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
                 f"This chat belongs to pipeline '{session.source_file}'. "
                 "Open that pipeline to continue it, or start a new chat."
             )
+        if narrowed := session.narrowed_by(config.egress):
+            # What the chat holds was produced under a policy that let its provider be
+            # sent more: none of it goes to a provider this policy binds.
+            settings = ", ".join(f"[assistant.egress].{setting}" for setting in narrowed)
+            raise ConflictError(
+                "This chat ran under an assistant policy that let the model be sent more "
+                f"than the current one allows ({settings}), so its earlier messages cannot "
+                "go to this model. Start a new chat, or restore those settings in "
+                "haute.toml to continue this one."
+            )
         try:
             provider = _provider_factory(config)
         except ConfigError as exc:
@@ -426,6 +438,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             session_id=session.id,
             evidence=session.evidence,
             plan=session.build_plan,
+            egress=config.egress,
         )
     except BaseException:
         # Pre-stream failure after the reservation: the turn will never run,
@@ -437,6 +450,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         _event_stream(
             request=body,
             provider=provider,
+            egress=config.egress,
             execute_tool=execute_tool,
             system_prompt=system_prompt,
             reservation=reservation,

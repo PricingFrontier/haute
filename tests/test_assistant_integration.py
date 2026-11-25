@@ -22,6 +22,7 @@ from haute.assistant._providers import ProviderUsage, TextDelta, ToolCallRequest
 from haute.assistant._session import SessionStore
 from haute.assistant._tools import build_tool_executor, get_pipeline
 from haute.routes._helpers import save_lock
+from tests._assistant_tool_helpers import TURN_EGRESS
 from tests._project import use_project
 
 PIPELINE_SOURCE = '''\
@@ -131,6 +132,7 @@ async def _run_turn(provider: ExactPlanProvider, store: SessionStore, session_id
         session_id,
         "add a derived step after quotes",
         provider=provider,
+        egress=TURN_EGRESS,
         tools=[],
         execute_tool=build_tool_executor("main.py", session_id=session_id),
         system_prompt="s",

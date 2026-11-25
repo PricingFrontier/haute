@@ -54,6 +54,7 @@ from haute.assistant._providers import (
     _retry_after_seconds,
     turn_deadline,
 )
+from tests._assistant_tool_helpers import TURN_EGRESS
 
 # ---------------------------------------------------------------------------
 # Config + request fixtures
@@ -731,6 +732,7 @@ class TestAnthropicTurnPrefix:
                     session.id,
                     text,
                     provider=provider,
+                    egress=TURN_EGRESS,
                     tools=_TOOLS,
                     execute_tool=execute_tool,
                     system_prompt=_SYSTEM,

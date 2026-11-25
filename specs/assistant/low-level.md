@@ -54,7 +54,8 @@ its reservation is released, so it is never evicted and does not count against t
 when a create, a revival or the end of a turn leaves more idle sessions than the cap, the
 least-recently-used idle session is evicted — dropping only the in-memory record, the
 persisted file revives it on next lookup; a read that must not count as use, such as a
-listing or a resume refused for another pipeline, does not promote it); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
+listing or a resume refused for another pipeline, does not promote it); a persisted session file holds `egress_policies`, the policies its turns ran under as
+their `[assistant.egress]` records, and a file without them is invalid; persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
 oldest by session-file modification time at session creation after removing abandoned
 atomic-write temp files. Pruning always cuts at turn boundaries — an
 assistant tool call and its result are never separated (both provider APIs reject
@@ -886,7 +887,16 @@ the turn that follows.
    loop/response lifecycle and appends the turn to history. A resolved `source_file` that
    differs from the session's binding releases the reservation and is refused with 409
    naming the chat's pipeline: the canvas shows another pipeline, and the turn would
-   otherwise edit a file the analyst is not looking at.
+   otherwise edit a file the analyst is not looking at. So is a session that ran under a
+   policy the resolved configuration's `egress` allows less than
+   (`AssistantSession.narrowed_by(egress)`, by `EgressPolicy.narrower_than`: a lower
+   trust, a lower sensitivity, or a permission withdrawn): the 409 names each narrowed
+   `[assistant.egress]` setting and says to start a new chat or restore them, and the
+   provider is never called. The turn then runs under that `egress`: `run_turn(egress=...)`
+   records it on the session (`SessionStore.record_egress`, persisted as the session's
+   `egress_policies`) before the first provider request, and
+   `build_tool_executor(egress=...)` sets it as every call's policy (`_TOOL_CALL_POLICY`),
+   so no tool call of the turn reads `haute.toml` again.
 3. Resolve the provider configuration and construct the adapter, then build the provider
    request. The system prompt (`build_system_prompt(source_file=...)`) takes only the
    session's source file and the installed capabilities, so it is byte-identical on every
@@ -2890,6 +2900,13 @@ fixture for route tests). The implemented coverage is:
   not bypass the reminder; a delegated-choice request ("pick any four features") that
   dry-runs and applies ends `applied` with no reminder and no clarification in its context
   message; and explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally.
+  A chat whose earlier turn ran under row samples is refused with 409 naming
+  `allow_row_samples` once the policy withdraws them, and the narrower provider is never
+  called, while a new chat runs (`tests/test_assistant_routes.py`); a `haute.toml` widened
+  during a turn leaves its tool calls under the turn's policy
+  (`tests/test_assistant_tool_executor.py`); the session records the turn's policy before
+  the provider is called, the policies revive from disk and still narrow the chat, and
+  `narrower_than` names each narrowed setting.
   An apply and an undo whose capture fails, once for a `.git/index.lock` left behind and
   once for a missing git identity, each answer the save's warning, `git_sha` null, their
   files in `uncaptured` and `identity_required` only for the identity

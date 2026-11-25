@@ -563,7 +563,7 @@ class TestMessageTurn:
         (configured / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
         executor_sources: list[str] = []
 
-        def build_executor(source_file, *, session_id, evidence, plan):
+        def build_executor(source_file, *, session_id, evidence, plan, egress):
             executor_sources.append(source_file)
 
             async def execute_tool(_name, _arguments):
@@ -846,7 +846,7 @@ class TestTurnReservation:
         )
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, evidence, plan):
+        def build_executor(source_file, *, session_id, evidence, plan, egress):
             captured.update(
                 {
                     "source_file": source_file,
@@ -910,7 +910,7 @@ class TestTurnReservation:
         )
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, evidence, plan):
+        def build_executor(source_file, *, session_id, evidence, plan, egress):
             captured.update(
                 {
                     "source_file": source_file,
@@ -1130,6 +1130,42 @@ class TestTurnContext:
             message.get("content") != first_context["content"]
             for message in second_call["messages"][:-1]
         )
+
+    async def test_a_chat_begun_under_a_wider_policy_is_refused_under_a_narrower_one(
+        self, internal: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """AST-04: the earlier answers of a chat that row samples reached are not sent to
+        a provider that may not be sent them; the analyst starts a new chat instead."""
+
+        import haute.routes.assistant as assistant_routes
+        from haute.errors import ConflictError
+        from haute.schemas import AssistantMessageRequest
+
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session_id = store.create("main.py").id
+        (internal / "haute.toml").write_text(
+            _egress_toml(max_sensitivity="restricted", allow_row_samples=True), encoding="utf-8"
+        )
+        await self._turn(monkeypatch, store, session_id)
+        (internal / "haute.toml").write_text(
+            _egress_toml(max_sensitivity="internal", allow_row_samples=False), encoding="utf-8"
+        )
+        narrower = _ScriptedProvider([TextDelta("never sent")])
+        monkeypatch.setattr(assistant_routes, "_provider_factory", lambda _config: narrower)
+
+        with pytest.raises(ConflictError, match="Start a new chat") as refused:
+            await assistant_routes.post_assistant_message(
+                AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
+            )
+
+        assert "allow_row_samples" in str(refused.value)
+        assert narrower.calls == []
+        session = store.lookup(session_id)
+        assert session is not None and not session.lock.locked()
+        assert len(session.history) == 1
+        # A new chat goes to the narrower provider as any chat does.
+        await self._turn(monkeypatch, store, store.create("main.py").id)
 
     async def test_a_selection_the_saved_pipeline_lacks_is_refused_before_the_turn(
         self, internal: Path, monkeypatch: pytest.MonkeyPatch

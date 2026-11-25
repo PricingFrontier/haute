@@ -26,7 +26,7 @@ from haute.assistant._catalog import (
     tool_title,
 )
 from haute.assistant._change_record import not_run_words
-from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV
+from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV, EgressPolicy
 from haute.assistant._node_cards import node_card
 from haute.assistant._providers import (
     AssistantProvider,
@@ -1099,6 +1099,7 @@ async def run_turn(
     user_text: str,
     *,
     provider: AssistantProvider,
+    egress: EgressPolicy,
     tools: Sequence[Mapping[str, Any]],
     execute_tool: ToolExecutor | None,
     system_prompt: str,
@@ -1130,11 +1131,15 @@ async def run_turn(
     A tool call that replaces the session's build plan snapshot streams a
     ``build_plan_updated`` event after its tool row, and the stored turn keeps
     the plan it left when the turn changed it.
+
+    ``egress`` is the policy of *provider*, which the session records before
+    the turn sends anything: what the turn produces was produced under it.
     """
 
     if reservation is None:
         reservation = await reserve_turn(store, session_id)
     session = reservation.session
+    store.record_egress(session, egress)
     # Each change replaces the plan's snapshot, so identity tells whether it changed.
     plan_at_start = session.build_plan.current
 

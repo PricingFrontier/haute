@@ -43,6 +43,7 @@ from haute.assistant._providers import (
 )
 from haute.assistant._session import SessionStore
 from haute.schemas import AssistantChangeRecord
+from tests._assistant_tool_helpers import TURN_EGRESS
 
 TERMINAL_TYPES = {"completed", "failed", "cancelled"}
 #: A successful apply result as the tool returns it: compact, with its change record.
@@ -130,6 +131,7 @@ async def _run(
         session_id,
         text,
         provider=provider,
+        egress=TURN_EGRESS,
         tools=[{"name": "get_pipeline", "description": "d", "input_schema": {"type": "object"}}],
         execute_tool=execute_tool or default_executor,
         system_prompt="system prompt under test",
@@ -2194,6 +2196,7 @@ class TestLimits:
             session_id,
             "slow reader",
             provider=provider,
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=None,
             system_prompt="system prompt under test",
@@ -2228,6 +2231,7 @@ class TestLimits:
             session_id,
             "slow reader",
             provider=provider,
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=execute_tool,
             system_prompt="system prompt under test",
@@ -2244,6 +2248,23 @@ class TestLimits:
         assert executed == []
         stored = store.lookup(session_id).history[-1].messages
         assert [message.tool_call_id for message in stored if message.role == "tool"] == ["t1"]
+
+    async def test_the_session_records_the_turn_s_policy_before_the_provider_is_called(
+        self, store, session_id
+    ):
+        """AST-04: what a turn produces was produced under its provider's policy."""
+
+        recorded: list[object] = []
+
+        class RecordingProvider:
+            async def stream_turn(self, *, system, messages, tools):
+                recorded.extend(store.lookup(session_id).egress_policies)
+                yield TurnStop("end", _usage())
+
+        events = await _run(store, session_id, "hi", provider=RecordingProvider())
+
+        assert events[-1].type == "completed"
+        assert recorded == [TURN_EGRESS]
 
     async def test_an_apply_saved_after_the_deadline_is_shown_before_the_failure(
         self, store, session_id
@@ -2311,6 +2332,7 @@ class TestLimits:
                 session_id,
                 "hi",
                 provider=provider,
+                egress=TURN_EGRESS,
                 tools=[],
                 execute_tool=None,
                 system_prompt="system prompt under test",
@@ -2402,6 +2424,7 @@ class TestCancellation:
                 session_id,
                 "edit",
                 provider=provider,
+                egress=TURN_EGRESS,
                 tools=[],
                 execute_tool=slow_tool,
                 system_prompt="s",
@@ -2447,6 +2470,7 @@ class TestCancellation:
             session_id,
             "read",
             provider=provider,
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=staged_tool,
             system_prompt="s",
@@ -2492,6 +2516,7 @@ class TestCancellation:
             provider=ScriptedProvider(
                 [[ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())]]
             ),
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=slow_read_tool,
             system_prompt="s",
@@ -2604,6 +2629,7 @@ class TestDisconnectHistoryIntegrity:
                     ]
                 ]
             ),
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=execute_tool,
             system_prompt="s",
@@ -2666,6 +2692,7 @@ class TestSessionLock:
             session_id,
             "one",
             provider=provider,
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=None,
             system_prompt="s",
@@ -2681,6 +2708,7 @@ class TestSessionLock:
                 session_id,
                 "two",
                 provider=ScriptedProvider([[TextDelta("x"), TurnStop("end", _usage())]]),
+                egress=TURN_EGRESS,
                 tools=[],
                 execute_tool=None,
                 system_prompt="s",
@@ -3628,6 +3656,7 @@ class TestProviderStreamTeardown:
             session_id,
             "hi",
             provider=TrackedProvider(),
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=None,
             system_prompt="s",
@@ -3684,6 +3713,7 @@ class TestPerRoundProviderStreamClosure:
             session_id,
             "two rounds",
             provider=TimelineProvider(),
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=execute_tool,
             system_prompt="s",
