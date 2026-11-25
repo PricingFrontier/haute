@@ -1194,12 +1194,14 @@ Out of scope:
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name and rows, its inputs alone and its columns' names,
   types and order are fixed, it is neither deleted nor given a column, and no table moves
-  above it. Its schema view shows eight fields: `quote_reference` and `quote_option`
+  above it. Its schema view shows nine fields: `quote_reference` and `quote_option`
   locked under Keys, without configuration buttons, and `quote_name`, `insured`, `broker`,
   `inception_date`, `expiry_date` and `is_renewal` under Inputs, with labels, groups, help,
-  defaults, placeholders and rules where applicable. Its field count is eight. The
+  defaults, placeholders and rules where applicable, then `validation_passed`, which the
+  app sets, with a label, group and help and no default or rule, shown so a sheet can show
+  whether the saved quote passes its checks. Its field count is nine. The
   remaining managed fields (`stage`, `assignee`, `archived`, `created_date`, `created_by`,
-  `modified_date`, `modified_by`, `haute_version`, `validation_passed`) and all ten storage-only fields are
+  `modified_date`, `modified_by`, `haute_version`) and all ten storage-only fields are
   hidden in Build, Preview and schema search. Existing forms, field settings, sheets,
   runtime behavior and SQL definitions are preserved; this is schema-pane visibility
   only. A user column with the same name in another table remains visible and editable.

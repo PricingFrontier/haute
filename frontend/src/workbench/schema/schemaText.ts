@@ -3,7 +3,7 @@ import { type FocusEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { INPUT_STYLE } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { IDENTITY_NAMES, isOutputColumn, QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, tableColumns } from "../../utils/quoteIdentity"
+import { IDENTITY_NAMES, isOutputColumn, QUOTE_DETAILS, QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, tableColumns } from "../../utils/quoteIdentity"
 import { formattedNumber } from "../../utils/sheetValues"
 import { isNumeric } from "../columnTypes"
 
@@ -25,9 +25,12 @@ export const COLUMN_NAME_WIDTH = "w-96 min-w-0"
 /** A locked column's name box: a field's border, on a grey lighter than the pane's. */
 export const LOCKED_FIELD_STYLE = { ...INPUT_STYLE, background: "var(--bg-hover)" }
 
-/** Schema rows users need to build the form; managed quote metadata stays in storage. */
+/** The columns the app sets that the schema shows beside the identity: what a quote's checks came to, which a sheet may show. */
+const SHOWN_MANAGED: ReadonlySet<string> = new Set([QUOTE_DETAILS.validation_passed])
+
+/** Schema rows users need to build the form; the rest of the managed quote metadata stays in storage. */
 export const schemaColumns = (table: SchemaTable): SchemaColumn[] => tableColumns(table).filter((column) =>
-  table.name !== QUOTE_DETAILS_NAME || !QUOTE_DETAILS_MANAGED.has(column.name) || IDENTITY_NAMES.has(column.name),
+  table.name !== QUOTE_DETAILS_NAME || !QUOTE_DETAILS_MANAGED.has(column.name) || IDENTITY_NAMES.has(column.name) || SHOWN_MANAGED.has(column.name),
 )
 
 /** The box a column's type marker sits in. */

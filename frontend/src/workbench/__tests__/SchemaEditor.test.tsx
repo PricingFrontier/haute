@@ -836,11 +836,13 @@ describe("SchemaEditor", () => {
     const shown = within(tableNamed("quote_details"))
     expect(nameFields(tableNamed("quote_details"))).toEqual([
       "quote_reference", "quote_option", "quote_name", "insured", "broker",
-      "inception_date", "expiry_date", "is_renewal",
+      "inception_date", "expiry_date", "is_renewal", "validation_passed",
     ])
-    expect(shown.getByText("8 cols")).toBeInTheDocument()
+    expect(shown.getByText("9 cols")).toBeInTheDocument()
     expect(shown.queryByTestId(/^schema-store-column-/)).toBeNull()
-    expect(shown.getAllByRole("button", { name: /^Label and rules of / })).toHaveLength(6)
+    expect(shown.getAllByRole("button", { name: /^Label and rules of / })).toHaveLength(7)
+    // The one column the app sets that is shown: its name fixed, as every column's here is.
+    expect(within(shown.getByTestId("schema-column-validation_passed")).getByRole("textbox", { name: "Column name" })).toHaveAttribute("readonly")
     for (const name of ["quote_reference", "quote_option"]) {
       const key = within(shown.getByTestId(`schema-column-${name}`))
       expect(key.getByRole("textbox", { name: "Column name" })).toHaveAttribute("readonly")
@@ -885,7 +887,7 @@ describe("SchemaEditor", () => {
       const groups = within(tableNamed(each.name)).getAllByRole("group")
       expect(groups[0]).toBe(keys)
       // Every column has exactly one row, including keys shared by the two sides.
-      expect(within(tableNamed(each.name)).getAllByTestId(/^schema-column-[a-z_]+$/)).toHaveLength(each.name === "quote_details" ? 8 : each.inputs.length + each.outputs.length)
+      expect(within(tableNamed(each.name)).getAllByTestId(/^schema-column-[a-z_]+$/)).toHaveLength(each.name === "quote_details" ? 9 : each.inputs.length + each.outputs.length)
     }
     expect(everyName("items", "Inputs")).toEqual(["value"])
     expect(everyName("items", "Outputs")).toEqual(["premium"])
@@ -893,7 +895,7 @@ describe("SchemaEditor", () => {
     expect(everyName("policy_details", "Outputs")).toEqual(["rate"])
     expect(everyName("cover", "Inputs")).toEqual(["state"])
     expect(everyName("layers", "Outputs")).toEqual(["limit"])
-    expect(everyName("quote_details", "Inputs")).toEqual(["quote_name", "insured", "broker", "inception_date", "expiry_date", "is_renewal"])
+    expect(everyName("quote_details", "Inputs")).toEqual(["quote_name", "insured", "broker", "inception_date", "expiry_date", "is_renewal", "validation_passed"])
     expect(screen.queryByTestId(/^schema-output-carried-/)).toBeNull()
 
     const search = screen.getByRole("textbox", { name: "Search fields" })

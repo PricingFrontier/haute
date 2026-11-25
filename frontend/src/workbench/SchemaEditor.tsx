@@ -4,7 +4,7 @@
  * an edit is one undo step; Enter in the last column's name adds the next column. A table or a
  * column is dragged by its grip, or moved by Alt+Up and Alt+Down in its name, as the step
  * editor's cards move. Removing what a sheet shows asks first. Haute's quote_details table,
- * first, shows its two fixed keys and six form fields. Managed and storage-only fields
+ * first, shows its two fixed keys, six form fields and validation_passed. The other managed and storage-only fields
  * stay in the stored schema, with database issues in the table's details.
  * Read only, in Preview, it shows the schema as it
  * is: a table still collapses and a column's details still open, but nothing in it changes.

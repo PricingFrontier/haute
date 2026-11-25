@@ -3811,7 +3811,7 @@ no longer has; and `InputSource` in
   one-row input table's column alone, not on the columns the app sets; Required offered on
   an output column as on an input one and kept as a table is made an output; and the
   managed and storage-only quote_details columns hidden without changing the stored
-  form, eight fields counted and shown, keys having no configuration button; Where it's used on every column, a key's and in Preview too, listing the sheets using it in their order, a sheet listed while its own Show when tests it, its sections whose Show when does and its components (shown, a Chart's row labels, Show when, an Import reading it, an SQL Import's parameter, an Export of its table) by name alone, one component once, the holders listed being those Remove counts, a column nothing uses saying so, and opening it closing the column's Label and rules without an edit;
+  form, nine fields counted and shown, keys having no configuration button; Where it's used on every column, a key's and in Preview too, listing the sheets using it in their order, a sheet listed while its own Show when tests it, its sections whose Show when does and its components (shown, a Chart's row labels, Show when, an Import reading it, an SQL Import's parameter, an Export of its table) by name alone, one component once, the holders listed being those Remove counts, a column nothing uses saying so, and opening it closing the column's Label and rules without an edit;
   Keys shown once before Inputs and Outputs in Build and Preview for
   one-row and many-row tables, input-only and output-only tables and quote_details, ordinary
   fields excluded from Keys even when named table_index; search matching only a key keeps
