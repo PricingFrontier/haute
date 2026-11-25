@@ -7,19 +7,18 @@ specification](../assistant/high-level.md) describes it. `AST-02` is about what 
 applied or undone change tells the editor of its version capture. It comes
 from the second run of the review plan's sweep of failed writes on
 10 November 2026 and was reproduced through the assistant's service with a real git lock.
-`AST-03`, `AST-04` and `AST-06` come from the plan's phase 5, a reader from a second model
+`AST-04` and `AST-06` come from the plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit.
 A worker ran each through the editor's assistant routes with a stand-in
 for the provider, and the main session ran each again on 13 November.
 
 ## Priorities
 
-**Start with:** `AST-03`
+**Start with:** `AST-04`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | AST-02 | Planned | P3 | An applied or undone assistant change whose version capture fails says so and names its files, as a save does. |
-| AST-03 | Planned | P2 | With executable source withheld, a step's comment is withheld with it. |
 | AST-04 | Planned | P2 | A provider is sent only what its own policy allows: not the earlier answers of a chat begun under a wider policy, and not what a policy saved during the turn allows. |
 | AST-06 | Planned | P3 | An apply that is saved after the turn's time limit is shown as applied, with its Undo. |
 
@@ -64,36 +63,6 @@ capture, and open the identity prompt when that is the cause.
 `src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
 `frontend/src/stores/saveCapture.ts::reportSaveCapture`;
 `frontend/src/stores/useAssistantStore.ts`.
-
-### AST-03 — A step's comment is withheld with the code it belongs to
-**Why:** Reproduced on 13 November 2026 through the editor's assistant
-routes, with a stand-in for the provider. The project's assistant policy
-withholds executable source: `allow_executable_source = false`. A Transform
-has a comment above a line that becomes a step, "# SECRET_STEP: broker ACME
-is loaded by 1.37 after the 2026 referral review", and another above a
-line that stays code. The assistant asks for the node's settings. The
-request that carries the answer to the provider holds the first comment
-word for word, as the step's `comment`. The second comment is withheld
-with its code.
-
-The list of settings treated as executable source holds `code` and not a
-step's `comment`. The assistant's own rendering of a node treats that
-comment as source, and the syntax specification says of a step's comment
-that "the assistant neither writes nor reads it".
-
-**Plan:** Withhold a step's comment wherever code is withheld, from one
-list of what counts as executable source.
-
-**Acceptance:** With executable source withheld, no request to a provider
-holds the text of a step's comment, for every tool that returns a node's
-settings. A test puts a marker in a step's comment and searches each
-request for it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_tools.py`;
-`src/haute/assistant/_render.py`;
-`specs/codegen/structured-syntax-boundary.md`.
 
 ### AST-04 — What a provider is sent follows that provider's policy, for the whole chat and the whole turn
 **Why:** Reproduced on 13 November 2026 in two runs through the editor's

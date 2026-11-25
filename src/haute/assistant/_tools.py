@@ -56,6 +56,7 @@ from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind
 from haute._polars_io_registry import PolarsIoConfigError
+from haute._polars_steps import COMMENT_FIELD
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
@@ -1142,7 +1143,10 @@ def _occurrence_schema(
 _MAX_PROFILE_LEVELS = 50
 _MAX_PROFILE_ROWS = 1_000_000
 _MAX_PROFILE_VALUE_CHARS = 120
-_EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script"})
+#: The configuration keys whose values are executable source, withheld unless
+#: `allow_executable_source` permits them. A structured step's `comment` is the
+#: authored text above its statement, as much source as the code it sits in.
+_EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script", COMMENT_FIELD})
 _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
 # Only columns of these kinds carry a value list. A categorical encoding is exactly
 # what authoring needs ("is `fault` Y/N or true/false?"). The cardinality cap

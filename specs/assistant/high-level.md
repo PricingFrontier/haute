@@ -527,7 +527,8 @@ it:
     its code and the nodes inside it stay behind the v1 submodel boundary, as for edits.
   - `config` (`restricted`) — the node's structured config. Credential-shaped
     fields are always redacted; executable code (`code`, `preamble`, `query`,
-    `script`, at any depth, so a free-code step's `code` too) is redacted unless
+    `script`, at any depth, so a free-code step's `code` too) and a structured
+    step's `comment`, the authored text above its statement, are redacted unless
     the policy's `allow_executable_source` permits it. The whole part is still
     treated as `restricted` and is withheld unless the configured policy permits
     that class. A call whose every part is withheld says which parts the policy

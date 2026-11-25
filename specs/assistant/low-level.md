@@ -2229,10 +2229,12 @@ the turn that follows.
 - **Egress flags are honoured, not merely recorded.** `allow_executable_source` and
   `allow_row_samples` each gate a real capability: node `code`/`preamble`/`query`/`script`
   values in `inspect_node`'s config part, and its profile part plus the text of
-  authored-code failures (see Control flow step 5) respectively. A `free_code` step's `code` is
-  masked by the same recursive key redaction, while the step's `id`, `kind` and the
-  structured steps around it stay visible: structured steps are configuration, not
-  executable source. A parsed,
+  authored-code failures (see Control flow step 5) respectively. A `free_code` step's `code`
+  and a structured step's `comment` are masked by the same recursive key redaction, whose
+  one list (`_EXECUTABLE_CONFIG_KEYS`) names the step schema's own `COMMENT_FIELD`, while
+  the step's `id`, `kind` and the structured steps around it stay visible: structured
+  steps are configuration, not executable source, but the comment written above a step is
+  as much source as the code it sits in. A parsed,
   validated, reported flag that no code path consults is worse than no flag, because a
   project reads its own configuration as a grant that silently never applies.
   Credential keys and inline row-value keys stay redacted under every policy.
@@ -2376,7 +2378,10 @@ fixture for route tests). The implemented coverage is:
   on an `input` start, and every step carrying a non-empty id and a kind in
   `STEP_KINDS`; the `guide` reference's `step_grammar` equals the renderer's step
   fields.
-- **`tests/test_assistant_node_schema.py`**, **`tests/test_assistant_tool_executor.py`**, **`tests/test_assistant_authoring_tools.py`**, **`tests/test_assistant_tool_errors.py`** and **`tests/test_assistant_turn_context.py`** — through the executor: the dry-run refuses
+- **`tests/test_assistant_node_schema.py`**, **`tests/test_assistant_tool_executor.py`**, **`tests/test_assistant_authoring_tools.py`**, **`tests/test_assistant_tool_errors.py`** and **`tests/test_assistant_turn_context.py`** — through the executor: a marker written in
+  a structured step's comment reaches neither `inspect_node`'s config part nor
+  `get_pipeline` while executable source is withheld, and reaches the config part when it
+  is permitted; the dry-run refuses
   retyping a saved step list as a located, retryable `config_withheld` under an
   `internal` policy and `config_unread` under `restricted`; under `restricted` it allows
   the rewrite once that executor's turn read the node's config or added the node, and
