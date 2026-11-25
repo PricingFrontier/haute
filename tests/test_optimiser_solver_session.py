@@ -815,6 +815,16 @@ def _graph_for_node(scored: Path, node_id: str, **overrides: Any) -> dict[str, A
     return graph
 
 
+def _released(job_id: str, seconds: float = 30.0) -> bool:
+    """Whether *job_id* lets go of its session within *seconds*."""
+    deadline = time.monotonic() + seconds
+    while SESSION_KEY in _job(job_id):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 def _solve_node(client: Any, graph: dict[str, Any], node_id: str) -> str:
     response = client.post(
         "/api/optimiser/solve",
@@ -842,6 +852,7 @@ class TestReplacedSolves:
             pids.append(_session_of(job_id).pid)
             results[job_id] = client.get(f"/api/optimiser/solve/status/{job_id}").json()["result"]
 
+        assert all(_released(earlier) for earlier in jobs[:-1])
         assert all(_gone(pid) for pid in pids[:-1])
         assert _session_of(jobs[-1]).alive
         for earlier in jobs[:-1]:
@@ -865,6 +876,8 @@ class TestReplacedSolves:
             for node_id in ("opt_a", "opt_b", "opt_c")
         )
 
+        # The release follows the third solve's publication on its own thread.
+        assert _released(first)
         assert SESSION_KEY not in _job(first)
         assert _job(first)[RUNTIME_UNAVAILABLE_KEY]["reason"] == "expired"
         assert _session_of(second).alive

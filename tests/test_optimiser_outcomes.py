@@ -349,6 +349,11 @@ class TestDataInputPath:
         assert "quote_grid" in _store.require_job(earlier)
         later, _status = _solved(client, _data_graph(scored, constraints={"volume": {"min": 1.0}}))
 
+        # The release follows the later solve's publication on its own thread.
+        deadline = time.monotonic() + 30
+        while "solver" in _store.require_job(earlier):
+            assert time.monotonic() < deadline, "the replaced solve kept its runtime"
+            time.sleep(0.02)
         replaced = _store.require_job(earlier)
         for key in ("solver", "solve_result", "quote_grid"):
             assert key not in replaced
