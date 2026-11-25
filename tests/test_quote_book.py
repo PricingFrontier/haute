@@ -323,7 +323,7 @@ def test_one_save_sent_twice_at_once_is_one_write_and_two_saves_land_once(book: 
     def send(over: Any, operation: str) -> None:
         try:
             answers.append(save(book, over, operation=operation))
-        except Exception as exc:  # noqa: BLE001 - each thread's outcome is the test's
+        except Exception as exc:  # each thread's outcome is the test's
             answers.append(exc)
 
     twice = [context_thread(send, args=(quote, key)) for _ in range(2)]

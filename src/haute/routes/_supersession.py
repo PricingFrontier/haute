@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+from haute._logging import get_logger
+
 R = TypeVar("R")
 T = TypeVar("T")
+
+logger = get_logger(component="server.supersession")
 
 
 class SupersededRequestError(RuntimeError):
@@ -36,6 +41,10 @@ class SupersessionCoordinator:
     def __init__(self) -> None:
         self._states: dict[Hashable, _SupersessionState] = {}
         self._states_lock = asyncio.Lock()
+        # The loop keeps only a weak reference to a task: each clearing task is held here
+        # until it ends, so it runs to the end and a failure is logged then, not when the
+        # task happens to be collected.
+        self._clearing: set[asyncio.Task[None]] = set()
 
     async def run_latest(
         self,
@@ -233,13 +242,32 @@ class SupersessionCoordinator:
         cancel_active: Callable[[], None] | None,
     ) -> None:
         if future.done():
-            asyncio.create_task(self._clear_active_after_background(key, state, cancel_active))
+            self._clear_in_background(key, state, cancel_active)
             return
-        future.add_done_callback(
-            lambda _done: asyncio.create_task(
-                self._clear_active_after_background(key, state, cancel_active)
+        future.add_done_callback(lambda _done: self._clear_in_background(key, state, cancel_active))
+
+    def _clear_in_background(
+        self,
+        key: Hashable,
+        state: _SupersessionState,
+        cancel_active: Callable[[], None] | None,
+    ) -> None:
+        task = asyncio.create_task(self._clear_active_after_background(key, state, cancel_active))
+        self._clearing.add(task)
+        task.add_done_callback(self._clearing_finished)
+
+    def _clearing_finished(self, task: asyncio.Task[None]) -> None:
+        self._clearing.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            # The key stays active, so its next request waits: say why.
+            logger.error(
+                "supersession_clear_failed",
+                error=str(exc),
+                traceback="".join(traceback.format_exception(exc)),
             )
-        )
 
     async def _clear_active_after_background(
         self,

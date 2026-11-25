@@ -87,8 +87,8 @@ type ChartCardProps = {
   onRetry: (
     pivot: ExplorePivotConfig,
     requestedDataVersion?: string | null,
-  ) => void
-  onCancel: (pivot: ExplorePivotConfig, jobId: string) => void
+  ) => Promise<void>
+  onCancel: (pivot: ExplorePivotConfig, jobId: string) => Promise<void>
   onConfigure: () => void
 }
 

@@ -1771,8 +1771,8 @@ def test_isolated_job_supervisor_rejects_incoherent_existing_terminal_state(
 ) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
-    with store._write_lock:  # noqa: SLF001 - deliberate corrupt-state boundary test
-        store._jobs[job_id]["status"] = "cancelled"  # noqa: SLF001
+    with store._write_lock:  # deliberate corrupt-state boundary test
+        store._jobs[job_id]["status"] = "cancelled"
     supervisor = IsolatedJobSupervisor(
         JobLifecycle(store),
         protocol_runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late")),

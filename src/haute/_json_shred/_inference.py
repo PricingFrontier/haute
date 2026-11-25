@@ -326,7 +326,7 @@ def _infer_chunk(
     try:
         state = _infer_jsonl_range(Path(data_path_s), start, end, seed=seed)
         return _InferenceChunkResult(index=index, state=state)
-    except Exception as exc:  # noqa: BLE001 — reconstructed in the parent
+    except Exception as exc:  # reconstructed in the parent
         return _InferenceChunkResult(index=index, failure=_records._failure_from_exception(exc))
 
 

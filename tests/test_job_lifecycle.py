@@ -389,7 +389,7 @@ def test_publish_completion_rejects_equal_replacement_of_claimed_record() -> Non
     job_id = store.create_job({"status": "running"})
 
     def publish() -> dict[str, object]:
-        store._jobs[job_id] = dict(store._jobs[job_id])  # noqa: SLF001
+        store._jobs[job_id] = dict(store._jobs[job_id])
         return {}
 
     with pytest.raises(RuntimeError, match="must not mutate"):

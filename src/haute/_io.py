@@ -538,6 +538,26 @@ _OBJECT_CACHE_MAX_SIZE = 32
 CSV_STRICTNESS: dict[str, Any] = {"raise_if_empty": True, "truncate_ragged_lines": False}
 
 
+def read_json_table(source: str | Path, **arguments: Any) -> pl.DataFrame:
+    """Polars' read of the JSON file *source*: the one way Haute reads a ``.json`` table.
+
+    Polars refuses a file it cannot read in words that name no file or place ("Syntax at
+    character 39", "Eof at character 0"). A file whose bytes are not JSON is then refused
+    as a request file is (:func:`haute._json_shred._records.json_file_refusal`), so a Data
+    Input, deploy's read of a request file's schema and a run say one thing of one file;
+    JSON Polars cannot read as a table keeps Polars' words.
+    """
+    try:
+        return pl.read_json(source, **arguments)
+    except pl.exceptions.ComputeError:
+        from haute._json_shred._records import json_file_refusal
+
+        refusal = json_file_refusal(Path(source))
+        if refusal is not None:
+            raise refusal from None
+        raise
+
+
 def read_source(
     path: str | Path,
     *,
@@ -598,7 +618,7 @@ def read_source(
                 path=path_string,
                 profile=normalised_profile.value,
             )
-        lf = pl.read_json(path_string).lazy()
+        lf = read_json_table(path_string).lazy()
         _validate_declared_schema(lf, source_schema_overrides, path=path_string)
         return _select_columns(lf, projection_columns)
 
@@ -636,7 +656,7 @@ EXTERNAL_FILE_TYPES: tuple[str, ...] = ("pickle", "json", "joblib")
 @functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)
 def _load_cached(
     path: str,
-    digest: str,  # noqa: ARG001 - part of cache key, not used in body.
+    digest: str,  # part of cache key, not used in body.
     file_type: str,
 ) -> object:
     """Memoised loader keyed on ``(path, digest, file_type)``."""

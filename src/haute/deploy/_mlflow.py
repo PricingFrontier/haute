@@ -642,7 +642,7 @@ def _profile_problem(tracking_uri: str) -> str | None:
     profile = tracking_uri.removeprefix("databricks://")
     try:
         creds = get_databricks_host_creds(tracking_uri)
-    except Exception as exc:  # noqa: BLE001 - reported by type; see below
+    except Exception as exc:  # reported by type; see below
         # The message is left out: a malformed config file's parse error quotes its lines,
         # whichever profile they belong to, credentials included.
         return (
@@ -693,7 +693,7 @@ def _check_databricks_connectivity(
     url = f"{host}/api/2.0/clusters/list-zones"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {credentials.token}"})
     try:
-        urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
+        urllib.request.urlopen(req, timeout=timeout)
         _log("Databricks workspace reachable")
     except urllib.error.HTTPError as exc:
         if exc.code == 401:

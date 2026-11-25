@@ -354,3 +354,38 @@ async def test_cancelled_request_waiting_for_limiter_does_not_leak_slot() -> Non
     await asyncio.wait_for(limiter.acquire(), timeout=0.1)
     limiter.release()
     assert started_work == []
+
+
+@pytest.mark.asyncio
+async def test_clearing_after_a_background_task_is_kept_and_its_failure_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop holds a task only weakly: the coordinator keeps each clearing task."""
+    import structlog.testing
+
+    coordinator = SupersessionCoordinator()
+    state = _SupersessionState(active=True)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def clear(_key: object, _state: object, _cancel: object) -> None:
+        started.set()
+        await release.wait()
+        raise RuntimeError("the state lock was lost")
+
+    monkeypatch.setattr(coordinator, "_clear_active_after_background", clear)
+    background: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+    coordinator._clear_active_when_done(background, "key", state, None)
+    background.set_result(None)
+    await started.wait()
+    assert len(coordinator._clearing) == 1
+
+    with structlog.testing.capture_logs() as captured:
+        release.set()
+        while coordinator._clearing:
+            await asyncio.sleep(0)
+
+    [failure] = [entry for entry in captured if entry["event"] == "supersession_clear_failed"]
+    assert failure["log_level"] == "error"
+    assert failure["error"] == "the state lock was lost"
+    assert "RuntimeError" in failure["traceback"]

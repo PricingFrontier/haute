@@ -176,7 +176,7 @@ def get_signature(func: Any) -> tuple[inspect.Signature | None, str | None]:
     """inspect.signature with eval_str, falling back to string annotations."""
     try:
         return inspect.signature(func, eval_str=True), None
-    except Exception:  # noqa: BLE001, S110 - fall through to string annotations
+    except Exception:  # fall through to string annotations
         pass
     try:
         return inspect.signature(func), None

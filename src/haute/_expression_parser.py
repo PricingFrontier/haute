@@ -580,15 +580,15 @@ class _ExprConverter:
                 self._is_opaque = True
                 self.expr_type = "opaque"
 
-        # pl.col("name")
+        # A column, pl.col("name")
         if self._is_pl_call(node, "col"):
             return self._pl_col(node)
 
-        # pl.lit(value)
+        # A literal, pl.lit(value)
         if self._is_pl_call(node, "lit"):
             return self._pl_lit(node)
 
-        # pl.when(...)
+        # A conditional, pl.when(...)
         if self._is_pl_call(node, "when"):
             return self._format_when_entry(node)
 
@@ -597,7 +597,7 @@ class _ExprConverter:
             if node.func.value.id == "pl" and node.func.attr in _HORIZONTAL_FUNCS:
                 return self._horizontal_func(node, node.func.attr)
 
-        # pl.format(...)
+        # A format string, pl.format(...)
         if self._is_pl_call(node, "format"):
             return self._pl_format(node)
 
@@ -2136,7 +2136,7 @@ def _global_constant_values(namespace: Mapping[str, Any], code: str) -> dict[str
     for name in set(_GLOBAL_CONSTANT_READ.findall(code)):
         try:
             value = getattr(constants, name)
-        except Exception:  # noqa: BLE001 - an unresolved read stays as written in the trace
+        except Exception:  # an unresolved read stays as written in the trace
             continue
         if isinstance(value, (bool, int, float, str, _dt.date)):
             values[name] = value

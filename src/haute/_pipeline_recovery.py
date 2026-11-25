@@ -1966,7 +1966,7 @@ def _recover_registered_submodels(
                 failure=exc,
             )
             continue
-        except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary
+        except Exception:  # named submodel recovery isolation boundary
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
             source_definitions[source_key] = def_id
@@ -2921,7 +2921,7 @@ def _load_editor_document(path: Path, root: Path) -> PipelineEditorDocument:
     try:
         with node_configs_read_through(captures.read_bytes):
             return _load_readable_pipeline_editor_document(path, root, source, captures)
-    except Exception:  # noqa: BLE001 - named editor recovery isolation boundary
+    except Exception:  # named editor recovery isolation boundary
         incident_id = uuid4().hex
         source_file = _wire_path(path, root)
         logger.error(
@@ -2939,11 +2939,11 @@ def _load_editor_document(path: Path, root: Path) -> PipelineEditorDocument:
                 ],
                 known_bytes={path: raw_source},
             )
-        except Exception:  # noqa: BLE001 - best-effort incident metadata
+        except Exception:  # best-effort incident metadata
             source_revision = None
         try:
             preserved_blocks = _extract_preserved_blocks(source)
-        except Exception:  # noqa: BLE001 - never hide readable current source
+        except Exception:  # never hide readable current source
             preserved_blocks = []
         diagnostic = _diagnostic(
             code="pipeline_recovery_internal_error",

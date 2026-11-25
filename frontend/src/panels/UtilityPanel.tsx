@@ -399,7 +399,7 @@ export default function UtilityPanel({
   // Auto-select first file
   useEffect(() => {
     if (!importsSelected && files.length > 0 && activeModule === null) {
-      loadFile(files[0].module)
+      void loadFile(files[0].module)
     }
   }, [files, activeModule, importsSelected, loadFile])
 
@@ -479,7 +479,7 @@ export default function UtilityPanel({
       {/* File selector */}
       <div className="px-3 py-2 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         {creating ? (
-          <form className="flex items-center gap-1 flex-1" onSubmit={(e) => { e.preventDefault(); handleCreate() }}>
+          <form className="flex items-center gap-1 flex-1" onSubmit={(e) => { e.preventDefault(); void handleCreate() }}>
             <input
               autoFocus
               value={newName}
@@ -530,7 +530,7 @@ export default function UtilityPanel({
                       return (
                         <button
                           key={f.module}
-                          onClick={() => { setDropdownOpen(false); if (!isActive) loadFile(f.module) }}
+                          onClick={() => { setDropdownOpen(false); if (!isActive) void loadFile(f.module) }}
                           className={`w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--bg-hover)]"}`}
                           style={{
                             color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
@@ -555,7 +555,7 @@ export default function UtilityPanel({
             </button>
             {activeModule && !importsSelected && (
               <button
-                onClick={handleDelete}
+                onClick={() => void handleDelete()}
                 className="p-1.5 rounded-md transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                 style={{ color: 'var(--text-muted)' }}
                 title={`Delete ${activeModule}`}

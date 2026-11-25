@@ -92,7 +92,7 @@ export default function ExploreTableActions({
             : "Clipboard unavailable (requires a secure context)"
         }
         disabled={empty || !clipboardOk}
-        onClick={copy}
+        onClick={() => void copy()}
         className={buttonClass}
         style={buttonStyle}
       >
@@ -104,7 +104,7 @@ export default function ExploreTableActions({
         aria-label={`Download ${tableLabel} table as CSV`}
         title={`Download ${tableLabel} table as CSV`}
         disabled={empty}
-        onClick={download}
+        onClick={() => void download()}
         className={buttonClass}
         style={buttonStyle}
       >

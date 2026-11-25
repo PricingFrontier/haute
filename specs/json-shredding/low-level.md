@@ -18,7 +18,7 @@ the server (see [IO layer](../io-layer/low-level.md#automatic-preparation)).
 | `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
 | `src/haute/_json_shred/__init__.py` | Package docstring only: names the concern layout; deliberately exports nothing. |
 | `src/haute/_json_shred/` | v2 per-frame structured-input engine, decomposed by concern into the submodules below; consumers import each concern module directly (there are no aggregating re-exports). |
-| `src/haute/_json_shred/_records.py` | Streaming JSON/JSONL/XML record iteration, the shared bounded record limit, byte-range tiling with its parallelism policy, and the parallel-worker failure transport. |
+| `src/haute/_json_shred/_records.py` | Streaming JSON/JSONL/XML record iteration, the shared bounded record limit, byte-range tiling with its parallelism policy, the parallel-worker failure transport, and `json_file_refusal` (a JSON file read as a request file is, for a reader whose own parser refused it: the file's `InputFileError`, or nothing when its bytes are JSON). |
 | `src/haute/_json_shred/_shred.py` | Table specs, leaf resolution, the single-pass record walk, and root-conservation accounting. |
 | `src/haute/_json_shred/_writer.py` | Aggregate-bounded Parquet row-group emission for table-snapshot builds and leased runtime spill bundles, plus parallel chunk execution. |
 | `src/haute/_json_shred/_source_proof.py` | The one source-freshness proof for every local file, not only structured sources: native file revisions (Windows USN/file-id, POSIX stat), the settled-stat fallback, and the shared in-process content signature behind them. |

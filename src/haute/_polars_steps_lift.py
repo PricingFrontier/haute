@@ -1249,7 +1249,7 @@ def _recognised(reader: _Reader, unit: _Unit, context: _Context) -> Step | None:
         return None
     try:
         candidates = reader.candidates(unit.node)
-    except Exception as exc:  # noqa: BLE001 - a reader's defect keeps the statement as code
+    except Exception as exc:  # a reader's defect keeps the statement as code
         logger.warning(
             "polars_step_reader_failed",
             line=unit.first,

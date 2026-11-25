@@ -186,7 +186,7 @@ class EventBus:
     @overload
     def subscribe(self, event_type: str, handler: HandlerType) -> Callable[[], None]: ...
 
-    def subscribe(  # type: ignore[misc]  # noqa: E501 — impl widens payload type for overload dispatch; public API constrained by @overloads above
+    def subscribe(  # type: ignore[misc]  # impl widens payload type for overload dispatch; public API constrained by @overloads above
         self, event_type: str, handler: HandlerType
     ) -> Callable[[], None]:
         """Register *handler* to receive events of type *event_type*.
@@ -262,7 +262,7 @@ class EventBus:
         for handler in handlers:
             try:
                 handler(payload)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # Breadth deliberate: any handler misbehaviour must be
                 # contained at the bus boundary.  We log with
                 # ``exc_info=True`` so ops can diagnose without

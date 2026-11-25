@@ -180,6 +180,7 @@ components = ["deploy"]
 documents = [
   "specs/deploy/high-level.md",
   "specs/deploy/low-level.md",
+  "specs/cli/high-level.md",
 ]
 entry_points = ["cli", "scoring"]
 
@@ -1288,6 +1289,29 @@ invariant = "The deployable artefact is proven, not only the in-process app: pre
 commit = "f8af18c67"
 command = 'uv run pytest tests/test_container_smoke_script.py tests/test_infrastructure_contracts.py tests/test_container.py tests/test_deploy_container.py -q -n 4'
 result = "163 passed in 28.60s"
+
+[[scenarios]]
+id = "W13-S03"
+workflow = "W13"
+contract = "specs/cli/high-level.md#failure-model"
+state = "covered"
+entry_point = "cli"
+tier = "process"
+lane = "backend"
+real = ["cli", "shipped-examples", "filesystem", "git"]
+stubbed = []
+tests = [
+  "tests/test_cli_examples.py::test_a_command_run_whole_on_a_shipped_example_answers_in_its_own_words",
+  "tests/test_cli_examples.py::test_a_wrong_request_file_is_named_with_its_fault_by_each_command",
+  "tests/test_cli_deploy.py::TestDryRunSettings::test_an_unusable_setting_is_refused_by_name",
+  "tests/test_cli_deploy.py::TestDryRunSettings::test_a_missing_pipeline_file_is_one_line_and_the_hint",
+]
+invariant = "haute lint, haute run and haute deploy --dry-run, run whole through the command line with nothing patched on every shipped example as an analyst copies it, exit as the example expects, raise nothing to the command line and say no failure they do not recognise, and a command that refuses an example (reference_join's deployment, which has no request input) says why in one error line; model_lifecycle's run and dry run, whose Model Scoring names a run nobody trained, are strict expected failures owned by MLR-04. On one example, a request file of a value of another type, cut short, empty or with a byte-order mark is answered alike by the run and the dry run in the IO layer's words (its column and declared type, its line and column, empty), the mark read through; an unknown deploy target and a haute.toml naming a missing pipeline file are refused by the dry run in one line."
+
+[scenarios.evidence]
+commit = "32eb4f4a1"
+command = 'uv run pytest tests/test_cli_examples.py tests/test_cli_deploy.py::TestDryRunSettings -q -n 4'
+result = "62 passed, 2 xfailed in 35.81s"
 
 [[scenarios]]
 id = "W14-S01"

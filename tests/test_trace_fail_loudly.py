@@ -145,7 +145,7 @@ def _run_trace_loudly(
                 column=column,
             )
             return result, None, list(captured)
-        except ExecutionError as exc:  # noqa: TRY203 — intentional surface
+        except ExecutionError as exc:  # intentional surface
             return None, exc, list(captured)
 
 

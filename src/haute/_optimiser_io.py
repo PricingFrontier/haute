@@ -38,7 +38,7 @@ _ARTIFACT_CACHE_MAX_SIZE = 8
 @functools.lru_cache(maxsize=_ARTIFACT_CACHE_MAX_SIZE)
 def _load_artifact_cached(
     path: str,
-    digest: str,  # noqa: ARG001 — part of cache key, not used in body.
+    digest: str,  # part of cache key, not used in body.
 ) -> dict[str, Any]:
     """Memoised artifact loader keyed on ``(path, digest)``.
 
@@ -89,10 +89,10 @@ _MLFLOW_ARTIFACT_NAME = "optimiser_result.json"
 
 @functools.lru_cache(maxsize=_ARTIFACT_CACHE_MAX_SIZE)
 def _load_mlflow_cached(
-    backend_identity: str,  # noqa: ARG001 — part of cache key, not used in body.
+    backend_identity: str,  # part of cache key, not used in body.
     source_type: str,
     resolved_run_id: str,
-    resolved_version: str,  # noqa: ARG001 — part of cache key, not used in body.
+    resolved_version: str,  # part of cache key, not used in body.
     tracking_uri: str,
 ) -> dict[str, Any]:
     """Memoised MLflow artifact loader keyed on backend, source, run and version.

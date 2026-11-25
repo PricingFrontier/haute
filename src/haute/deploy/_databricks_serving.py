@@ -170,7 +170,7 @@ def _log_tail(fetch: Callable[[], Any], what: str) -> list[str]:
     """The last lines of a log Databricks returns, or why it could not be read."""
     try:
         logs = getattr(fetch(), "logs", None) or ""
-    except Exception as exc:  # noqa: BLE001 - the failure being reported matters more
+    except Exception as exc:  # the failure being reported matters more
         return [f"({what} unavailable: {exc})"]
     lines = [line for line in str(logs).splitlines() if line.strip()]
     if not lines:

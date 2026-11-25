@@ -2407,8 +2407,8 @@ def test_frame_length_range_bound_is_witnessed_by_execution() -> None:
             f"df = rows.select({expression}.alias('rn'))", {"rows": 3}
         )
         assert analysis.supported and analysis.output_upper_bound == 3
-        assert eval(f"frame.select({expression}.alias('rn'))").height == 3  # noqa: S307
-        assert eval(f"frame.select({expression}.over('g').alias('rn'))").height == 3  # noqa: S307
+        assert eval(f"frame.select({expression}.alias('rn'))").height == 3
+        assert eval(f"frame.select({expression}.over('g').alias('rn'))").height == 3
     assert frame.select(pl.int_range(pl.len() + 100).alias("rn")).height == 103
     assert frame.head(0).select(pl.int_range(1, pl.len() + 1).alias("rn")).height == 0
     # ``pl.len()`` is unsigned: subtracting past zero wraps instead of clamping.

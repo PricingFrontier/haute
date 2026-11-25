@@ -90,7 +90,7 @@ def run_gh(gh: str, project_dir: Path, *args: str, stdin: str | None = None) -> 
 
     command = " ".join(("gh", *args))
     try:
-        result = subprocess.run(  # noqa: S603 - gh from PATH, fixed arguments
+        result = subprocess.run(  # gh from PATH, fixed arguments
             [gh, *args],
             cwd=project_dir,
             input=stdin if stdin is not None else "",

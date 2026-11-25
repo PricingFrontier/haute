@@ -96,7 +96,7 @@ def _shred_chunk(
             row_counts=dict(writer.row_counts),
             part_paths={label: str(path) for label, path in writer.paths.items()},
         )
-    except Exception as exc:  # noqa: BLE001 — reported, then re-raised in the parent
+    except Exception as exc:  # reported, then re-raised in the parent
         if writer is not None:
             try:
                 writer.close()

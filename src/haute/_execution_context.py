@@ -1305,7 +1305,7 @@ class ExecutionProvenance:
 
         try:
             named = named_keys(ExecutionMetricsPayload, payload)
-        except Exception:  # noqa: BLE001 - a diagnostic must never hide the run's own error
+        except Exception:  # a diagnostic must never hide the run's own error
             return {}
         with self._lock:
             addresses = {

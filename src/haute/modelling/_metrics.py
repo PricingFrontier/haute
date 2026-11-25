@@ -1010,7 +1010,7 @@ def compute_pdp(
                     "grid": grid_entries,
                 }
             )
-        except Exception as exc:  # noqa: BLE001 — every per-feature failure is surfaced below
+        except Exception as exc:  # every per-feature failure is surfaced below
             category = exc.category if isinstance(exc, _PdpFeatureError) else type(exc).__name__
             # The failure keeps its slot in the payload (shape stays
             # frontend-guard compatible: string feature/type + list grid)

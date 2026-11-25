@@ -153,7 +153,7 @@ def _optimiser_job() -> dict:
     }
 
 
-def _request(client: TestClient, route: str, value: str):  # noqa: ANN202
+def _request(client: TestClient, route: str, value: str):
     if route == "browse":
         return client.get("/api/files", params={"dir": value})
     if route == "schema":
@@ -203,7 +203,7 @@ _CASES = [
 def test_every_route_refuses_escapes_and_accepts_an_inside_path(
     layout: tuple[Path, Path],
     client: TestClient,
-    clean_job_store,  # noqa: ANN001
+    clean_job_store,
     route: tuple[str, str, int, str, str],
     kind: str,
 ) -> None:
@@ -260,7 +260,7 @@ class TestSaveOutputPaths:
     their own 400 contract (generated paths are not request input)."""
 
     @staticmethod
-    def _service(project: Path):  # noqa: ANN205
+    def _service(project: Path):
         from haute.routes._save_pipeline import SavePipelineService
 
         return SavePipelineService(project_root=project, pipeline_root=project)
@@ -814,7 +814,7 @@ def _data_input(label: str) -> object:
 
 class TestSaveService:
     @staticmethod
-    def _service(project: Path, pipeline_root: Path | None = None):  # noqa: ANN205
+    def _service(project: Path, pipeline_root: Path | None = None):
         from haute.routes._save_pipeline import SavePipelineService
 
         return SavePipelineService(project_root=project, pipeline_root=pipeline_root)

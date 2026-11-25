@@ -125,7 +125,7 @@ def _http_request(
     method: str = "GET",
     headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
-    request = urllib.request.Request(  # noqa: S310 (loopback only)
+    request = urllib.request.Request(  # loopback only
         url,
         headers=headers or {},
         method=method,

@@ -1506,7 +1506,7 @@ class PipelineApplicationService:
                 publish_error: str | None = None
                 try:
                     fallback_fingerprint = self._publish_document_update(source_file, planned)
-                except Exception as publish_exc:  # noqa: BLE001 - preserve committed state
+                except Exception as publish_exc:  # preserve committed state
                     publish_error = type(publish_exc).__name__
                 failure: dict[str, object] = {
                     "plan_hash": plan.plan_hash,

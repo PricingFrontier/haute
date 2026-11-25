@@ -601,7 +601,7 @@ class TestValidationCacheThreadSafety:
             barrier.wait()  # align threads to hit concurrently
             try:
                 results.append(_validate_features(sm, schema))
-            except BaseException as exc:  # noqa: BLE001 - test recorder
+            except BaseException as exc:  # test recorder
                 errors.append(exc)
 
         threads = [context_thread(worker) for _ in range(8)]
@@ -630,7 +630,7 @@ class TestValidationCacheThreadSafety:
             barrier.wait()
             try:
                 _validate_features(models[i], schemas[i])
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [context_thread(worker, args=(i,)) for i in range(len(models))]

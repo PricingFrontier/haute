@@ -895,7 +895,7 @@ def _continue_above_seed(
             "error": str(exc),
         }
         return continuation
-    except Exception as exc:  # noqa: BLE001 - the ancestors become a visible, logged gap
+    except Exception as exc:  # the ancestors become a visible, logged gap
         logger.warning(
             "trace_seed_recompute_failed",
             seed=seed_id,

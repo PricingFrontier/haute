@@ -133,7 +133,7 @@ def test_a_map_holding_one_in_its_values_is_refused_at_a_write(tmp_path: Path) -
 class _OneScore:
     """A model scoring every row 1.0, enough for the batched scorer's writes."""
 
-    feature_names_: list[str] = ["a"]  # noqa: RUF012
+    feature_names_: list[str] = ["a"]
 
     def get_metadata(self) -> dict[str, str]:
         return {}  # as CatBoost reports for a model without Haute's labels

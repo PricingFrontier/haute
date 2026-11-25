@@ -220,7 +220,7 @@ def _iter_databricks_batches(
 
     credentials, resolved_http_path = _resolve_connection(http_path, node_label="Data Input")
     select_clause = query.strip() if query else "SELECT *"
-    sql_query = f"{select_clause} FROM {_quoted_table_name(table)}"  # noqa: S608
+    sql_query = f"{select_clause} FROM {_quoted_table_name(table)}"
     row_count = 0
     context.checkpoint()
     with dbsql.connect(

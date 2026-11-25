@@ -136,7 +136,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
   const estimateButton = (param: DispersionParam) =>
     dispersionEstimate && (
       <button
-        onClick={() => handleEstimate(param)}
+        onClick={() => void handleEstimate(param)}
         disabled={estimating !== null}
         className="px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap"
         style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", opacity: estimating ? 0.6 : 1 }}

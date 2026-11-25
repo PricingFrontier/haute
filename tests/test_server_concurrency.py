@@ -75,7 +75,7 @@ class TestWsClientsConcurrentMutation:
                 # Every thread adds then removes its own sentinel
                 ws_clients.add(s)
                 ws_clients.discard(s)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         def other(s: object) -> None:
@@ -85,7 +85,7 @@ class TestWsClientsConcurrentMutation:
                 ws_clients.discard(s)
                 ws_clients.add(s)
                 ws_clients.discard(s)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [context_thread(adder, args=(s,), daemon=True) for s in sentinels] + [
@@ -132,7 +132,7 @@ class TestWsClientsConcurrentMutation:
                 for i, c in enumerate(clients):
                     if i % 2:
                         ws_clients.discard(c)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         def broadcaster() -> None:
@@ -143,7 +143,7 @@ class TestWsClientsConcurrentMutation:
                     loop.run_until_complete(broadcast({"type": "test"}))
                 finally:
                     loop.close()
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         t_mut = context_thread(mutator, daemon=True)
@@ -252,7 +252,7 @@ class TestWsClientsConcurrentMutation:
                     raise AssertionError("no broadcast reached a dead client")
                 for c in dead_clients:
                     ws_clients_discard(c)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
             finally:
                 disconnected.set()
@@ -266,7 +266,7 @@ class TestWsClientsConcurrentMutation:
                         loop.run_until_complete(broadcast({"type": "upd"}))
                 finally:
                     loop.close()
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [

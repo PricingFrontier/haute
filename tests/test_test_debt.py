@@ -11,9 +11,13 @@ import argparse
 import ast
 import functools
 import json
+import re
 import sys
 import textwrap
+from collections.abc import Iterable
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -36,11 +40,19 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # Exact debt-site fingerprints as of the test-suite review. The fingerprint uses
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
+# A skip whose condition is a file the repository does not hold (a frontend build,
+# what a local training left in outputs/) is not accepted: it runs in no CI job,
+# and on a developer's machine against whatever that file holds. The test makes
+# the file in its temporary folder instead.
 _EXPECTED_DEBT_IDS = {
     # tests/test_run_parity.py (EXE-10): a difference between the ways of running a
     # pipeline that another roadmap package owns, strict so its delivery turns it
     # green: MLR-04.
     "2e1728e0067476c5",
+    # tests/test_cli_examples.py: model_lifecycle's run and dry run, whose Model Scoring
+    # names a run nobody trained, end as an unrecognised failure where the node's
+    # configuration error naming the run is meant; strict, so MLR-04 turns it green.
+    "ad567900a5b0deb3",
     # The chunked GLM suite (MOD-M01) fits real RustyStats models in both fit modes;
     # rustystats is an optional dependency, so the module importorskips it like the
     # other GLM suites. See tests/test_glm_chunked_fit.py.
@@ -144,13 +156,6 @@ _EXPECTED_DEBT_IDS = {
     # documents that the pin targets default wiring only. See
     # tests/test_trace_cache_byte_awareness.py::TestTraceCacheByteBudgetWiring.
     "73141b06a8fbbace",
-    # API/WS 404-guard review — the SPA-serving regression test only applies when
-    # a frontend build is present (serve_spa is registered under
-    # ``if STATIC_DIR.exists()``), so it skips on backend-only CI where no build
-    # exists. The unconditional 404 assertions carry the actual contract. See
-    # tests/test_routes_error_handling.py::TestApiWsNotFoundReturnsJson
-    # ::test_spa_still_served_for_non_api_routes.
-    "3594921e8a8526c3",
     # PL2-07 — Haute names a headerless Excel sheet's columns; the sheet is written
     # with openpyxl, which dev installs carry through the databricks extra but core
     # haute does not require, as TestExcelLeg in test_data_io_roundtrips.py. See
@@ -217,8 +222,6 @@ _EXPECTED_DEBT_IDS = {
     "aec15b8d084c0f9f",
     "36389904372edffb",
     "40f0104677c0d566",
-    "454198ff8535ff31",
-    "4ba277207894ee6d",
     "848a5576a63f17d0",
     "df789ca110c56d8d",
     "e800d20c2fdb0d00",
@@ -947,6 +950,253 @@ def test_frontend_scanner_ignores_chained_debt_in_comments_and_strings() -> None
     )
 
     assert [site.callee for site in sites] == ["test.skip"]
+
+
+# ---------------------------------------------------------------------------
+# Tests only Windows runs are run by the Windows job
+# ---------------------------------------------------------------------------
+
+# The jobs that run the whole suite are on Linux; the platform smoke job's Windows leg
+# runs the modules and the tests its steps name.
+_WINDOWS_JOB = "platform-smoke"
+_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_LINUX = {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(name="posix")}
+_WINDOWS = {"sys": SimpleNamespace(platform="win32"), "os": SimpleNamespace(name="nt")}
+_PLATFORM_SYSTEM = {"linux": "Linux", "win32": "Windows"}
+# A module, or a test or class in one, as pytest names it on its command line.
+_SELECTION = re.compile(r"tests/[\w/]+\.py(?:::\w+)*")
+
+
+def _holds_off_windows_only(condition: ast.expr) -> bool:
+    """Whether *condition*, a skip's, holds on Linux and not on Windows, judged with only
+    the platform known (``sys.platform``, ``os.name``, ``platform.system()``): a condition
+    that reads anything else is not a platform's."""
+    code = compile(ast.Expression(body=condition), "<skip condition>", "eval")
+
+    def holds(names: dict[str, SimpleNamespace]) -> bool:
+        system = _PLATFORM_SYSTEM[names["sys"].platform]
+        scope = {**names, "platform": SimpleNamespace(system=lambda: system)}
+        return bool(eval(code, {"__builtins__": {}}, scope))
+
+    try:
+        return holds(_LINUX) and not holds(_WINDOWS)
+    except (AttributeError, NameError, TypeError):
+        return False
+
+
+def _keyword_value(call: ast.Call, name: str) -> ast.expr | None:
+    return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+
+
+def _skipif_condition(node: ast.AST) -> ast.expr | None:
+    """A ``skipif`` mark's condition (one written as a string, as pytest evaluates it)."""
+    if not (isinstance(node, ast.Call) and ast.unparse(node.func).endswith("mark.skipif")):
+        return None
+    condition = node.args[0] if node.args else _keyword_value(node, "condition")
+    if isinstance(condition, ast.Constant) and isinstance(condition.value, str):
+        return ast.parse(condition.value.strip(), mode="eval").body
+    return condition
+
+
+class _SkipScopes(ast.NodeVisitor):
+    """Each skip's condition, with the class and test it skips: a mark on a definition
+    skips that definition, a mark or a skip inside one skips what holds it, and a mark
+    made at module level (``pytestmark``, or a mark bound to a name) the whole module."""
+
+    def __init__(self) -> None:
+        self.scope: list[str] = []
+        self.found: list[tuple[tuple[str, ...], ast.expr]] = []
+
+    def _definition(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.scope.append(node.name)
+        for child in (*node.decorator_list, *node.body):
+            self.visit(child)
+        self.scope.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._definition(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._definition(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._definition(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        condition = _skipif_condition(node)
+        if condition is not None:
+            self.found.append((tuple(self.scope), condition))
+        self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> None:
+        if any(
+            isinstance(call, ast.Call) and ast.unparse(call.func) == "pytest.skip"
+            for statement in node.body
+            for call in ast.walk(statement)
+        ):
+            self.found.append((tuple(self.scope), node.test))
+        self.generic_visit(node)
+
+
+def _skipped_off_windows(modules: Iterable[tuple[str, str]]) -> set[str]:
+    """Of *modules* (path, source), the tests skipped on every system but Windows, as
+    pytest names them: ``path::Class::test``, or the module's path when all of it is."""
+    skipped: set[str] = set()
+    for path, source in modules:
+        scopes = _SkipScopes()
+        scopes.visit(ast.parse(source))
+        skipped.update(
+            "::".join((path, *scope))
+            for scope, condition in scopes.found
+            if _holds_off_windows_only(condition)
+        )
+    return skipped
+
+
+def _selected(test: str, selection: Iterable[str]) -> bool:
+    """Whether a command line naming *selection* runs *test*: its module, its class or
+    itself is named."""
+    return any(test == named or test.startswith(f"{named}::") for named in selection)
+
+
+_RUNNER_OS_CONDITION = re.compile(r"""^\s*runner\.os\s*(==|!=)\s*(['"])(\w+)\2\s*$""")
+
+
+def _runs_on_windows(step: dict[str, Any]) -> bool:
+    """Whether the job's *step* runs on its Windows leg: it has no condition, or one on
+    ``runner.os`` alone that holds there. Any other condition cannot be told, and fails."""
+    condition = step.get("if")
+    if condition is None:
+        return True
+    match = _RUNNER_OS_CONDITION.match(str(condition))
+    assert match is not None, (
+        f"The {_WINDOWS_JOB} step {step.get('name')!r} runs if {condition!r}, which this "
+        "check cannot judge: condition it on runner.os == or != a system alone."
+    )
+    operator, _quote, system = match.groups()
+    # GitHub Actions compares strings without regard to case.
+    return (system.casefold() == "windows") == (operator == "==")
+
+
+def _windows_job_selection(workflow: dict[str, Any]) -> set[str]:
+    """The modules and tests the Windows leg of *workflow*'s platform job runs: those
+    named by its steps that run there."""
+    job = workflow["jobs"][_WINDOWS_JOB]
+    assert "windows-latest" in job["strategy"]["matrix"]["os"]
+    return {
+        named
+        for step in job["steps"]
+        if _runs_on_windows(step)
+        for named in _SELECTION.findall(str(step.get("run", "")))
+    }
+
+
+@pytest.mark.meta
+def test_every_test_skipped_off_windows_is_run_by_the_windows_job() -> None:
+    """A test only Windows runs, which the Windows job does not name, runs in no job."""
+    import yaml
+
+    modules = (
+        (path.relative_to(REPO_ROOT).as_posix(), path.read_text(encoding="utf-8"))
+        for path in source_files(TESTS_DIR)
+    )
+    selection = _windows_job_selection(yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8")))
+    left_out = sorted(
+        test for test in _skipped_off_windows(modules) if not _selected(test, selection)
+    )
+    assert not left_out, (
+        f"Name these tests, or their modules, in the {_WINDOWS_JOB} job's steps in "
+        f".github/workflows/ci.yml: {left_out}"
+    )
+
+
+def test_a_skip_off_windows_is_told_from_any_other_and_placed() -> None:
+    probe = textwrap.dedent(
+        """
+        import os, sys, pytest
+
+        @pytest.mark.skipif(sys.platform != "win32", reason="Windows locks")
+        def test_a(): ...
+
+        class TestHeld:
+            @pytest.mark.skipif("sys.platform != 'win32'", reason="as pytest reads it")
+            def test_a2(self): ...
+
+            def test_b(self):
+                if os.name != "nt":
+                    pytest.skip("Windows paths")
+
+        @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows")
+        class TestWindows:
+            def test_c(self): ...
+        """
+    )
+    whole = (
+        'import sys, pytest\npytestmark = pytest.mark.skipif(sys.platform != "win32", reason="x")\n'
+    )
+    others = textwrap.dedent(
+        """
+        import sys, pytest
+        POSIX = pytest.mark.skipif(sys.platform == "win32", reason="chmod")
+        LINUX = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_AS")
+
+        def test_c(flag):
+            if flag:
+                pytest.skip("not the platform's")
+        """
+    )
+
+    assert _skipped_off_windows(
+        [("tests/a.py", probe), ("tests/w.py", whole), ("tests/o.py", others)]
+    ) == {
+        "tests/a.py::test_a",
+        "tests/a.py::TestHeld::test_a2",
+        "tests/a.py::TestHeld::test_b",
+        "tests/a.py::TestWindows",
+        "tests/w.py",
+    }
+    for spelling in (
+        'not sys.platform.startswith("win")',
+        'platform.system() != "Windows"',
+        'sys.platform != "win32"',
+    ):
+        assert _holds_off_windows_only(ast.parse(spelling, mode="eval").body), spelling
+
+
+def test_a_test_is_run_when_its_module_its_class_or_itself_is_named() -> None:
+    named = {"tests/a.py", "tests/b.py::TestHeld", "tests/c.py::test_one"}
+
+    assert _selected("tests/a.py::TestX::test", named)
+    assert _selected("tests/b.py::TestHeld::test_b", named)
+    assert _selected("tests/c.py::test_one", named)
+    assert not _selected("tests/b.py::TestOther::test", named)
+    assert not _selected("tests/c.py::test_one_more", named)
+    assert not _selected("tests/d.py", named)
+
+
+def test_the_windows_job_runs_only_the_steps_its_windows_leg_runs() -> None:
+    def workflow(*steps: dict[str, str]) -> dict[str, Any]:
+        job = {"strategy": {"matrix": {"os": ["windows-latest"]}}, "steps": list(steps)}
+        return {"jobs": {_WINDOWS_JOB: job}}
+
+    steps = (
+        {"run": "uv run pytest tests/a.py tests/h.py::TestHeld::test_b -q"},
+        {"if": "runner.os != 'Windows'", "run": "uv run pytest tests/b.py"},
+        {"if": "runner.os == 'Windows'", "run": "uv run pytest tests/c.py"},
+        {"if": 'runner.os == "macOS"', "run": "uv run pytest tests/d.py"},
+        {"if": "runner.os != 'windows'", "run": "uv run pytest tests/f.py"},
+        {"if": "runner.os == 'WINDOWS'", "run": "uv run pytest tests/g.py"},
+    )
+    assert _windows_job_selection(workflow(*steps)) == {
+        "tests/a.py",
+        "tests/h.py::TestHeld::test_b",
+        "tests/c.py",
+        "tests/g.py",
+    }
+
+    unjudged = {"name": "Matrix", "if": "matrix.os == 'windows-latest'", "run": "tests/e.py"}
+    with pytest.raises(AssertionError, match="cannot judge"):
+        _windows_job_selection(workflow(unjudged))
 
 
 def _main(argv: list[str] | None = None) -> int:

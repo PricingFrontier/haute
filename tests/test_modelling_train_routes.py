@@ -171,8 +171,8 @@ class TestTrainEndpoint:
 
         store = get_job_store("training")
         job_id = store.create_job({"status": "running"})
-        with store._write_lock:  # noqa: SLF001 - deliberate orphan-state regression
-            store._jobs.pop(job_id)  # noqa: SLF001
+        with store._write_lock:  # deliberate orphan-state regression
+            store._jobs.pop(job_id)
 
         assert job_id in store._running_activity_at
 

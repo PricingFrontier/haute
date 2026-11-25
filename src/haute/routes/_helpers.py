@@ -923,7 +923,7 @@ def pipelines_naming_artifacts(
             continue
         try:
             artifacts = _recovery_artifacts(pipeline_path, project_root)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "pipeline_recovery_manifest_failed", file=pipeline_path.name, error=str(exc)
             )

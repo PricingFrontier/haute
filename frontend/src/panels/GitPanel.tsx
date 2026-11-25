@@ -79,7 +79,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
   const branchKey = viewBranch ?? workingBranch
 
   useEffect(() => {
-    loadStatus()
+    void loadStatus()
   }, [loadStatus])
 
   return (
@@ -471,7 +471,7 @@ function GitPanelBranchScope({
         <Tooltip label="Refresh version history" side="bottom">
           <button
             data-testid="git-panel-refresh"
-            onClick={refresh}
+            onClick={() => void refresh()}
             disabled={loading}
             className="p-1 rounded shrink-0 transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
             style={{ color: "var(--text-muted)" }}

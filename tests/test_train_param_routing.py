@@ -443,7 +443,7 @@ class TestExportedScriptEquivalence:
             frequency_data,
         )
         namespace: dict[str, Any] = {"__name__": "haute_exported_script"}
-        exec(compile(script, "<exported_script>", "exec"), namespace)  # noqa: S102
+        exec(compile(script, "<exported_script>", "exec"), namespace)
         script_result = namespace["job"].run()
         script_coefs = {
             row["feature"]: row["coefficient"] for row in script_result.glm_coefficients

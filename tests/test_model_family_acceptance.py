@@ -811,7 +811,7 @@ def test_the_exported_training_script_trains_the_same_model(tmp_path: Path, fami
 
     namespace = {"__name__": "exported_training_script"}
     script = generate_training_script(config(tmp_path / "script"), str(data_path))
-    exec(compile(script, "<exported_training_script>", "exec"), namespace)  # noqa: S102
+    exec(compile(script, "<exported_training_script>", "exec"), namespace)
     exported = namespace["job"].run()
     direct = TrainingJob(
         **build_training_job_kwargs(config(tmp_path / "direct"), data=str(data_path))

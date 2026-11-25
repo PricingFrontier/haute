@@ -129,7 +129,7 @@ def _parse_http_uri(value: str, *, source: str) -> SplitResult:
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         raise MlflowConfigError(f"{source} must be an http(s):// URL with a host.")
     try:
-        parts.port  # noqa: B018 — SplitResult.port raises on out-of-range/non-numeric ports
+        parts.port  # SplitResult.port raises on out-of-range/non-numeric ports
     except ValueError as exc:
         raise MlflowConfigError(f"{source} has an invalid port.") from exc
     return parts

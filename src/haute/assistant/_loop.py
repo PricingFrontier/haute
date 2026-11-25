@@ -989,7 +989,7 @@ async def _aclose_quietly(stream: object) -> None:
         return
     try:
         await close()
-    except Exception:  # noqa: BLE001 - cleanup must not mask the turn's outcome
+    except Exception:  # cleanup must not mask the turn's outcome
         logger.error("assistant_provider_stream_close_failed", exc_info=True)
 
 
@@ -1039,7 +1039,7 @@ class _RunningTool:
             return await self._task
         except asyncio.CancelledError:
             return _TOOL_INTERRUPTED_RESULT
-        except Exception:  # noqa: BLE001 - interruption outcome must remain sanitized
+        except Exception:  # interruption outcome must remain sanitized
             logger.error(
                 "assistant_interrupted_tool_failed",
                 tool_name=self._request.name,

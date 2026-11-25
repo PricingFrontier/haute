@@ -421,7 +421,7 @@ async def test_cancelled_thread_retains_one_slot_until_cleanup(
     assert limiter_wait_ms >= 40
     assert post_release_ms < 250
     assert bookkeeping_tail_ms < 100
-    assert limiter._value == 1  # noqa: SLF001 - certificate proves the owned permit converges
+    assert limiter._value == 1  # certificate proves the owned permit converges
 
     _record_perf_evidence(
         request,

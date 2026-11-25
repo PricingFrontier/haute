@@ -62,7 +62,7 @@ def _job_store_without_cleanup_threads(**kwargs) -> JobStore:
 
 def _stored_job(store: JobStore, job_id: str) -> dict[str, Any]:
     """Inspect backing state only in tests of private cleanup/timer mechanics."""
-    return store._jobs[job_id]  # noqa: SLF001
+    return store._jobs[job_id]
 
 
 def _create_job(store: JobStore, initial: dict[str, Any]) -> str:
@@ -165,7 +165,7 @@ class TestJobStoreCRUD:
         job_id = store.create_job(cast(RunningJobFields, {"status": running_status}))
 
         assert store.require_job(job_id)["status"] == "running"
-        assert job_id in store._running_activity_at  # noqa: SLF001
+        assert job_id in store._running_activity_at
 
     @pytest.mark.parametrize("created_at", [True, -1, float("nan"), float("inf"), "1"])
     def test_create_job_rejects_invalid_created_at(self, created_at: object) -> None:
@@ -214,7 +214,7 @@ class TestJobStoreCRUD:
         assert first == second
         assert first == dict(first)
         with pytest.raises(FrozenInstanceError):
-            first._record = {}  # type: ignore[misc]  # noqa: SLF001
+            first._record = {}  # type: ignore[misc]
 
     def test_create_and_update_take_ownership_of_nested_builtin_values(self) -> None:
         store = JobStore()
@@ -277,7 +277,7 @@ class TestJobStoreCRUD:
     def test_read_fails_loudly_for_corrupt_backing_status(self) -> None:
         store = JobStore()
         job_id = _create_job(store, {"status": "running"})
-        store._jobs[job_id] = {**store._jobs[job_id], "status": "unknown"}  # noqa: SLF001
+        store._jobs[job_id] = {**store._jobs[job_id], "status": "unknown"}
 
         with pytest.raises(ValueError, match="invalid status"):
             store.get_job(job_id)
@@ -293,7 +293,7 @@ class TestJobStoreCRUD:
     ) -> None:
         store = JobStore()
         job_id = _create_job(store, {"status": "running"})
-        store._jobs[job_id] = {  # noqa: SLF001 - corrupt-record boundary witness
+        store._jobs[job_id] = {  # corrupt-record boundary witness
             "status": status,
             "terminal_reason": terminal_reason,
             "created_at": time.time(),
@@ -309,7 +309,7 @@ class TestJobStoreCRUD:
         status = "".join(["err", "or"])
         terminal_reason = "".join(["er", "ror"])
         assert status == terminal_reason and status is not terminal_reason
-        store._jobs[job_id] = {  # noqa: SLF001 - restored-record boundary witness
+        store._jobs[job_id] = {  # restored-record boundary witness
             "status": status,
             "terminal_reason": terminal_reason,
             "created_at": time.time(),
@@ -322,7 +322,7 @@ class TestJobStoreCRUD:
         store = JobStore()
         job_id = _create_job(store, {"status": "running"})
         completed_status = "".join(["com", "pleted"])
-        store._jobs[job_id] = {  # noqa: SLF001 - corrupt-record boundary witness
+        store._jobs[job_id] = {  # corrupt-record boundary witness
             "status": completed_status,
             "terminal_reason": completed_status,
             "created_at": time.time(),
@@ -365,7 +365,7 @@ class TestJobStoreCRUD:
     def test_zero_ttl_is_valid(self) -> None:
         store = _job_store_without_cleanup_threads(ttl_seconds=0)
 
-        assert store._ttl_seconds == 0  # noqa: SLF001
+        assert store._ttl_seconds == 0
 
     def test_clear_all_removes_orphaned_auxiliary_state(self) -> None:
         timers: list[object] = []
@@ -374,15 +374,15 @@ class TestJobStoreCRUD:
         live_id = _create_job(store, {"status": "running"})
         job_id = _create_job(store, {"status": "running"})
         orphan_timer = timer_type(10.0, lambda: None)
-        with store._write_lock:  # noqa: SLF001 - deliberate orphan-state regression
-            store._jobs.pop(job_id)  # noqa: SLF001
-            store._heavy_object_timers[job_id] = orphan_timer  # noqa: SLF001
+        with store._write_lock:  # deliberate orphan-state regression
+            store._jobs.pop(job_id)
+            store._heavy_object_timers[job_id] = orphan_timer
 
         store.clear_all()
 
         assert live_id not in store.list_jobs()
-        assert store._running_activity_at == {}  # noqa: SLF001
-        assert store._heavy_object_timers == {}  # noqa: SLF001
+        assert store._running_activity_at == {}
+        assert store._heavy_object_timers == {}
         assert orphan_timer.cancelled is True
 
 
@@ -441,13 +441,13 @@ class TestJobStoreTTL:
     ) -> None:
         store = JobStore(ttl_seconds=10)
         job_id = "job-id"
-        store._running_activity_at[job_id] = 20.0  # noqa: SLF001
+        store._running_activity_at[job_id] = 20.0
         job: dict[str, Any] = {"status": status, "created_at": 10.0}
 
-        timestamp = store._job_eviction_timestamp_locked(job_id, job)  # noqa: SLF001
+        timestamp = store._job_eviction_timestamp_locked(job_id, job)
 
         assert timestamp == expected_timestamp
-        assert (job_id in store._running_activity_at) is keeps_activity  # noqa: SLF001
+        assert (job_id in store._running_activity_at) is keeps_activity
 
     def test_mixed_stale_and_fresh(self) -> None:
         store = JobStore(ttl_seconds=5)
@@ -585,8 +585,8 @@ class TestJobStoreTTL:
         def nested_predicate(_job: dict[str, Any]) -> bool:
             # Deliberate white-box ageing while the predicate already holds the
             # store lock; public snapshots must not permit this mutation.
-            store._jobs[stale_id] = {  # noqa: SLF001
-                **store._jobs[stale_id],  # noqa: SLF001
+            store._jobs[stale_id] = {
+                **store._jobs[stale_id],
                 "created_at": time.time() - 10,
             }
             assert store.get_job(stale_id) is None
@@ -777,7 +777,7 @@ class TestJobStoreTTL:
         )
 
         with patch("haute.routes._job_store.logger.warning") as log_warning:
-            JobStore()._cleanup_artifact_handles("job-id", handles)  # noqa: SLF001
+            JobStore()._cleanup_artifact_handles("job-id", handles)
 
         log_warning.assert_called_once()
         assert cleaned == ["later-result"]
@@ -1070,7 +1070,7 @@ class TestJobStoreConcurrency:
                         required_keys=("solver", "quote_grid"),
                         expected_status="completed",
                     )
-                except BaseException as exc:  # noqa: BLE001 - report thread failures
+                except BaseException as exc:  # report thread failures
                     errors.append(exc)
 
             def evictor() -> None:
@@ -1078,7 +1078,7 @@ class TestJobStoreConcurrency:
                     barrier.wait()
                     store._clear_expired_heavy_objects(job_id=None, timer=None)
                     results["evict"] = "done"
-                except BaseException as exc:  # noqa: BLE001 - report thread failures
+                except BaseException as exc:  # report thread failures
                     errors.append(exc)
 
             threads = [
@@ -1161,7 +1161,7 @@ class TestJobStoreConcurrency:
                         losers.append(idx)
                     else:
                         winners.append((idx, outcome))
-            except BaseException as exc:  # noqa: BLE001 — record any exception
+            except BaseException as exc:  # record any exception
                 with lock:
                     errors.append(exc)
 
@@ -1930,12 +1930,12 @@ class TestHeavyObjectLifecyclePolicy:
         store = JobStore(heavy_object_timer_factory=timer_type)
         job_id = _create_job(store, {"status": "cancelled"})
         orphan_timer = timer_type(10.0, lambda: None)
-        store._heavy_object_timers[job_id] = orphan_timer  # noqa: SLF001
+        store._heavy_object_timers[job_id] = orphan_timer
 
         store.atomic_update(job_id, {"detail": "still cancelled"})
 
         assert orphan_timer.cancelled is True
-        assert job_id not in store._heavy_object_timers  # noqa: SLF001
+        assert job_id not in store._heavy_object_timers
 
     def test_generic_status_change_is_rejected_without_affecting_cleanup_timer(self) -> None:
         timers: list[object] = []
@@ -3765,7 +3765,7 @@ class TestScheduleHeavyObjectCleanupRaces:
         store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=1)
         job_id = "terminal-job"
         timer = object()
-        store._jobs[job_id] = {  # noqa: SLF001 - timer race state witness
+        store._jobs[job_id] = {  # timer race state witness
             "status": status,
             "terminal_reason": status,
             "created_at": 90.0,
@@ -3773,7 +3773,7 @@ class TestScheduleHeavyObjectCleanupRaces:
             "heavy_objects_expires_at": 100.0,
             "solver": object(),
         }
-        store._heavy_object_timers[job_id] = timer  # noqa: SLF001
+        store._heavy_object_timers[job_id] = timer
 
         with patch("haute.routes._job_store.time.time", return_value=101.0):
             store._clear_expired_heavy_objects(job_id=job_id, timer=timer)

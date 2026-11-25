@@ -613,7 +613,7 @@ def test_polars_agrees_which_registered_operations_are_row_separable() -> None:
             OperationClass.ROW_EXPANDING,
         ):
             continue
-        expression = eval(sample_expression(*key), {"pl": pl})  # noqa: S307 - test data
+        expression = eval(sample_expression(*key), {"pl": pl})  # test data
         try:
             separable = expression.meta.is_row_separable()
         except pl.exceptions.ColumnNotFoundError:

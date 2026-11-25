@@ -47,7 +47,7 @@ NOT_EXPRESSIBLE: dict[str, str] = {
 def _expected(code: str, inputs: dict[str, pl.LazyFrame]) -> tuple[pl.DataFrame | None, str | None]:
     try:
         return run(code, inputs), None
-    except Exception as exc:  # noqa: BLE001 - the snippet's own failure is the expectation
+    except Exception as exc:  # the snippet's own failure is the expectation
         return None, type(exc).__name__
 
 
@@ -102,7 +102,7 @@ def test_steps_reproduce_hand_written_polars(snippet_id: str, hard: bool) -> Non
     rendered = render_polars_steps(entry["steps"], list(bound), start="input")
     try:
         actual = run(rendered.code, bound)
-    except Exception as exc:  # noqa: BLE001 - compared against the snippet's own failure
+    except Exception as exc:  # compared against the snippet's own failure
         assert expected_error is not None, f"steps raised {type(exc).__name__}: {exc}"
         assert type(exc).__name__ == expected_error, (
             f"{type(exc).__name__} != {expected_error}: {exc}"

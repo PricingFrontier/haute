@@ -3477,6 +3477,30 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(await screen.findByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
   })
 
+  it.each([
+    ["Save", "toolbar-save"],
+    ["Commit", "toolbar-save-commit"],
+  ])("%s whose form save fails says so and saves no pipeline", async (_press, testId) => {
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
+    render(<App />)
+    await waitForAppReady()
+    await within(screen.getByTestId("pipeline-view")).findByRole("group", { name: "Views" })
+    // A step of the save with no failure of its own to say: the form store's chunk did
+    // not load, or its flush threw.
+    const flush = vi.spyOn(useWorkbenchFormStore.getState(), "flush")
+      .mockRejectedValue(new Error("Failed to fetch dynamically imported module"))
+
+    fireEvent.click(screen.getByTestId(testId))
+
+    await waitFor(() => expect(useToastStore.getState().toasts).toContainEqual(
+      expect.objectContaining({ type: "error", text: "Save failed: Failed to fetch dynamically imported module" }),
+    ))
+    expect(flush).toHaveBeenCalled()
+    expect(api.savePipeline).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("milestone-commit-modal")).toBeNull()
+    flush.mockRestore()
+  })
+
   it("Commit in the workbench's toolbar saves the form's edits, fetches the tables afresh and removes a connection to one the form no longer has, then saves the pipeline and opens the milestone modal", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()

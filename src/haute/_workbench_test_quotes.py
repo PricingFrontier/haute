@@ -401,7 +401,7 @@ def check_test_quote(release: ResolvedRelease, quote: TestQuoteFile) -> Checked:
     try:
         answer = price_request(release, quote.input)
     # A pipeline's own code can raise anything on a request: the quote fails, saying why.
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         return Checked(quote.name, quote.file, "failed", why=_said(error))
     fields = _fields(release.form)
     compared = compare_quote(
