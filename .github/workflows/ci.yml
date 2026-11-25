@@ -672,7 +672,7 @@ jobs:
           tests/test_ebm_family.py
           -q
 
-      - name: Cross-platform path, process isolation, spill, cache, git transport, letter case, the tests only Windows runs, and debt smoke
+      - name: Cross-platform path, process isolation, spill, cache, git transport, letter case, and debt smoke
         run: >
           uv run pytest
           tests/test_path_resolution.py
@@ -694,10 +694,18 @@ jobs:
           tests/test_json_runtime_storage.py
           tests/test_git_remote_transport.py
           tests/test_git_letter_case.py
-          tests/test_git_working_tree.py
-          tests/test_git_operations.py
-          tests/test_path_traversal_advanced.py
           -q
+
+      # The tests skipped on every system but Windows that sit in modules no step above
+      # runs, each named, so the log shows it ran (tests/test_test_debt.py holds every
+      # such test named by this job).
+      - name: Tests only Windows runs
+        run: >
+          uv run pytest
+          tests/test_git_working_tree.py::TestTreeFence::test_a_file_held_open_on_windows_refuses_the_switch
+          tests/test_git_operations.py::test_a_catch_up_over_a_file_held_open_on_windows_changes_nothing_until_it_closes
+          tests/test_path_traversal_advanced.py::TestWindowsMixedSeparatorTraversal::test_unc_path_bypasses_validation
+          -v
 
   # The documentation site builds strictly on every pull request, not only when a
   # merge to main deploys it (docs.yml), so a broken nav entry or dead link is red

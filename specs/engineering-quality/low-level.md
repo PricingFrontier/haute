@@ -663,9 +663,11 @@
 - `tests/test_test_debt.py` — AST debt scanner budgets and explicit-reason
   contracts for backend/frontend skip/xfail/fixme markers, plus the zero
   backend-flaky budget, the Playwright retry budget, exact regeneration of
-  `tests/test-health-summary.md`, and every module holding a test skipped off
-  Windows (a skip whose condition, judged with only the platform known, holds on
-  Linux and not on Windows) named by the platform smoke job's Windows leg.
+  `tests/test-health-summary.md`, and every test skipped off Windows (a skip whose
+  condition, judged with only the platform known, holds on Linux and not on
+  Windows, placed at the class or test it marks) run by the platform smoke job's
+  Windows leg: a step that runs there, judged by its `runner.os` condition, names
+  its module, its class or the test.
 - `tests/test_workflow_coverage.py` — workflow coverage ledger validator: the
   real ledger is valid and complete, plus malformed cases (duplicate ids,
   unknown component, missing owning package, each covered-state omission and

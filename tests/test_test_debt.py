@@ -957,12 +957,14 @@ def test_frontend_scanner_ignores_chained_debt_in_comments_and_strings() -> None
 # ---------------------------------------------------------------------------
 
 # The jobs that run the whole suite are on Linux; the platform smoke job's Windows leg
-# runs the modules it names.
+# runs the modules and the tests its steps name.
 _WINDOWS_JOB = "platform-smoke"
 _CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _LINUX = {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(name="posix")}
 _WINDOWS = {"sys": SimpleNamespace(platform="win32"), "os": SimpleNamespace(name="nt")}
 _PLATFORM_SYSTEM = {"linux": "Linux", "win32": "Windows"}
+# A module, or a test or class in one, as pytest names it on its command line.
+_SELECTION = re.compile(r"tests/[\w/]+\.py(?:::\w+)*")
 
 
 def _holds_off_windows_only(condition: ast.expr) -> bool:
@@ -982,38 +984,79 @@ def _holds_off_windows_only(condition: ast.expr) -> bool:
         return False
 
 
-def _skip_conditions(tree: ast.AST) -> Iterable[ast.expr]:
-    """The condition of each ``skipif`` mark (one written as a string, as pytest evaluates
-    it), and of each ``if`` whose body skips."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("mark.skipif"):
-            condition = node.args[0] if node.args else _keyword_value(node, "condition")
-            if isinstance(condition, ast.Constant) and isinstance(condition.value, str):
-                yield ast.parse(condition.value.strip(), mode="eval").body
-            elif condition is not None:
-                yield condition
-        elif isinstance(node, ast.If) and any(
-            isinstance(call, ast.Call) and ast.unparse(call.func) == "pytest.skip"
-            for statement in node.body
-            for call in ast.walk(statement)
-        ):
-            yield node.test
-
-
 def _keyword_value(call: ast.Call, name: str) -> ast.expr | None:
     return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
 
 
-def _modules_skipped_off_windows(modules: Iterable[tuple[str, str]]) -> set[str]:
-    """Of *modules* (path, source), those holding a test skipped on every system but
-    Windows."""
-    return {
-        path
-        for path, source in modules
+def _skipif_condition(node: ast.AST) -> ast.expr | None:
+    """A ``skipif`` mark's condition (one written as a string, as pytest evaluates it)."""
+    if not (isinstance(node, ast.Call) and ast.unparse(node.func).endswith("mark.skipif")):
+        return None
+    condition = node.args[0] if node.args else _keyword_value(node, "condition")
+    if isinstance(condition, ast.Constant) and isinstance(condition.value, str):
+        return ast.parse(condition.value.strip(), mode="eval").body
+    return condition
+
+
+class _SkipScopes(ast.NodeVisitor):
+    """Each skip's condition, with the class and test it skips: a mark on a definition
+    skips that definition, a mark or a skip inside one skips what holds it, and a mark
+    made at module level (``pytestmark``, or a mark bound to a name) the whole module."""
+
+    def __init__(self) -> None:
+        self.scope: list[str] = []
+        self.found: list[tuple[tuple[str, ...], ast.expr]] = []
+
+    def _definition(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.scope.append(node.name)
+        for child in (*node.decorator_list, *node.body):
+            self.visit(child)
+        self.scope.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._definition(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._definition(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._definition(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        condition = _skipif_condition(node)
+        if condition is not None:
+            self.found.append((tuple(self.scope), condition))
+        self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> None:
         if any(
-            _holds_off_windows_only(condition) for condition in _skip_conditions(ast.parse(source))
+            isinstance(call, ast.Call) and ast.unparse(call.func) == "pytest.skip"
+            for statement in node.body
+            for call in ast.walk(statement)
+        ):
+            self.found.append((tuple(self.scope), node.test))
+        self.generic_visit(node)
+
+
+def _skipped_off_windows(modules: Iterable[tuple[str, str]]) -> set[str]:
+    """Of *modules* (path, source), the tests skipped on every system but Windows, as
+    pytest names them: ``path::Class::test``, or the module's path when all of it is."""
+    skipped: set[str] = set()
+    for path, source in modules:
+        scopes = _SkipScopes()
+        scopes.visit(ast.parse(source))
+        skipped.update(
+            "::".join((path, *scope))
+            for scope, condition in scopes.found
+            if _holds_off_windows_only(condition)
         )
-    }
+    return skipped
+
+
+def _selected(test: str, selection: Iterable[str]) -> bool:
+    """Whether a command line naming *selection* runs *test*: its module, its class or
+    itself is named."""
+    return any(test == named or test.startswith(f"{named}::") for named in selection)
 
 
 _RUNNER_OS_CONDITION = re.compile(r"""^\s*runner\.os\s*(==|!=)\s*(['"])(\w+)\2\s*$""")
@@ -1035,37 +1078,39 @@ def _runs_on_windows(step: dict[str, Any]) -> bool:
     return (system.casefold() == "windows") == (operator == "==")
 
 
-def _windows_job_modules(workflow: dict[str, Any]) -> set[str]:
-    """The test modules the Windows leg of *workflow*'s platform job runs: those named
-    by its steps that run there."""
+def _windows_job_selection(workflow: dict[str, Any]) -> set[str]:
+    """The modules and tests the Windows leg of *workflow*'s platform job runs: those
+    named by its steps that run there."""
     job = workflow["jobs"][_WINDOWS_JOB]
     assert "windows-latest" in job["strategy"]["matrix"]["os"]
     return {
-        module
+        named
         for step in job["steps"]
         if _runs_on_windows(step)
-        for module in re.findall(r"tests/[\w/]+\.py", str(step.get("run", "")))
+        for named in _SELECTION.findall(str(step.get("run", "")))
     }
 
 
 @pytest.mark.meta
-def test_every_test_skipped_off_windows_is_in_a_module_the_windows_job_runs() -> None:
-    """A test only Windows runs, in a module the Windows job leaves out, runs in no job."""
+def test_every_test_skipped_off_windows_is_run_by_the_windows_job() -> None:
+    """A test only Windows runs, which the Windows job does not name, runs in no job."""
+    import yaml
+
     modules = (
         (path.relative_to(REPO_ROOT).as_posix(), path.read_text(encoding="utf-8"))
         for path in source_files(TESTS_DIR)
     )
-    import yaml
-
-    workflow = yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))
-    left_out = _modules_skipped_off_windows(modules) - _windows_job_modules(workflow)
+    selection = _windows_job_selection(yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8")))
+    left_out = sorted(
+        test for test in _skipped_off_windows(modules) if not _selected(test, selection)
+    )
     assert not left_out, (
-        f"Add these modules to the {_WINDOWS_JOB} job's pytest list in "
-        f".github/workflows/ci.yml: {sorted(left_out)}"
+        f"Name these tests, or their modules, in the {_WINDOWS_JOB} job's steps in "
+        f".github/workflows/ci.yml: {left_out}"
     )
 
 
-def test_a_skip_off_windows_is_told_from_any_other() -> None:
+def test_a_skip_off_windows_is_told_from_any_other_and_placed() -> None:
     probe = textwrap.dedent(
         """
         import os, sys, pytest
@@ -1073,13 +1118,21 @@ def test_a_skip_off_windows_is_told_from_any_other() -> None:
         @pytest.mark.skipif(sys.platform != "win32", reason="Windows locks")
         def test_a(): ...
 
-        @pytest.mark.skipif("sys.platform != 'win32'", reason="written as pytest reads it")
-        def test_a2(): ...
+        class TestHeld:
+            @pytest.mark.skipif("sys.platform != 'win32'", reason="as pytest reads it")
+            def test_a2(self): ...
 
-        def test_b():
-            if os.name != "nt":
-                pytest.skip("Windows paths")
+            def test_b(self):
+                if os.name != "nt":
+                    pytest.skip("Windows paths")
+
+        @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows")
+        class TestWindows:
+            def test_c(self): ...
         """
+    )
+    whole = (
+        'import sys, pytest\npytestmark = pytest.mark.skipif(sys.platform != "win32", reason="x")\n'
     )
     others = textwrap.dedent(
         """
@@ -1093,13 +1146,15 @@ def test_a_skip_off_windows_is_told_from_any_other() -> None:
         """
     )
 
-    assert _modules_skipped_off_windows([("tests/a.py", probe), ("tests/o.py", others)]) == {
-        "tests/a.py"
+    assert _skipped_off_windows(
+        [("tests/a.py", probe), ("tests/w.py", whole), ("tests/o.py", others)]
+    ) == {
+        "tests/a.py::test_a",
+        "tests/a.py::TestHeld::test_a2",
+        "tests/a.py::TestHeld::test_b",
+        "tests/a.py::TestWindows",
+        "tests/w.py",
     }
-    string_form = (
-        'import pytest\n@pytest.mark.skipif("os.name != \'nt\'", reason="x")\ndef test(): ...\n'
-    )
-    assert _modules_skipped_off_windows([("tests/s.py", string_form)]) == {"tests/s.py"}
     for spelling in (
         'not sys.platform.startswith("win")',
         'platform.system() != "Windows"',
@@ -1108,24 +1163,40 @@ def test_a_skip_off_windows_is_told_from_any_other() -> None:
         assert _holds_off_windows_only(ast.parse(spelling, mode="eval").body), spelling
 
 
+def test_a_test_is_run_when_its_module_its_class_or_itself_is_named() -> None:
+    named = {"tests/a.py", "tests/b.py::TestHeld", "tests/c.py::test_one"}
+
+    assert _selected("tests/a.py::TestX::test", named)
+    assert _selected("tests/b.py::TestHeld::test_b", named)
+    assert _selected("tests/c.py::test_one", named)
+    assert not _selected("tests/b.py::TestOther::test", named)
+    assert not _selected("tests/c.py::test_one_more", named)
+    assert not _selected("tests/d.py", named)
+
+
 def test_the_windows_job_runs_only_the_steps_its_windows_leg_runs() -> None:
     def workflow(*steps: dict[str, str]) -> dict[str, Any]:
         job = {"strategy": {"matrix": {"os": ["windows-latest"]}}, "steps": list(steps)}
         return {"jobs": {_WINDOWS_JOB: job}}
 
     steps = (
-        {"run": "uv run pytest tests/a.py -q"},
+        {"run": "uv run pytest tests/a.py tests/h.py::TestHeld::test_b -q"},
         {"if": "runner.os != 'Windows'", "run": "uv run pytest tests/b.py"},
         {"if": "runner.os == 'Windows'", "run": "uv run pytest tests/c.py"},
         {"if": 'runner.os == "macOS"', "run": "uv run pytest tests/d.py"},
         {"if": "runner.os != 'windows'", "run": "uv run pytest tests/f.py"},
         {"if": "runner.os == 'WINDOWS'", "run": "uv run pytest tests/g.py"},
     )
-    assert _windows_job_modules(workflow(*steps)) == {"tests/a.py", "tests/c.py", "tests/g.py"}
+    assert _windows_job_selection(workflow(*steps)) == {
+        "tests/a.py",
+        "tests/h.py::TestHeld::test_b",
+        "tests/c.py",
+        "tests/g.py",
+    }
 
     unjudged = {"name": "Matrix", "if": "matrix.os == 'windows-latest'", "run": "tests/e.py"}
     with pytest.raises(AssertionError, match="cannot judge"):
-        _windows_job_modules(workflow(unjudged))
+        _windows_job_selection(workflow(unjudged))
 
 
 def _main(argv: list[str] | None = None) -> int:
