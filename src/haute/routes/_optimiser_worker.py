@@ -47,7 +47,7 @@ from haute._execution_admission import (
     create_isolated_execution_context,
 )
 from haute._execution_context import ExecutionContext, ExecutionMemoryLimitExceededError
-from haute._failure_answers import AnsweredFailureError, FailureAnswer, answer_failure
+from haute._failure_answers import AnsweredFailureError, FailureAnswer, answer_pipeline_failure
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
 from haute._seed_plans import SeedPlanHandoff
@@ -274,10 +274,12 @@ def classify_optimiser_failure(
     message naming *operation_noun*; a refusal is ``contract_error`` for a
     4xx and ``error`` otherwise; a public contract error keeps its own
     reason; a pipeline that cannot run bounded is a 422 ``contract_error``.
-    Anything else is put into words by :func:`haute._failure_answers.answer_failure`:
-    a node's own failure naming its node, and anything unnamed an incident whose record,
-    logged as for *log_event*, holds the cause. A replayed child failure is already
-    classified.
+    Anything else is put into words by
+    :func:`haute._failure_answers.answer_pipeline_failure`, since setup and auto-range both
+    run the pipeline: its own contracts and data (a Polars error among them) as a preview of
+    the node says them, a node's own failure naming its node, and anything unnamed an
+    incident whose record, logged as for *log_event*, holds the cause. A replayed child
+    failure is already classified.
     Stops and cancellations are the caller's, never a failure.
     """
     from haute.errors import BoundedMemoryUnsupportedError
@@ -324,9 +326,10 @@ def classify_optimiser_failure(
             message=detail,
             fields={"http_status_code": 422, "error_detail": detail},
         )
-    # A node's own failure naming its node, a file the operating system refused, or an
-    # incident whose record holds the exception (haute._failure_answers).
-    return _answered_failure(answer_failure(exc, operation=log_event))
+    # The pipeline's own contracts and data, a node's own failure naming its node, a file the
+    # operating system refused, or an incident whose record holds the exception
+    # (haute._failure_answers).
+    return _answered_failure(answer_pipeline_failure(exc, operation=log_event))
 
 
 def _answered_failure(answer: FailureAnswer) -> OptimiserWorkerFailure:

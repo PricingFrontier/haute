@@ -19,6 +19,7 @@ from haute.modelling._descriptors import (
     TRAINING_THREADS_ENV,
     AlgorithmDescriptor,
     NativeLoss,
+    TrainingMemoryProfile,
     algorithm_descriptor,
     capability_fixture,
     project_refit_params,
@@ -52,6 +53,9 @@ def catboost_config(**overrides: object) -> dict[str, object]:
     return config
 
 
+_PROFILE = TrainingMemoryProfile(fixed_bytes=1024**2, width_factor_basis_points=100)
+
+
 def test_every_registered_algorithm_has_a_descriptor_and_suffix() -> None:
     assert set(DESCRIPTORS) == set(ALGORITHM_REGISTRY)
     assert dict(MODEL_FILE_SUFFIXES) == {key: d.suffix for key, d in DESCRIPTORS.items()}
@@ -78,6 +82,7 @@ def test_descriptor_without_a_suffix_fails_at_registration() -> None:
             suffix="",
             engine_module="none",
             importance_method="Gain",
+            training_memory=_PROFILE,
         )
 
 
@@ -247,6 +252,7 @@ def test_allowlisted_family_rejects_reserved_alias_duplicate_and_unknown_keys() 
         suffix=".demo",
         engine_module="demo",
         importance_method="Gain",
+        training_memory=_PROFILE,
     )
     family.validate_params({"eta": 0.1, "depth": 3})
     with pytest.raises(TrainingConfigError, match="cannot set 'seed'"):

@@ -798,8 +798,10 @@ test as expected failures naming the package, so its delivery turns them green.
   parquet footer metadata (row/column counts, per-column uncompressed size) is
   immediate when a valid local Parquet source or a published API Input table exists, at the
   cost of being an estimate rather than an exact
-  measurement — hence a 3× empirical overhead multiplier and a configurable safety
-  factor rather than a computed exact figure.
+  measurement — hence measured overheads on the estimated row width (a materialisation
+  boundary's 3× and its operator's certified factor; a training job's model-family profile,
+  a fixed part plus a factor, [modelling](../modelling/low-level.md)) and a configurable
+  safety factor rather than a computed exact figure.
 - **Operational evidence is deterministic and bounded.** Execution contexts record
   cancellation latency from the first request, and release cleanup callbacks in
   reverse order plus admission exactly once. Production code carries no

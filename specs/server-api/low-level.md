@@ -550,7 +550,8 @@ never automatically replayed after transport failure.
 `POST /api/assistant/changes/undo` accepts exactly `session_id`, `change_id` and
 `source_file`, reserves the session like a message, and saves the change's parent
 commit forward under `save_lock` through `SavePipelineService`; it is refused with 409
-unless the document revision is still the change's.
+unless the document revision is still the change's. It answers `AssistantUndoResponse`,
+the undo save's `SaveCapture` fields with `change_id` and `build_plan`.
 
 `POST /api/assistant/message` accepts exactly `session_id` and `message`; the
 request is closed to unknown fields. There is no graph-plan confirmation

@@ -49,6 +49,7 @@ from haute.assistant._data_check import (
 )
 from haute.assistant._ops import SemanticChanges, SemanticDiff
 from haute.graph_utils import flatten_graph
+from tests._assistant_tool_helpers import TURN_EGRESS
 from tests._project import use_project
 from tests.conftest import build_test_input_snapshot, make_file_input_config
 
@@ -2111,6 +2112,7 @@ async def test_a_stopped_turn_cancels_its_check_and_keeps_the_dry_run(
             session.id,
             "add a slow node",
             provider=OneDryRun(),  # type: ignore[arg-type]
+            egress=TURN_EGRESS,
             tools=[],
             execute_tool=build_tool_executor("main.py", session_id=session.id),
             system_prompt="s",

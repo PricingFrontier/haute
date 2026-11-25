@@ -428,7 +428,8 @@ _NOT_DRIVEN: dict[str, str] = {
         "reads Float32 extrema and sums, a contiguity flag, hashes and quote ids cast to text"
     ),
     "src/haute/routes/_optimiser_input.py": (
-        "reads validation counts, the largest scenario index and quote ids cast to text"
+        "reads validation counts, the largest scenario index, quote ids cast to text and "
+        "the scenario grid's Float32 values with their integer steps"
     ),
     "src/haute/routes/_optimiser_frontier.py": _COUNTS,
     "src/haute/routes/_frontier_point_summary.py": "reads price-contour's frontier points, numbers",
@@ -586,6 +587,8 @@ _READING_CALLS: dict[str, dict[str, int]] = {
         "estimate_input_metrics:row": 1,
         "forecast_solve_memory_from_input:item": 1,
         "quote_layout_fault:item": 2,
+        "scenario_grid_fault:row": 1,
+        "scenario_grid_fault:to_list": 1,
         "scenario_step_count:item": 1,
         "validate_input_value_contracts:item": 1,
     },

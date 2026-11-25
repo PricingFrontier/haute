@@ -1033,12 +1033,14 @@ class TestSolveWithHistory:
         status = _poll_until_done(client, job_id)
         assert status["status"] == "completed"
         result = status["result"]
-        assert "history" in result
-        history = result["history"]
-        assert isinstance(history, list)
-        assert len(history) > 0
-        first = history[0]
-        assert "iteration" in first
+        # One constraint bisects its λ (price-contour 0.11.0): its probes are the history.
+        assert result["history"] is None
+        probes = result["bisection_history"]
+        assert isinstance(probes, list)
+        assert len(probes) == result["iterations"]
+        first = probes[0]
+        assert first["step"] == 0
+        assert first["lambdas"] == {"volume": 0.0}
         assert "total_objective" in first
 
 

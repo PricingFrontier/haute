@@ -364,6 +364,55 @@ class TestEgressPolicy:
             resolve_assistant_config()
 
 
+class TestPolicyComparison:
+    """AST-04: which settings a later policy narrows, and the policy's stored record."""
+
+    @staticmethod
+    def _policy(**overrides: object) -> _config.EgressPolicy:
+        fields: dict[str, object] = {
+            "trust": "organization",
+            "max_sensitivity": "internal",
+            "allow_project_knowledge": False,
+            "allow_executable_source": False,
+            "allow_row_samples": False,
+            "allow_aggregate_statistics": False,
+            **overrides,
+        }
+        return _config.EgressPolicy(**fields)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("earlier", "narrowed"),
+        [
+            ({"trust": "local"}, ("trust",)),
+            ({"max_sensitivity": "restricted"}, ("max_sensitivity",)),
+            ({"allow_project_knowledge": True}, ("allow_project_knowledge",)),
+            ({"allow_executable_source": True}, ("allow_executable_source",)),
+            ({"allow_row_samples": True}, ("allow_row_samples",)),
+            ({"allow_aggregate_statistics": True}, ("allow_aggregate_statistics",)),
+            ({"trust": "external", "max_sensitivity": "public"}, ()),
+            ({}, ()),
+        ],
+    )
+    def test_a_policy_names_each_setting_it_narrows(
+        self, earlier: dict[str, object], narrowed: tuple[str, ...]
+    ):
+        assert self._policy().narrower_than(self._policy(**earlier)) == narrowed
+
+    def test_the_record_reads_back_and_refuses_any_other_shape(self):
+        policy = self._policy(trust="local", allow_row_samples=True)
+        record = policy.as_record()
+
+        assert _config.EgressPolicy.from_record(record) == policy
+        for broken in (
+            {**record, "extra": True},
+            {key: value for key, value in record.items() if key != "trust"},
+            {**record, "trust": "anyone"},
+            {**record, "allow_row_samples": "yes"},
+        ):
+            with pytest.raises(ValueError):
+                _config.EgressPolicy.from_record(broken)
+
+
 class TestDatabricksConfiguration:
     def test_project_dotenv_uses_the_shared_databricks_variables(self, project_root: Path):
         from haute.deploy._config import _load_env

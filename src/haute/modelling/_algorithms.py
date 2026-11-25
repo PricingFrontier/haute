@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute._frame_bytes import frame_bytes
 from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_dtypes import is_string_or_categorical
@@ -272,7 +273,7 @@ def _build_pool(
     tag = f"_build_pool({n_rows:,} rows)"
     _mem_checkpoint(f"{tag} start")
     # What each release below frees is at most the frame's own size.
-    freed_bytes = df.estimated_size()
+    freed_bytes = frame_bytes(df)
 
     from haute._mlflow_io import _prepare_predict_frame
 

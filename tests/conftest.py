@@ -1046,6 +1046,8 @@ def make_ram_estimate(
         estimated_bytes=total_rows * 10,
         available_bytes=10**12,
         bytes_per_row=10.0,
+        fixed_bytes=0,
+        row_width_bytes=10.0,
         was_downsampled=False,
         warning=None,
         probe_columns=probe_columns,

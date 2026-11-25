@@ -615,8 +615,9 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     assert result["constraints"] == {"volume": pytest.approx(3.0)}
     assert result["baseline_constraints"] == {"volume": pytest.approx(3.0)}
     assert set(result["lambdas"]) == {"volume"}
-    # Every online solve records its history (Q5), one entry per iteration.
-    assert len(result["history"]) == result["iterations"]
+    # Every online solve records its steps (Q5): one constraint, its bisection's probes.
+    assert result["history"] is None
+    assert len(result["bisection_history"]) == result["iterations"]
     assert result["ratebook_cd_trace"] is None
 
     report = result["adjustments"]
@@ -805,7 +806,7 @@ def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None
     assert "expected_income" in str(missing.value.detail)
 
     with pytest.raises(OptimiserSetupError) as contract:
-        with grid_construction_failures("opt"):
+        with grid_construction_failures("opt", runs_pipeline=True):
             raise _group_by_contract_error()
     assert contract.value.status_code == 422
     assert contract.value.fields["error_code"] == "group_by_execution_unsupported"
@@ -1058,3 +1059,45 @@ def test_a_frontier_without_its_documented_trace_breaks_the_library_contract() -
     )
     # Only the points the frontier payload returns keep their traces.
     assert kept["point_index"].to_list() == [0]
+
+
+class _Session:
+    """A solve's runtime: owns a process, records its release."""
+
+    def __init__(self) -> None:
+        self.releases = 0
+
+    def release(self) -> None:
+        self.releases += 1
+
+
+_NODE = {"project": "/project", "source_file": "main.py", "occurrence": None, "node_id": "opt"}
+
+
+def _completed_solve(store: JobStore, at: float) -> tuple[str, _Session]:
+    from haute.routes._job_lifecycle import JobLifecycle
+
+    session = _Session()
+    with patch("haute.routes._job_store.time.time", return_value=at):
+        job_id = store.create_job({"status": "running", "job_type": "solve", "solve_node": _NODE})
+        JobLifecycle(store).transition(job_id, to="completed", fields={"solver_session": session})
+    return job_id, session
+
+
+@pytest.mark.parametrize("order", ["earlier_first", "later_first"])
+def test_two_completions_of_one_node_never_release_the_later_one(order: str) -> None:
+    """OPM-04: A publishes and pauses, B publishes, then both release in either order.
+    Only A, the solve B replaces, is released; B, the one the editor shows, keeps its
+    runtime."""
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    earlier, earlier_session = _completed_solve(store, time.time() - 2)
+    later, later_session = _completed_solve(store, time.time() - 1)
+
+    for job_id in (earlier, later) if order == "earlier_first" else (later, earlier):
+        service._release_replaced_solves(job_id)
+
+    assert earlier_session.releases == 1
+    assert later_session.releases == 0
+    assert "solver_session" not in store.require_job(earlier)
+    assert "solver_session" in store.require_job(later)

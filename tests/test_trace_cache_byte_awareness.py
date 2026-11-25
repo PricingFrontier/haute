@@ -238,9 +238,8 @@ class TestTraceEntryByteEstimation:
         df_b = pl.DataFrame({"y": ["alpha", "beta", "gamma"]})
         entry = _trace_entry({"api": {"policies": df_a, "drivers": df_b}})
 
-        assert _estimate_preview_cache_entry_bytes(entry) == (
-            df_a.estimated_size() + df_b.estimated_size()
-        )
+        # Two Int64 values, and three short strings at one 16-byte view each.
+        assert _estimate_preview_cache_entry_bytes(entry) == 2 * 8 + 3 * 16
 
 
 class TestExecuteTraceUnderByteBudget:

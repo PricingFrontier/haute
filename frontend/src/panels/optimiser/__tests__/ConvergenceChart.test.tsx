@@ -278,6 +278,26 @@ describe("ConvergenceChart (a selected frontier point)", () => {
     )
   }
 
+  it("charts a one-constraint solve's bisection as a bisection point's", () => {
+    if (BISECTION.kind !== "bisection") throw new Error("the fixture is a bisection")
+    renderConvergence({
+      solvedResult: makeOnlineSolveResult({
+        history: null,
+        bisection_history: BISECTION.probes,
+        constraints: { volume: 6.5 },
+        baseline_constraints: { volume: 5 },
+        lambdas: { volume: 0.5 },
+        effective_bounds: { volume: { kind: "min", bound: 6 } },
+      }),
+      selectedPoint: null,
+    })
+
+    expect(chart("λ by step")).toHaveTextContent("Step")
+    expect(within(screen.getByRole("region", { name: "Probed λ" })).getByText("Bracket low"))
+      .toBeInTheDocument()
+    expect(selectFrontierPoint).not.toHaveBeenCalled()
+  })
+
   it("says which point it charts and how that point ended", () => {
     loaded(BISECTION)
 

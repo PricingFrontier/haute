@@ -800,3 +800,95 @@ class TestSolveOwnership:
         )
         assert retry.status_code == 200, retry.text
         assert _poll(client, retry.json()["job_id"])["status"] == "completed"
+
+
+def _graph_for_node(scored: Path, node_id: str, **overrides: Any) -> dict[str, Any]:
+    """The one-optimiser graph with its optimiser under *node_id*: another node to solve."""
+    graph = _online_graph(scored, **overrides)
+    for node in graph["nodes"]:
+        if node["id"] == "opt":
+            node["id"] = node_id
+    for edge in graph["edges"]:
+        if edge["target"] == "opt":
+            edge["target"] = node_id
+            edge["id"] = f"e_{edge['source']}_{node_id}"
+    return graph
+
+
+def _released(job_id: str, seconds: float = 30.0) -> bool:
+    """Whether *job_id* lets go of its session within *seconds*."""
+    deadline = time.monotonic() + seconds
+    while SESSION_KEY in _job(job_id):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _solve_node(client: Any, graph: dict[str, Any], node_id: str) -> str:
+    response = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": node_id}},
+    )
+    assert response.status_code == 200, response.text
+    job_id = str(response.json()["job_id"])
+    assert _poll(client, job_id)["status"] == "completed"
+    return job_id
+
+
+@pytest.mark.usefixtures("process_mode")
+class TestReplacedSolves:
+    """OPM-04: a node solved again lets go of the solves the editor can no longer open."""
+
+    def test_a_node_solved_five_times_keeps_one_session(self, client, project: Path) -> None:
+        scored = _scored_parquet(project)
+        jobs: list[str] = []
+        pids: list[int | None] = []
+        results: dict[str, dict[str, Any]] = {}
+        for bound in (0.5, 0.6, 0.7, 0.8, 0.9):
+            graph = _online_graph(scored, constraints={"volume": {"min": bound}})
+            job_id = _solve_node(client, graph, "opt")
+            jobs.append(job_id)
+            pids.append(_session_of(job_id).pid)
+            results[job_id] = client.get(f"/api/optimiser/solve/status/{job_id}").json()["result"]
+
+        assert all(_released(earlier) for earlier in jobs[:-1])
+        assert all(_gone(pid) for pid in pids[:-1])
+        assert _session_of(jobs[-1]).alive
+        for earlier in jobs[:-1]:
+            job = _job(earlier)
+            assert SESSION_KEY not in job
+            assert job[RUNTIME_UNAVAILABLE_KEY]["reason"] == "expired"
+            status = client.get(f"/api/optimiser/solve/status/{earlier}").json()
+            assert status["status"] == "completed"
+            assert status["result"]["total_objective"] == results[earlier]["total_objective"]
+            page = client.post("/api/optimiser/apply", json={"job_id": earlier})
+            assert page.status_code == 200, page.text
+            assert page.json()["matched_row_count"] == 8
+
+    def test_solves_of_other_nodes_past_the_ceiling_slim_the_least_recently_used(
+        self, client, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAUTE_OPTIMISER_RETAINED_SOLVES", "2")
+        scored = _scored_parquet(project)
+        first, second, third = (
+            _solve_node(client, _graph_for_node(scored, node_id), node_id)
+            for node_id in ("opt_a", "opt_b", "opt_c")
+        )
+
+        # The release follows the third solve's publication on its own thread.
+        assert _released(first)
+        assert SESSION_KEY not in _job(first)
+        assert _job(first)[RUNTIME_UNAVAILABLE_KEY]["reason"] == "expired"
+        assert _session_of(second).alive
+        assert _session_of(third).alive
+
+    def test_a_failed_solve_of_the_node_releases_nothing(self, client, project: Path) -> None:
+        scored = _scored_parquet(project)
+        earlier = _solve_node(client, _online_graph(scored), "opt")
+
+        status = _solve(client, _online_graph(scored, objective="not_a_column"))
+
+        assert status["status"] == "contract_error"
+        assert _session_of(earlier).alive
+        assert RUNTIME_UNAVAILABLE_KEY not in _job(earlier)

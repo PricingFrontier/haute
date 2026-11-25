@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import date
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,7 +17,6 @@ from haute._polars_io_registry import data_input_is_direct
 from haute._polars_utils import read_parquet_metadata
 from haute._project_context import current_project
 from haute._ram_estimate import (
-    _OVERHEAD_MULTIPLIER,
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
@@ -50,6 +50,7 @@ from haute._ram_estimate import (
 from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.modelling._descriptors import DESCRIPTORS, algorithm_descriptor
 from haute.modelling._train_config import TrainingConfigError
 from tests._project import use_project, work_elsewhere
 from tests.conftest import build_test_input_snapshot
@@ -64,10 +65,8 @@ def test_decoded_frame_row_width_uses_materialised_variable_width_values() -> No
     value = "x" * 4_096
     frame = pl.DataFrame({"label": [value] * 4, "number": [1, 2, 3, 4]})
 
-    assert decoded_frame_row_width_bytes(frame) == sum(
-        max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
-    )
-    assert decoded_frame_row_width_bytes(frame) >= len(value) + 8
+    # Each label is a 16-byte view plus its payload in a data buffer; the number is 8 bytes.
+    assert decoded_frame_row_width_bytes(frame) == (16 + len(value)) + 8
 
 
 def test_decoded_frame_row_width_empty_and_invalid_inputs_fail_clearly() -> None:
@@ -640,8 +639,8 @@ class TestWidthsFollowTheLineage:
             ],
         )
         estimate = estimate_safe_training_rows(graph, model.id)
-        assert estimate.estimated_bytes is not None
-        return estimate.estimated_bytes / _OVERHEAD_MULTIPLIER
+        assert estimate.row_width_bytes is not None and estimate.total_rows is not None
+        return estimate.row_width_bytes * estimate.total_rows
 
     @pytest.mark.parametrize(
         ("code", "right", "actual"),
@@ -702,8 +701,8 @@ class TestWidthsFollowTheLineage:
 
         estimate = estimate_safe_training_rows(graph, model.id)
 
-        assert estimate.estimated_bytes is not None
-        assert estimate.estimated_bytes / _OVERHEAD_MULTIPLIER >= 8 * rows
+        assert estimate.row_width_bytes is not None
+        assert estimate.row_width_bytes >= 8
 
     @pytest.mark.parametrize("name", ["risk_text", "risk_text_new"])
     def test_a_column_replaced_under_its_own_name_is_sized_as_what_it_reads(
@@ -899,6 +898,52 @@ class TestEstimateSafeTrainingRows:
         assert "downsampled" in result.warning.lower()
         assert result.total_rows == 1000
 
+    @pytest.mark.parametrize("algorithm", sorted(DESCRIPTORS))
+    def test_the_peak_is_the_family_profile_over_the_row_width(
+        self, tmp_path, algorithm: str
+    ) -> None:
+        rows = 1_000
+        path = tmp_path / "frame.parquet"
+        pl.DataFrame({"y": [float(i) for i in range(rows)], "a": [0.5] * rows}).write_parquet(path)
+        src = _make_source_node(node_type="dataInput", config=_ready_file_input_config(path))
+        target = _make_modelling_node(
+            config={"algorithm": algorithm, "target": "y", "feature_columns": ["a"]}
+        )
+        graph = PipelineGraph(
+            nodes=[src, target], edges=[GraphEdge(id="e1", source=src.id, target=target.id)]
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        profile = algorithm_descriptor(algorithm).training_memory
+        per_row = Fraction(16 * profile.width_factor_basis_points, 100)
+        assert result.row_width_bytes == 16
+        assert result.fixed_bytes == profile.fixed_bytes
+        assert result.bytes_per_row == float(per_row)
+        assert result.estimated_bytes == profile.fixed_bytes + math.ceil(rows * per_row)
+
+    def test_the_row_limit_pays_the_fixed_part_before_any_row(self, tmp_path) -> None:
+        path = tmp_path / "frame.parquet"
+        pl.DataFrame({"a": [0.5] * 10_000}).write_parquet(path)
+        src = _make_source_node(node_type="dataInput", config=_ready_file_input_config(path))
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[src, target], edges=[GraphEdge(id="e1", source=src.id, target=target.id)]
+        )
+        profile = algorithm_descriptor("glm").training_memory
+        per_row = Fraction(8 * profile.width_factor_basis_points, 100)
+        usable = profile.fixed_bytes + 2_000 * per_row
+
+        with patch(
+            "haute._ram_estimate.available_ram_bytes",
+            # A few bytes over, so float rounding of the 0.7 safety factor cannot drop a row.
+            return_value=math.ceil(usable / Fraction(7, 10)) + 4,
+        ):
+            result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.safe_row_limit == 2_000
+        assert result.was_downsampled
+
     def test_returns_no_limit_when_source_rows_unknown(self) -> None:
         # Databricks source — no row count available
         src = _make_source_node(
@@ -1069,8 +1114,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 3
-        assert result.bytes_per_row == 3 * 8 * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(rows, 3)
+        assert result.row_width_bytes == 3 * 8
 
     def test_many_to_many_join_uses_target_cardinality_for_training_rows(
         self,
@@ -1114,7 +1158,6 @@ class TestEstimateSafeTrainingRows:
 
         assert result.total_rows == 12
         assert result.probe_columns == 3
-        assert result.estimated_bytes == _estimate_peak_bytes(12, 3)
 
     @pytest.mark.parametrize(
         ("validate", "rows", "unbounded"), [(None, 400, ("joined",)), ("m:1", 20, ())]
@@ -1233,7 +1276,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 2
-        assert result.bytes_per_row == 2 * 8 * 3.0
+        assert result.row_width_bytes == 2 * 8
 
     def test_edge_join_without_selected_columns_counts_both_parent_outputs(
         self,
@@ -1297,8 +1340,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 4
-        assert result.bytes_per_row == 4 * 8 * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(rows, 4)
+        assert result.row_width_bytes == 4 * 8
 
     def test_edge_join_coalesce_false_counts_suffixed_right_key(self, tmp_path) -> None:
         """coalesce=False keeps the join-side key as a suffixed output column."""
@@ -1360,8 +1402,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 5
-        assert result.bytes_per_row == 5 * 8 * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
+        assert result.row_width_bytes == 5 * 8
 
     def test_unselected_coalesce_false_right_key_still_counts_for_pipeline_peak(
         self,
@@ -1426,8 +1467,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 5
-        assert result.bytes_per_row == 5 * 8 * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
+        assert result.row_width_bytes == 5 * 8
 
     def test_edge_join_left_right_on_coalesce_false_suffixes_colliding_right_key(
         self,
@@ -1487,8 +1527,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 5
-        assert result.bytes_per_row == 5 * 8 * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
+        assert result.row_width_bytes == 5 * 8
 
     def test_edge_join_left_right_on_default_coalesces_right_key(
         self,
@@ -1546,8 +1585,7 @@ class TestEstimateSafeTrainingRows:
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
         assert result.probe_columns == 3
-        assert result.bytes_per_row == 3 * 8 * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(rows, 3)
+        assert result.row_width_bytes == 3 * 8
 
     def test_edge_join_suffixed_string_column_uses_join_source_width(
         self,
@@ -1603,24 +1641,19 @@ class TestEstimateSafeTrainingRows:
 
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
+        # Every segment is longer than a view inlines: its 16-byte view and its payload,
+        # which is wider than the column's Parquet pages (a 4-byte length per value).
+        base_segment_width = math.ceil(
+            16 + sum(len(f"base-{i}-") + 120 for i in range(rows)) / rows
+        )
+        join_segment_width = math.ceil(
+            16 + sum(len(f"join-{i}-") + 260 for i in range(rows)) / rows
+        )
         base_meta = read_parquet_metadata(base_path)
-        join_meta = read_parquet_metadata(join_path)
-        base_segment_width = max(
-            8,
-            math.ceil(base_meta["column_uncompressed_size_bytes"]["segment"] / rows),
-        )
-        join_segment_width = max(
-            8,
-            math.ceil(join_meta["column_uncompressed_size_bytes"]["segment"] / rows),
-        )
+        assert base_segment_width > base_meta["column_uncompressed_size_bytes"]["segment"] / rows
         expected_base_bytes_per_row = 8 + base_segment_width + join_segment_width
         assert result.probe_columns == 3
-        assert result.bytes_per_row == expected_base_bytes_per_row * 3.0
-        assert result.estimated_bytes == _estimate_peak_bytes(
-            rows,
-            3,
-            base_bytes_per_row=expected_base_bytes_per_row,
-        )
+        assert result.row_width_bytes == expected_base_bytes_per_row
 
 
 # ---------------------------------------------------------------------------
@@ -2680,6 +2713,8 @@ class TestRamEstimateFields:
             was_downsampled=True,
             warning="downsampled",
             probe_columns=10,
+            fixed_bytes=0,
+            row_width_bytes=16.0,
         )
         assert est.safe_row_limit == 1000
         assert est.total_rows == 5000
@@ -2689,22 +2724,6 @@ class TestRamEstimateFields:
         assert est.was_downsampled is True
         assert est.warning == "downsampled"
         assert est.probe_columns == 10
-
-    def test_bytes_per_row_calculation(self) -> None:
-        """bytes_per_row = n_cols * 8 * 3.0 (overhead)."""
-        n_cols = 10
-        expected_bpr = n_cols * 8 * 3.0
-        est = RamEstimate(
-            safe_row_limit=None,
-            total_rows=100,
-            estimated_bytes=int(100 * expected_bpr),
-            available_bytes=999_999_999,
-            bytes_per_row=expected_bpr,
-            was_downsampled=False,
-            warning=None,
-            probe_columns=n_cols,
-        )
-        assert est.bytes_per_row == expected_bpr
 
     def test_default_probe_columns(self) -> None:
         """probe_columns defaults to 0; zero figures are an honest known-empty estimate."""
@@ -2716,6 +2735,8 @@ class TestRamEstimateFields:
             bytes_per_row=0.0,
             was_downsampled=False,
             warning=None,
+            fixed_bytes=0,
+            row_width_bytes=0.0,
         )
         assert est.probe_columns == 0
         assert est.unavailable_reason is None
@@ -2737,6 +2758,8 @@ class TestRamEstimateFields:
         ("overrides", "message"),
         [
             ({"estimated_bytes": None}, "requires a row total and memory figures"),
+            ({"fixed_bytes": None}, "requires a row total and memory figures"),
+            ({"row_width_bytes": None}, "requires a row total and memory figures"),
             ({"total_rows": None}, "requires a row total and memory figures"),
             ({"blocking_node_id": "src"}, "names no blocking node"),
             (
@@ -2754,6 +2777,8 @@ class TestRamEstimateFields:
                     "unavailable_reason": TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE,
                     "estimated_bytes": None,
                     "bytes_per_row": None,
+                    "fixed_bytes": None,
+                    "row_width_bytes": None,
                     "blocking_node_id": "src",
                 },
                 "names its blocking node and has no row total",
@@ -2764,6 +2789,8 @@ class TestRamEstimateFields:
                     "total_rows": None,
                     "estimated_bytes": None,
                     "bytes_per_row": None,
+                    "fixed_bytes": None,
+                    "row_width_bytes": None,
                 },
                 "names its blocking node and has no row total",
             ),
@@ -2772,6 +2799,8 @@ class TestRamEstimateFields:
                     "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
                     "estimated_bytes": None,
                     "bytes_per_row": None,
+                    "fixed_bytes": None,
+                    "row_width_bytes": None,
                     "blocking_node_id": "src",
                 },
                 "keeps its row total and names no blocking node",
@@ -2781,6 +2810,8 @@ class TestRamEstimateFields:
                     "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
                     "estimated_bytes": None,
                     "bytes_per_row": None,
+                    "fixed_bytes": None,
+                    "row_width_bytes": None,
                     "warning": "downsampled",
                 },
                 "has no memory figures, row limit, warning",
@@ -2800,6 +2831,8 @@ class TestRamEstimateFields:
             "bytes_per_row": 24.0,
             "was_downsampled": False,
             "warning": None,
+            "fixed_bytes": 0,
+            "row_width_bytes": 8.0,
         }
         with pytest.raises(ValueError, match=message):
             RamEstimate(**{**fields, **overrides})  # type: ignore[arg-type]

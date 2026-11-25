@@ -11,6 +11,7 @@ matches the live-graph shape ``get_pipeline`` serves.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -498,3 +499,60 @@ class TestExecutableBundles:
             rendered = json.dumps(result)
             assert "expected_graph.json" not in rendered
             assert '"resources"' not in rendered
+
+
+class TestBundleInventory:
+    """AST-01: what an installer writes beside an example is no part of it; nothing else is."""
+
+    @pytest.fixture
+    def installed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import shutil
+
+        root = tmp_path / "examples"
+        shutil.copytree(Path(str(_assets._examples_root())), root)
+        monkeypatch.setattr(_assets, "_examples_root", lambda: root)
+        caches = (_assets._loaded_example, _assets._example_resources, example_index)
+        for cached in caches:
+            cached.cache_clear()
+        yield root
+        for cached in caches:
+            cached.cache_clear()
+
+    def test_examples_compiled_as_pip_installs_them_load_through_read_reference(
+        self, installed: Path
+    ):
+        import compileall
+
+        from haute.assistant._tools import read_reference
+
+        # pip compiles every installed `.py` file by default, each `pipeline.py` among them.
+        assert compileall.compile_dir(installed, quiet=1)
+        assert any(installed.glob("*/__pycache__/pipeline.*.pyc"))
+
+        names = [name for name, _summary in example_index()]
+        result = read_reference(["guide", *(f"example:{name}" for name in names)])
+
+        assert "error" not in result, result
+        assert result["count"] == len(names) + 1
+
+    @pytest.mark.parametrize("stray", ["notes.txt", "mlruns/0/meta.yaml", ".omc/state.json"])
+    def test_any_other_undeclared_file_is_refused_by_name(self, installed: Path, stray: str):
+        name = example_index()[0][0]
+        path = installed / name / stray
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stray\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match=f"undeclared resources: {re.escape(stray)}$"):
+            load_example(name)
+
+    def test_a_materialised_bundle_leaves_the_compiled_modules_behind(
+        self, installed: Path, tmp_path: Path
+    ):
+        import compileall
+
+        name = example_index()[0][0]
+        assert compileall.compile_dir(installed / name, quiet=1)
+
+        _assets.materialize_example_bundle(name, tmp_path / "copy")
+
+        assert not list((tmp_path / "copy").rglob("__pycache__"))

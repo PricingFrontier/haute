@@ -103,8 +103,10 @@ def test_openai_floor_constructs_a_client_with_current_httpx() -> None:
 def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     """The runtime guard enforces exactly the range the package metadata declares.
 
-    The floor is 0.8.0: the first release that records each frontier point's
-    convergence trace (OPT-PC04), on top of 0.7.0's Polars 2 support through
+    The floor is 0.11.0: the first release that solves one constraint by
+    bisection, as the 1-D frontier does, and says how a solve ran
+    (``solver_path``, ``non_convergence_reason``; OPM-02), on top of 0.8.0's
+    frontier point traces (OPT-PC04), 0.7.0's Polars 2 support through
     pyo3-polars 0.28, 0.6.0's CancelToken (OPT-PC02) and 0.5.0's per-point
     factor tables and canonical ratebook evaluation.
     """
@@ -115,8 +117,8 @@ def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     declared = next(dep for dep in dependencies if Requirement(dep).name == "price-contour")
 
     assert declared == f"price-contour{REQUIRED_SPECIFIER}"
-    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.8.0")
-    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.7.9")
+    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.11.0")
+    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.10.9")
 
 
 def _setup_uv_pins(workflow_text: str) -> list[str | None]:

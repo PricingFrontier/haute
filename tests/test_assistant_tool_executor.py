@@ -402,6 +402,41 @@ class TestToolExecutorDispatch:
         references = await execute_tool("read_reference", {"ids": ["node:banding"]})
         assert references["references"][0]["content"]["id"] == "banding"
 
+    async def test_every_call_of_a_turn_keeps_the_policy_the_turn_began_with(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """AST-04: a `haute.toml` saved during the turn with a wider policy does not widen
+        what the turn's provider is sent; a turn begun under it gets it."""
+
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+        from haute.assistant._tools import build_tool_executor
+
+        def policy(max_sensitivity: str) -> EgressPolicy:
+            return EgressPolicy(
+                trust="organization",
+                max_sensitivity=max_sensitivity,  # type: ignore[arg-type]
+                allow_project_knowledge=False,
+                allow_executable_source=False,
+                allow_row_samples=False,
+                allow_aggregate_statistics=False,
+            )
+
+        execute_tool = build_tool_executor("main.py", egress=policy("internal"))
+        monkeypatch.setattr(
+            tools_module, "resolve_egress_policy", lambda _root: policy("restricted")
+        )
+        config = {"node": "quotes", "parts": ["config"]}
+
+        during = await execute_tool("inspect_node", config)
+        after = await build_tool_executor("main.py", egress=policy("restricted"))(
+            "inspect_node", config
+        )
+
+        assert during["error"]["code"] == "egress_policy_denied", during
+        assert "error" not in after, after
+        assert "code" in after["config"]["config"]
+
     async def test_tool_input_and_result_context_are_bounded(
         self,
         project_root: Path,

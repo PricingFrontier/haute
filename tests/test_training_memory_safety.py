@@ -22,6 +22,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._frame_bytes import frame_bytes
 from haute.errors import RequestRefusedError
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData, _SplitResult
@@ -1152,7 +1153,7 @@ def _training_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, fl
     def record_partition(lf: pl.LazyFrame, *, stage_name: str, **kwargs: Any) -> pl.DataFrame:
         frame = collect(lf, stage_name=stage_name, **kwargs)
         if stage_name in _PARTITION_STAGES:
-            events.append(("partition", _PARTITION_STAGES[stage_name], frame.estimated_size()))
+            events.append(("partition", _PARTITION_STAGES[stage_name], frame_bytes(frame)))
         return frame
 
     monkeypatch.setattr(training_job, "_training_streaming_collect", record_partition)
@@ -1160,7 +1161,7 @@ def _training_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, fl
     build_pool = algorithms._build_pool
 
     def record_pool(df: pl.DataFrame, *args: Any, **kwargs: Any) -> Any:
-        events.append(("pool", "", df.estimated_size()))
+        events.append(("pool", "", frame_bytes(df)))
         return build_pool(df, *args, **kwargs)
 
     monkeypatch.setattr(algorithms, "_build_pool", record_pool)
@@ -1202,7 +1203,7 @@ def _assert_shared_stages_free_what_they_measured(
     events: list[tuple[str, str, float]], data: pl.DataFrame
 ) -> None:
     releases = [(name, size) for kind, name, size in events if kind == "release"]
-    assert releases[0] == ("_prepare_data", data.estimated_size())
+    assert releases[0] == ("_prepare_data", frame_bytes(data))
     # Each split frees the parquet it wrote, uncompressed, as pyarrow reads it.
     assert _released(events, "_split_data") == _measured(events, "split") != []
     assert _released(events, "_compute_metrics")
@@ -1276,7 +1277,7 @@ def test_only_a_stage_freeing_the_threshold_or_more_collects(
     events = _training_events(monkeypatch)
     collections = _counted_releases(monkeypatch)
     data = _small_training_frame()
-    threshold = data.estimated_size()
+    threshold = frame_bytes(data)
     monkeypatch.setattr(polars_utils, "EXPLICIT_RELEASE_MIN_BYTES", threshold)
 
     _small_training_job(tmp_path, algorithm, params, data).run()

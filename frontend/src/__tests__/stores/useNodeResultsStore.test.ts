@@ -102,6 +102,7 @@ function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPo
     cd_iterations: null,
     clamp_rate: null,
     history: null,
+    bisection_history: null,
     ratebook_cd_trace: null,
     adjustments: null,
     factor_tables: null,

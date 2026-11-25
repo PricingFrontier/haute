@@ -525,6 +525,11 @@ while it counts):
   longer, because the rows are read again from disk. **Est. in-memory RAM** is what fitting in memory would have
   needed. The result, the model card and the MLflow run record the fit mode and, for a GLM,
   the number of passes.
+- A GLM can also train in chunks when the pane said **Dataset fits in memory**. The estimate
+  cannot see how many levels each categorical feature has, and a GLM's memory grows with
+  them. So when training starts, the job counts the levels. If fitting in memory would not
+  fit the memory it has, it trains in chunks instead and gives the same model. The result
+  records the fit mode it used.
 - **Row count not proven** appears when the data passes through a join that has no key
   contract: the pane shows the upper bound instead of a verdict, and an **Open "…"** button
   for each such join. Declaring the join many-to-one bounds the rows by its base input.

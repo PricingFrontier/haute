@@ -3,9 +3,11 @@
  * as small multiples on real axes (`IterationLinesChart`) with the values behind
  * them in a closed table.
  *
- * An online solve always records its per-iteration history: the objective, the
- * largest λ change (log axis), each constraint total against its bound with the
- * first iteration that met every constraint, and λ per constraint. A ratebook
+ * An online solve always records its steps. One constraint is solved by bisecting
+ * its λ, so it charts its probes as a bisection frontier point does; more record
+ * their per-iteration history: the objective, the largest λ change (log axis),
+ * each constraint total against its bound with the first iteration that met every
+ * constraint, and λ per constraint. A ratebook
  * solve shows its coordinate-descent trace by CD pass, one line per factor: the
  * objective and each constraint total against its bound.
  *
@@ -477,6 +479,10 @@ function PointConvergence({
 function SolvedConvergence({ result, width }: { result: OptimiserSolveResult; width?: number }) {
   const bounds = effectiveConstraintBounds(result)
   if (result.mode === "online") {
+    // One constraint bisects its λ, as a 1-D frontier point does; more run the subgradient method.
+    if (result.bisection_history?.length) {
+      return <BisectionConvergence probes={result.bisection_history} bounds={bounds} width={width} />
+    }
     const history = result.history
     if (!history?.length) throw new Error("An online solve always records its history; this result has none")
     return <OnlineConvergence history={history} bounds={bounds} width={width} />

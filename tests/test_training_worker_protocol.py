@@ -15,7 +15,11 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._native_memory_limit import NativeMemoryLease, model_thread_address_space_allowance
+from haute._native_memory_limit import (
+    MALLOC_ARENA_MAX_ENV,
+    NativeMemoryLease,
+    model_thread_address_space_allowance,
+)
 from haute._project_context import context_thread
 from haute._worker_failures import WorkerError, WorkerProtocolError
 from haute._worker_isolation import IsolatedWorkerConfig
@@ -2037,17 +2041,27 @@ def _train_under_rlimit(runtime: WorkerRuntime, request: WorkerRequest) -> objec
     not sys.platform.startswith("linux"),
     reason="RLIMIT_AS counts reserved address space only on Linux",
 )
-@pytest.mark.parametrize("allowance", ["model library", "none"])
+@pytest.mark.parametrize(
+    ("allowance", "arenas"),
+    [("model library", None), ("none", None), ("none", "64")],
+    ids=["model-library", "no-allowance", "no-allowance-unbounded-arenas"],
+)
 def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allowance: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allowance: str, arenas: str | None
 ) -> None:
     """The training worker loads CatBoost before its cap and allows for what the fit
     reserves. On a 4-CPU host the old 192 MiB per CPU failed this fit when CatBoost
-    could not start its threads; with no allowance it fails on any host, which shows
-    the cap binds here."""
-    # The spawned worker inherits this: the suite's default of one thread per job
+    could not start its threads. With the worker's two malloc arenas the fit stays
+    within the cap even with no allowance; an operator's own unbounded arena setting
+    (kept as given) brings back the reservations the cap refuses, which shows the cap
+    binds here and the arena limit is what holds it (PL2-18)."""
+    # The spawned worker inherits these: the suite's default of one thread per job
     # would not start the threads whose reservations the allowance covers.
     monkeypatch.setenv("HAUTE_TRAINING_THREADS", "4")
+    if arenas is None:
+        monkeypatch.delenv(MALLOC_ARENA_MAX_ENV, raising=False)
+    else:
+        monkeypatch.setenv(MALLOC_ARENA_MAX_ENV, arenas)
     rng = np.random.default_rng(0)
     rows = 10_000
     categorical = ["make", "fuel", "cover", "channel", "region"]
@@ -2081,6 +2095,11 @@ def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
         },
     )
 
+    # Under the cap with unbounded arenas the fit either fails or, on some hosts, hangs
+    # where a thread cannot start; either is the cap refusing it, so that case is stopped
+    # well inside the test's own 60 seconds, which a completed fit here never nears.
+    timeout_seconds = 120 if arenas is None else 30
+
     def run() -> WorkerResultManifest:
         return run_worker_protocol(
             _train_under_rlimit,
@@ -2088,10 +2107,12 @@ def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
             artifact_root=tmp_path / "artifacts",
             artifact_kinds=_TRAINING_ARTIFACT_KINDS,
             max_artifact_size_bytes=_max_training_artifact_bytes(),
-            config=IsolatedWorkerConfig(timeout_seconds=120, preload_modules=("catboost",)),
+            config=IsolatedWorkerConfig(
+                timeout_seconds=timeout_seconds, preload_modules=("catboost",)
+            ),
         )
 
-    if allowance == "none":
+    if arenas is not None:
         with pytest.raises(WorkerError):
             run()
         return

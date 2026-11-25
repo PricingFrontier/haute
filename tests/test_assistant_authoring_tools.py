@@ -764,6 +764,54 @@ class TestStepAuthoringViews:
             ("p1", 170.0)
         ]
 
+    @pytest.mark.parametrize("executable", [False, True])
+    async def test_a_steps_comment_is_withheld_with_executable_source(
+        self, steps_first_project: Path, monkeypatch: pytest.MonkeyPatch, executable: bool
+    ):
+        """AST-03: the comment above a statement that becomes a step is that step's
+        `comment`, executable source as the code it sits in, so no tool that returns
+        a node's settings answers it while executable source is withheld."""
+
+        import copy
+
+        import haute.assistant._tools as tools_module
+        from haute.assistant._tools import build_tool_executor
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        marker = "SECRET_STEP: broker ACME is loaded by 1.37 after the 2026 referral review"
+        edit = copy.deepcopy(_guide_edit_steps())
+        (inserted,) = edit["edits"]  # type: ignore[misc]
+        comment, statement = inserted["step"]["code"].split("\n", 1)
+        assert comment.startswith("# ")
+        inserted["step"]["code"] = f"# {marker}\n{statement}"
+        await _apply_ops(
+            [
+                {
+                    "op": "update_node",
+                    "node": "august_totals",
+                    "config": {"steps": _guide_step_lists()[0]},
+                },
+            ]
+        )
+        await _apply_ops([edit])
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        saved = next(item for item in graph.nodes if item.id == "august_totals").data.config
+        assert saved["steps"][-1]["comment"] == f"# {marker}\n"
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: _policy(max_sensitivity="restricted", executable=executable),
+        )
+        execute = build_tool_executor("main.py")
+
+        answers = [
+            await execute("inspect_node", {"node": "august_totals", "parts": ["config"]}),
+            await execute("get_pipeline", {}),
+        ]
+
+        assert all("error" not in answer for answer in answers), answers
+        assert (marker in json.dumps(answers)) is executable
+
     async def test_a_replacement_that_discards_its_result_names_the_step(
         self, steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
     ):

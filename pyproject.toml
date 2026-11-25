@@ -70,7 +70,7 @@ dependencies = [
     "orjson>=3.11.7,<4",
     # Native structural filter for exact, complete structured-input inference.
     "msgspec>=0.21.1,<0.22",
-    "price-contour>=0.8.0,<0.9",
+    "price-contour>=0.11.0,<0.12",
     "rustystats>=0.11.1,<0.12",
     # Core: Model Scoring and the MLflow registry are first-class palette
     # features. The extra below pins supported Databricks clients and adds SQL.

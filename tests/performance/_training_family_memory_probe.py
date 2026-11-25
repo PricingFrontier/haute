@@ -45,6 +45,16 @@ from haute._project_context import context_thread
 #: frequency target and an exposure weight.
 NUMERIC_FEATURES = tuple(f"x{index:02d}" for index in range(30))
 CATEGORICAL_LEVELS = {"c0": 4, "c1": 8, "c2": 16, "c3": 32, "c4": 64}
+#: The categorical levels of each training workload. ``canonical`` is the shape above;
+#: ``numeric`` drops the categoricals, the case a frame-width multiplier fits best;
+#: ``wide`` gives them 1,984 levels between them, where one-hot designs, CTRs and
+#: categorical histograms grow with the levels rather than with the frame.
+WORKLOAD_LEVELS: dict[str, dict[str, int]] = {
+    "canonical": CATEGORICAL_LEVELS,
+    "numeric": {},
+    "wide": {"c0": 64, "c1": 128, "c2": 256, "c3": 512, "c4": 1024},
+}
+WORKLOADS = tuple(WORKLOAD_LEVELS)
 CATEGORICAL_FEATURES = tuple(CATEGORICAL_LEVELS)
 FEATURES = (*NUMERIC_FEATURES, *CATEGORICAL_FEATURES)
 TARGET = "frequency"
@@ -96,11 +106,15 @@ XGBOOST_EVAL_METRIC = "poisson-nloglik"
 PREDICTION_ROWS = 100_000
 
 
-def category_levels(name: str) -> list[str]:
-    return [f"{name}_{code:03d}" for code in range(CATEGORICAL_LEVELS[name])]
+def category_levels(name: str, workload: str = "canonical") -> list[str]:
+    return [f"{name}_{code:03d}" for code in range(WORKLOAD_LEVELS[workload][name])]
 
 
-def node_config(family: str) -> dict[str, Any]:
+def workload_features(workload: str) -> tuple[str, ...]:
+    return (*NUMERIC_FEATURES, *WORKLOAD_LEVELS[workload])
+
+
+def node_config(family: str, workload: str = "canonical") -> dict[str, Any]:
     """The Modelling node config a user would save for *family* on this data."""
     config: dict[str, Any] = {
         "algorithm": family,
@@ -111,17 +125,17 @@ def node_config(family: str) -> dict[str, Any]:
     }
     if family == "glm":
         terms: dict[str, dict[str, str]] = {name: {"type": "linear"} for name in NUMERIC_FEATURES}
-        terms.update({name: {"type": "categorical"} for name in CATEGORICAL_FEATURES})
+        terms.update({name: {"type": "categorical"} for name in WORKLOAD_LEVELS[workload]})
         return {**config, "family": "poisson", "terms": terms}
     return {
         **config,
         "loss_function": "Poisson",
         "params": dict(FAMILY_PARAMS[family]),
-        "feature_columns": list(FEATURES),
+        "feature_columns": list(workload_features(workload)),
     }
 
 
-def _chunk(chunk_index: int, rows: int) -> Any:
+def _chunk(chunk_index: int, rows: int, workload: str = "canonical") -> Any:
     import numpy as np
     import polars as pl
 
@@ -140,9 +154,9 @@ def _chunk(chunk_index: int, rows: int) -> Any:
     eta = -1.5 + 0.2 * normal[:, 6] * normal[:, 9]
     for index in range(0, len(NUMERIC_FEATURES), 3):
         eta = eta + (0.3 / (1 + index // 6)) * np.tanh(normal[:, index])
-    for name, levels in CATEGORICAL_LEVELS.items():
+    for name, levels in WORKLOAD_LEVELS[workload].items():
         codes = rng.integers(0, levels, rows)
-        columns[name] = pl.Series(name, category_levels(name)).gather(codes)
+        columns[name] = pl.Series(name, category_levels(name, workload)).gather(codes)
         eta = eta + 0.6 * np.sin(codes * 2.0 * np.pi / levels)
     exposure = rng.uniform(0.1, 1.0, rows)
     claims = rng.poisson(np.exp(eta) * exposure)
@@ -151,7 +165,7 @@ def _chunk(chunk_index: int, rows: int) -> Any:
     return pl.DataFrame(columns)
 
 
-def write_training_parquet(path: Path, rows: int) -> None:
+def write_training_parquet(path: Path, rows: int, workload: str = "canonical") -> None:
     """Write *rows* deterministic rows in row groups of ``ROW_GROUP_ROWS``."""
     import polars as pl
     import pyarrow.parquet as pq
@@ -159,7 +173,7 @@ def write_training_parquet(path: Path, rows: int) -> None:
     writer: pq.ParquetWriter | None = None
     try:
         for chunk_index, start in enumerate(range(0, rows, ROW_GROUP_ROWS)):
-            table = _chunk(chunk_index, min(ROW_GROUP_ROWS, rows - start)).to_arrow(
+            table = _chunk(chunk_index, min(ROW_GROUP_ROWS, rows - start), workload).to_arrow(
                 compat_level=pl.CompatLevel.oldest()
             )
             if writer is None:
@@ -171,38 +185,39 @@ def write_training_parquet(path: Path, rows: int) -> None:
 
 
 def current_estimate(path: Path) -> dict[str, Any]:
-    """What ``_estimate_peak_bytes`` predicts for this parquet as the training source.
+    """The row width the RAM estimate sizes this parquet's rows at, as the training source.
 
-    The row width is derived as ``estimate_safe_training_rows`` derives it: every
-    column of the source trains (features, target and weight), and each column's
-    width comes from the source's footer and bounded head probe.
+    The width is derived as ``estimate_safe_training_rows`` derives it: every column of
+    the source trains (features, target and weight), and each column's width comes from
+    the source's footer and bounded head probe.
     """
-    from haute._ram_estimate import (
-        _OVERHEAD_MULTIPLIER,
-        _detailed_parquet_metadata,
-        _estimate_base_bytes_per_row,
-        _estimate_peak_bytes,
-    )
+    from haute._ram_estimate import _detailed_parquet_metadata, _estimate_base_bytes_per_row
 
     meta = _detailed_parquet_metadata(str(path))
     columns = tuple(meta.columns)
-    base_bytes_per_row = _estimate_base_bytes_per_row(
-        len(columns),
-        target_columns=columns,
-        target_width_columns=columns,
-        sources=(meta,),
-    )
     return {
         "rows": meta.row_count,
         "columns": len(columns),
-        "base_bytes_per_row": base_bytes_per_row,
-        "overhead_multiplier": _OVERHEAD_MULTIPLIER,
-        "predicted_peak_bytes": _estimate_peak_bytes(
-            meta.row_count,
+        "base_bytes_per_row": _estimate_base_bytes_per_row(
             len(columns),
-            base_bytes_per_row=base_bytes_per_row,
+            target_columns=columns,
+            target_width_columns=columns,
+            sources=(meta,),
         ),
     }
+
+
+def predicted_peak_bytes(estimate: dict[str, Any], family: str) -> int:
+    """What the family's training memory profile predicts for *estimate*'s rows."""
+    from haute._ram_estimate import _training_peak_bytes
+    from haute.modelling._descriptors import algorithm_descriptor
+
+    peak, _per_row = _training_peak_bytes(
+        estimate["rows"],
+        estimate["base_bytes_per_row"],
+        algorithm_descriptor(family).training_memory,
+    )
+    return peak
 
 
 def _status_bytes(fields: tuple[str, ...]) -> dict[str, int] | None:
@@ -306,6 +321,7 @@ def _run_family(
     *,
     fit_mode: str = "in_memory",
     memory_limit_bytes: int | None = None,
+    workload: str = "canonical",
 ) -> dict[str, Any]:
     import importlib
 
@@ -317,8 +333,9 @@ def _run_family(
     importlib.import_module(algorithm_descriptor(family).engine_module)
     baseline = _baseline_rss()
     baseline_peak = _peak_rss()
+    baseline_address_space = _status_bytes(("VmSize",))
 
-    job_kwargs = build_training_job_kwargs(node_config(family), data=str(data))
+    job_kwargs = build_training_job_kwargs(node_config(family, workload), data=str(data))
     job_kwargs["output_dir"] = str(work / "output")
     job_kwargs["fit_mode"] = fit_mode
     job_kwargs["scratch_dir"] = str(work / "scratch")
@@ -355,8 +372,15 @@ def _run_family(
         wall_seconds = time.perf_counter() - started
         stages.mark("done")
     peak = _peak_rss()
+    # Linux only: the address space the job reserved at its peak, what RLIMIT_AS counts.
+    address_space = _status_bytes(("VmPeak",))
     return {
         "family": family,
+        "workload": workload,
+        "address_space_peak_bytes": None if address_space is None else address_space["VmPeak"],
+        "baseline_address_space_bytes": (
+            None if baseline_address_space is None else baseline_address_space["VmSize"]
+        ),
         "baseline_rss_bytes": baseline,
         "baseline_peak_rss_bytes": baseline_peak,
         "peak_rss_bytes": peak,
@@ -595,6 +619,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--fit-mode", choices=("in_memory", "out_of_core"), default="in_memory")
     parser.add_argument("--memory-limit-bytes", type=int)
+    parser.add_argument("--workload", choices=WORKLOADS, default="canonical")
     args = parser.parse_args()
 
     import polars  # noqa: F401  - imported before the baseline, as the worker has it
@@ -606,6 +631,7 @@ def main() -> int:
             args.work,
             fit_mode=args.fit_mode,
             memory_limit_bytes=args.memory_limit_bytes,
+            workload=args.workload,
         )
     elif args.mode == "planning":
         payload = _run_planning(args.data, args.work, folds=args.folds)

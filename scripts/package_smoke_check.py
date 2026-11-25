@@ -93,6 +93,41 @@ def _assert_model_engines() -> None:
     assert set(ALGORITHM_REGISTRY) >= {"catboost", "glm", "xgboost", "lightgbm", "ebm"}
 
 
+def _assert_compiled_examples_load() -> None:
+    """Every teaching example loads through ``read_reference`` from a compiling install.
+
+    pip compiles each installed ``.py`` file into a ``__pycache__`` folder beside it by
+    default, as the hosted editor installs; CI installs with ``--compile-bytecode`` so the
+    caches are there. Any other file a manifest does not name is still refused, naming it.
+    """
+    from haute.assistant import _assets
+    from haute.assistant._tools import read_reference
+
+    examples = Path(str(files("haute").joinpath("assistant", "assets", "examples")))
+    assert any(examples.glob("*/__pycache__/*.pyc")), (
+        "Install the wheel with bytecode compilation on (pip's default): no example holds "
+        "a compiled module, so this check proves nothing"
+    )
+    names = [name for name, _summary in _assets.example_index()]
+    batch = read_reference([f"example:{name}" for name in names])
+    assert "error" not in batch, f"read_reference refused the examples: {batch['error']}"
+    assert batch["count"] == len(names)
+
+    # The loader names the file; the tool boundary reports it as an incident.
+    stray = examples / names[0] / "stray.txt"
+    stray.write_text("not in the manifest\n", encoding="utf-8")
+    _assets._loaded_example.cache_clear()
+    try:
+        _assets.load_example(names[0])
+    except RuntimeError as exc:
+        assert str(exc).endswith("undeclared resources: stray.txt"), exc
+    else:
+        raise AssertionError(f"Example {names[0]!r} loaded with an undeclared file in it")
+    finally:
+        stray.unlink()
+        _assets._loaded_example.cache_clear()
+
+
 def main() -> None:
     import haute
     from haute.assistant._assets import validate_example_bundles
@@ -103,6 +138,7 @@ def main() -> None:
     _assert_one_xgboost_distribution()
     _assert_model_engines()
     validate_example_bundles(execute_fast=True)
+    _assert_compiled_examples_load()
     print("package smoke ok")
 
 

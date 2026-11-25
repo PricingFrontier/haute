@@ -26,6 +26,7 @@ from haute.schemas import (
     AssistantChangeRecord,
     AssistantDataFinding,
     AssistantGraphChanges,
+    SaveCapture,
 )
 
 if TYPE_CHECKING:
@@ -162,21 +163,23 @@ def change_record(
     receipt: PlanReceipt,
     changes: AssistantGraphChanges,
     *,
-    warnings: Sequence[str],
-    git_sha: str | None,
+    capture: SaveCapture,
     parent_sha: str | None,
     revision: str,
     data_check: AssistantChangeDataCheck | None,
 ) -> AssistantChangeRecord:
-    """The change card of one saved plan, identified by the plan's hash."""
+    """The change card of one saved plan, identified by the plan's hash, carrying the
+    save's *capture* as the save answered it."""
 
     return AssistantChangeRecord(
         id=plan_hash,
         summary=receipt.summary,
         assumptions=list(receipt.assumptions),
         changes=changes,
-        warnings=list(warnings),
-        git_sha=git_sha,
+        warnings=list(capture.warnings),
+        git_sha=capture.git_sha,
+        identity_required=capture.identity_required,
+        uncaptured=list(capture.uncaptured),
         parent_sha=parent_sha,
         revision=revision,
         data_check=data_check,

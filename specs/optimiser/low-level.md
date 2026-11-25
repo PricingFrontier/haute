@@ -8,7 +8,7 @@
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and refuses with the matching `RequestRefusedError`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (`select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier point and artifact-handle helpers. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), the solve-memory forecast's readings of a config, a solver input or an estimate (`solve_forecast_shape`, `forecast_solve_memory_from_input`, `estimate_solve_memory_forecast`) and the thread mode's admission on it (`_admit_solve_memory`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), the solve-memory forecast's readings of a config, a solver input or an estimate (`solve_forecast_shape`, `forecast_solve_memory_from_input`, `estimate_solve_memory_forecast`) and the thread mode's admission on it (`_admit_solve_memory`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure (a step that runs the pipeline, `runs_pipeline=True`, answers an unnamed failure through `answer_pipeline_failure`; the grid build, through `answer_failure`), and `quote_layout_fault` and `scenario_grid_fault`, which say why the grid builder refused a file. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the four ownership-marked artifact families (apply result, ratebook factors, quote analysis, frontier history) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and the marked scratch root (`new_scratch_directory`, `scratch_directory`) that holds setup's and the log's temporary files (the solver-input parquet, a worker's scratch, the range reducer's spill directory, the MLflow log's staging folder). No optimiser module creates an unmarked temporary file. |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
@@ -84,8 +84,20 @@ context without the resolved value rather than silently resetting elapsed-time a
   `row % n_steps`, and every quote holds `n_steps` rows, in two streaming group-bys over
   the quote and scenario-index columns) and, when the quotes are mixed, raises an
   `OptimiserSetupError` 400 `contract_error` naming the quote column, the scenario index
-  column and the first quote out of place; any other refusal stays the sanitised 500.
-  The check runs only after a refusal, so a well-formed input pays nothing for it.
+  column and the first quote out of place. A well-laid-out file is then checked against the
+  builder's other two refusals (`scenario_grid_fault`): the first quote's `n_steps` rows are the
+  grid, whose values must rise strictly with `scenario_index`, and every row's value must be its
+  step's in that grid within the builder's tolerance (`1e-6` on Float32 values). The first is
+  answered naming the scenario value and index columns, the first step that does not rise and
+  its value beside the step before (values printed as Float32), and that an Expander's Min must
+  be below its Max; the second naming the quote, the step, its value and the first quote's, from
+  one streaming scan that stops at the first such row. Each is an `OptimiserSetupError` 400
+  `contract_error`. A non-finite value is neither: setup refuses one before the build
+  (`validate_and_project`), so a grid holding one, like any other refusal, stays the sanitised
+  500. A 128-bit integer analysis column is refused with the cast that fixes it
+  (`wide_integer_message`) by `validate_and_project` and `resolve_analysis_frame`, before the
+  solver input carries it under its reserved name. The checks run only after a
+  refusal, so a well-formed input pays nothing for them.
   The ratebook factor artifact has one row per quote, so its contexts take
   the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
@@ -179,12 +191,13 @@ its native extension `price_contour._price_contour` and collects **every** probl
 - the module's `__version__` differs from the distribution metadata (a stale or shadowing
   build, such as `0.0.0+local`);
 - the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
-  `price-contour` specifier exactly (`>=0.8.0,<0.9`, pinned by
+  `price-contour` specifier exactly (`>=0.11.0,<0.12`, pinned by
   `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
 - a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls,
   including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`, and 0.8.0's
   `frontier_point_history_schema`, `FrontierResult.point_history`,
-  `RatebookFrontierResult.point_history` and `PerFactorRecord`);
+  `RatebookFrontierResult.point_history` and `PerFactorRecord`, and 0.11.0's
+  `SolveResult.solver_path` and `SolveResult.non_convergence_reason`);
 - a keyword haute passes by name that a Python wrapper no longer accepts
   (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
   `apply_from_grid` and `RatebookOptimiser.evaluate`, and `record_history` on both
@@ -427,8 +440,14 @@ an execution-context stage — calls:
 
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
   constraints, max_iter, tolerance, record_history=True)` and solves directly against the passed
-  `QuoteGrid`. Every online solve records its per-iteration `history` (bounded by `max_iter`);
-  there is no configuration flag for it.
+  `QuoteGrid`. Since price-contour 0.11.0 a solve with exactly one constraint bisects that
+  constraint's λ, the method a 1-D frontier point uses, so the solve and the frontier point at
+  its bound are one answer; it converges unless the bound is beyond what the grid allows
+  (`non_convergence_reason` `above_envelope` or `bracket_exhausted`), and `max_iter` does not
+  bound it. More constraints run the subgradient method. Every online solve records its steps:
+  a bisection's probes as `bisection_history` (at most 90), a subgradient solve's iterations as
+  `history` (bounded by `max_iter`), split by the library's `solver_path`
+  (`solve_history_fields`); there is no configuration flag for it.
 - **Ratebook** (`_solve_ratebook`): requires a persisted ratebook factors handle
   (raises `RuntimeError` otherwise — "Ratebook mode requires a banding source"); validates
   the configured factor columns and configured quote-id column against the artifact's own
@@ -487,10 +506,22 @@ names must all agree, see Constraint bounds) the result carries:
   "Adjustment reports (OPT-V10)"). A failed inline frontier keeps
   `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
   entry. Every entry is also logged (`optimiser_diagnostic_skipped`).
-- `history: [OptimiserHistoryEntry]` (online): every online solve's per-iteration record
-  (`iteration`, `total_objective`, `max_lambda_change`, `all_constraints_satisfied`, `lambdas`,
-  `total_constraints`), always recorded and bounded by `max_iter`; `null` for ratebook results
-  and frontier points.
+- `history: [OptimiserHistoryEntry]` (online, more than one constraint or none): every
+  subgradient solve's per-iteration record (`iteration`, `total_objective`, `max_lambda_change`,
+  `all_constraints_satisfied`, `lambdas`, `total_constraints`), always recorded and bounded by
+  `max_iter`; `null` for a one-constraint solve, ratebook results and frontier points.
+- `bisection_history: [OptimiserBisectionProbe]` (online, one constraint): the solve's
+  bisection on λ, probe by probe, in the shape a bisection frontier point's trace has; its λ and
+  totals are the last accepted probe's. `null` otherwise. A result never holds both it and
+  `history`.
+- `warning`: present only on a result that did not converge, saying why from
+  price-contour's `non_convergence_reason` (`non_converged_warning`): a bound beyond what the
+  scenario grid allows ("A bound is beyond what the scenario grid allows, so the result is as
+  close to it as the grid reaches. Widen the scenario range or relax the bound."), or
+  otherwise iterations used up (`NON_CONVERGED_WARNING`, "Solver did not converge within its
+  iteration limits. Raising them or relaxing the tolerance may let it settle."). A frontier
+  point's summary says the same from its own row's reason; a ratebook result, whose library
+  result has no reason, uses the second.
 - `ratebook_cd_trace: {records, truncated}` (`OptimiserRatebookCdTrace`, strict; ratebook): one
   record per inner grouped solve of the coordinate descent, in (CD pass, factor) order, each
   `{cd_iteration (1-based), factor, factor_index, total_objective, total_constraints, lambdas}`
@@ -1338,9 +1369,11 @@ whose message already names every problem and the remedy.
   `RequestRefusedError` as `contract_error` for every 4xx (a 409 conflict included) and
   `error` otherwise; a public contract error with its own reason and fields; a
   `BoundedMemoryUnsupportedError` as a 422 `contract_error`; and anything else as
-  `haute._failure_answers.answer_failure` says it: a node's own failure naming its node, a file
-  the operating system refused, and anything unnamed — a library or Polars `ValueError`
-  among them — as `error` with an incident whose record holds its cause. Stops and cancellations never reach it. The
+  `haute._failure_answers.answer_pipeline_failure` says it, since setup and auto-range both run
+  the pipeline: its own contracts, schemas and data (a Polars error among them) as a preview of
+  the node says them, a node's own failure naming its node, a file the operating system
+  refused, and anything unnamed — a library `ValueError` among them — as `error` with an
+  incident whose record holds its cause. Stops and cancellations never reach it. The
   auto-range reducer refuses an empty frame, null quote ids and a non-finite or inverted
   estimated range with `InvalidRequestError` (400), so no bare `ValueError` is read as the
   user's input's fault.
@@ -1369,7 +1402,7 @@ whose message already names every problem and the remedy.
 
 ## Testing
 
-- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, and solve/apply totals. Its OPT-V04 classes pin the result contract: strict frontier points (extra, missing, coerced or
+- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, a scenario grid that falls, stays flat or differs between quotes refused naming the columns, the step and the values, a pipeline failure while the solver input or quote-analysis table is written said as the pipeline's (a 128-bit integer column with its cast), and solve/apply totals. Its OPT-V04 classes pin the result contract: strict frontier points (extra, missing, coerced or
   non-finite fields and constraint maps that disagree are rejected), frontier map-key completeness
   against `constraint_names`, strict factor-table rows and point summaries, the solve result's
   required `mode`, `input_summary` and `diagnostics_errors` and agreeing constraint maps, a select
@@ -1377,6 +1410,12 @@ whose message already names every problem and the remedy.
   in `diagnostics_errors`, the artifact reading the result's input summary, and the status route's
   non-finite walk (a NaN or Infinity corrects the job to `error`; a clean walk is cached per
   generation and selection).
+- OPM-02: `TestOneConstraintSolve` in `tests/test_optimiser_routes_real_library.py` solves a
+  5,000-quote book with one binding minimum and the node's defaults: it converges, meets its
+  bound, records its `bisection_history`, and its totals and objective equal point 0 of a
+  frontier whose range starts at that bound; a bound past the grid ends with the grid
+  warning. `tests/test_frontier_point_summary.py` and `tests/test_optimiser_solver_service.py`
+  hold each `non_convergence_reason`'s warning.
 - OPT-PC04's traces: `TestFrontierPointHistoryContract` in
   `tests/test_optimiser_routes_real_library.py` runs the real library and answers
   `/frontier/select` with `include_history` for a one-constraint point (a bisection ending on the
@@ -1385,7 +1424,12 @@ whose message already names every problem and the remedy.
   no trace. `tests/test_optimiser_service_validation.py` rejects an empty or mixed trace and a
   frontier without its documented frame, keeps only the returned points, and answers a `410` once
   the artifact is cleaned up. `tests/test_optimiser_solver_session.py` reads the trace from a
-  session solve and shows a solve that sweeps nothing leaves no directory behind.
+  session solve and shows a solve that sweeps nothing leaves no directory behind. Its OPM-04
+  tests solve one node again and again in process mode: one session process stays alive, the
+  earlier jobs answer their summaries and Quotes pages and record `runtime_unavailable`
+  `expired`; solves of other nodes past `HAUTE_OPTIMISER_RETAINED_SOLVES` slim the least
+  recently used; a failed solve of the node releases nothing. `tests/test_optimiser_service_validation.py`
+  forces two completions of one node to release in each order and keeps the later one's runtime.
 - `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
   preparation (thread and process mode): a non-solver `region` column configured as an analysis
   column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
@@ -2701,7 +2745,24 @@ The solve thread:
 3. starts the session, with a bounded start that polls the job's cancellation reason;
 4. runs `build_and_solve`;
 5. publishes the completion, with `solver_session` and `runtime_mode`, through the same
-   `publish_completion` claim the in-process finalize uses.
+   `publish_completion` claim the in-process finalize uses;
+6. releases the solves the new one replaces (`_release_replaced_solves`, run after a published
+   completion in both runtime modes).
+
+**Replaced solves.** A solve job records `solve_node` at creation: the project root, the
+graph's `source_file` and the node's address (`occurrence`, `node_id`), never its label or the
+graph fingerprint, so a node whose constraint was tuned is still the same node. Once a solve
+publishes, `_release_replaced_solves` slims, through one `JobStore.expire_heavy_objects_before`
+write and exactly as the retention window's expiry does, among the solve jobs that completed
+before it and still hold heavy state (least recently used first): every one with the same
+`solve_node`, then the least recently used others while more than
+`HAUTE_OPTIMISER_RETAINED_SOLVES` (default 3, counting the new solve) would hold heavy state.
+Only earlier completions are candidates and a solve already slimmed releases nothing, so two
+solves completing together never release each other's runtime, in either order.
+A slimmed session job records `runtime_unavailable` `expired` and its process ends, after a
+command it is running returns; its summary, retained point artifacts, the Quotes page from its
+persisted apply artifact, save and MLflow log keep answering, and a request that needs the
+runtime answers its 410. A failed or cancelled solve releases nothing.
 
 **Cancellation and timeout** keep their existing immediate terminal transitions, which
 are the only claim needed against a concurrent completion:

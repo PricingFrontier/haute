@@ -52,6 +52,7 @@ from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute.assistant._build_plan import BuildPlan
+from haute.assistant._config import EgressPolicy
 from haute.assistant._ops import SourceEvidenceLedger
 from haute.assistant._render import (
     TurnRecord,
@@ -627,7 +628,10 @@ class AssistantSession:
     ``evidence`` is the session's evidence ledger, live state like ``lock``:
     it is never serialized, so a revived session starts with an empty one.
     ``build_plan`` is the session's build plan, persisted as its current
-    snapshot so a revived session keeps it.
+    snapshot so a revived session keeps it. ``egress_policies`` are the
+    policies its turns ran under, each once, in the order first used: what the
+    chat holds (its answers, its build plan, its evidence) was produced under
+    them, so it goes only to a provider whose policy allows all of each.
     """
 
     id: str
@@ -638,6 +642,7 @@ class AssistantSession:
         default_factory=SourceEvidenceLedger, repr=False, compare=False
     )
     build_plan: BuildPlan = field(default_factory=BuildPlan, repr=False, compare=False)
+    egress_policies: list[EgressPolicy] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
@@ -656,6 +661,18 @@ class AssistantSession:
             else AssistantTurn.from_messages(turn)
             for turn in self.history
         ]
+
+    def narrowed_by(self, egress: EgressPolicy) -> tuple[str, ...]:
+        """The egress settings under which *egress* allows less than a policy this chat
+        ran under; empty when this chat may be sent to a provider under *egress*."""
+
+        return tuple(
+            dict.fromkeys(
+                setting
+                for earlier in self.egress_policies
+                for setting in egress.narrower_than(earlier)
+            )
+        )
 
     @property
     def stored_message_count(self) -> int:
@@ -691,6 +708,9 @@ class AssistantSession:
                 for turn in self.history
             ],
             "build_plan": _persisted_build_plan(self.build_plan.current),
+            "egress_policies": [
+                cast(JSONValue, policy.as_record()) for policy in self.egress_policies
+            ],
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
@@ -715,11 +735,15 @@ def _session_from_payload(payload: object, session_id: str) -> AssistantSession:
     source_file = payload.get("source_file")
     if not isinstance(source_file, str) or not source_file:
         raise ValueError("session file source_file must be a non-empty string")
+    policies = payload.get("egress_policies")
+    if not isinstance(policies, list):
+        raise ValueError("session file egress_policies must be a list")
     return AssistantSession(
         id=session_id,
         source_file=source_file,
         history=list(history),
         build_plan=BuildPlan(_revived_build_plan(payload.get("build_plan"))),
+        egress_policies=[EgressPolicy.from_record(policy) for policy in policies],
         created_at=float(payload["created_at"]),
         last_used=float(payload["last_used"]),
     )
@@ -1066,6 +1090,14 @@ class SessionStore:
         self.prune(session)
         self._persist(session)
         return record
+
+    def record_egress(self, session_ref: SessionRef, egress: EgressPolicy) -> None:
+        """Note that a turn of the session runs under *egress*, before it sends anything."""
+
+        session = self._require(session_ref)
+        if egress not in session.egress_policies:
+            session.egress_policies.append(egress)
+            self._persist(session)
 
     def record_undo(self, session_ref: SessionRef, change: AssistantChangeRecord) -> None:
         """Record that the analyst undid *change*, after the latest turn and in the

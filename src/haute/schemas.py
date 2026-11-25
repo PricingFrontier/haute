@@ -259,6 +259,16 @@ class SaveCapture(BaseModel):
     identity_required: bool = False
     uncaptured: list[str] = Field(default_factory=list)
 
+    def save_capture(self) -> SaveCapture:
+        """These capture fields alone, apart from the rest of a write's answer."""
+
+        return SaveCapture(
+            warnings=list(self.warnings),
+            git_sha=self.git_sha,
+            identity_required=self.identity_required,
+            uncaptured=list(self.uncaptured),
+        )
+
 
 class WorkbenchStatusResponse(BaseModel):
     """Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``)."""
@@ -1141,12 +1151,14 @@ class AssistantChangeDataCheck(BaseModel):
     not_checked: str | None
 
 
-class AssistantChangeRecord(BaseModel):
-    """The value-free change card of one saved plan.
+class AssistantChangeRecord(SaveCapture):
+    """The value-free change card of one saved plan, with its save's version capture.
 
     ``id`` is the hash of the plan it saved; a plan applies once, so it names
     this change. ``summary`` and ``assumptions`` are the model's own words from
-    the plan's dry-run; everything else is built from what was saved.
+    the plan's dry-run; everything else is built from what was saved, the
+    capture fields (`SaveCapture`) as the save answered them, which the editor
+    reports as it reports any save's.
     ``data_check`` is the plan's data check, or ``None`` when no check was
     attempted or its findings describe another graph.
     """
@@ -1159,7 +1171,6 @@ class AssistantChangeRecord(BaseModel):
     summary: str = Field(min_length=1)
     assumptions: list[str] = Field(default=[], max_length=ASSISTANT_MAX_ASSUMPTIONS)
     changes: AssistantGraphChanges
-    warnings: list[str] = []
     git_sha: str | None
     parent_sha: str | None
     # The editor document revision the save produced: Undo is allowed only while
@@ -1315,10 +1326,11 @@ class AssistantUndoRequest(BaseModel):
     source_file: BoundedPath = Field(min_length=1)
 
 
-class AssistantUndoResponse(BaseModel):
+class AssistantUndoResponse(SaveCapture):
+    """The change an undo undid, with the undo's save capture (``git_sha`` its commit, or
+    None when it was not captured in Git)."""
+
     change_id: str
-    # The commit the undo's save made, or None when it was not captured in Git.
-    git_sha: str | None
     # The session's build plan after the undo marked the change undone; None without one.
     build_plan: AssistantBuildPlan | None
 
@@ -4680,6 +4692,10 @@ class TrainEstimateResponse(BaseModel):
     training_mb: float | None
     available_mb: float
     bytes_per_row: float | None
+    """What each training row adds to the peak."""
+    fixed_mb: float | None
+    """The part of the peak no row count changes: ``training_mb`` is this plus
+    ``bytes_per_row`` for each row."""
     was_downsampled: bool = False
     warning: str | None = None
     # GPU VRAM estimation
@@ -4701,7 +4717,7 @@ class TrainEstimateResponse(BaseModel):
 
     @model_validator(mode="after")
     def _figures_match_availability(self) -> TrainEstimateResponse:
-        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row, self.fixed_mb)
         if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
             raise ValueError("a worst-case row bound has no downsampling verdict or warning")
         if self.fit_mode == "out_of_core" and (
@@ -5288,13 +5304,13 @@ class OptimiserRatebookCdTrace(BaseModel):
 
 
 class OptimiserBisectionProbe(BaseModel):
-    """One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's
-    ``point_history``), in the order it ran."""
+    """One fixed-λ apply a bisection ran, a one-constraint solve's or a 1-D frontier
+    point's (price-contour's ``history`` or ``point_history``), in the order it ran."""
 
     model_config = _STRICT_ROW
 
     step: int = Field(ge=0)
-    """0-based probe number within the point."""
+    """0-based probe number within the solve or point."""
     phase: Literal["bracket", "bisect"]
     """``bracket``: the λ=0 probe or a doubling before the target is bracketed;
     ``bisect``: the midpoint of the established bracket."""
@@ -5307,8 +5323,8 @@ class OptimiserBisectionProbe(BaseModel):
     all_constraints_satisfied: bool
     """The probe met the target one-sidedly."""
     accepted: bool
-    """The probe became the point's answer; the point's λ and totals are its last accepted
-    probe's."""
+    """The probe became the answer; the solve's or point's λ and totals are its last
+    accepted probe's."""
 
     @model_validator(mode="after")
     def _one_constraint_and_its_bracket(self) -> OptimiserBisectionProbe:
@@ -5640,6 +5656,9 @@ class OptimiserFrontierPointSummary(BaseModel):
     cd_iterations: int | None
     clamp_rate: float | None
     history: list[OptimiserHistoryEntry] | None
+    # Always ``None``: a point's own trace is loaded on request (frontier select with
+    # ``include_history``), so applying the summary removes the solve's bisection.
+    bisection_history: None
     ratebook_cd_trace: OptimiserRatebookCdTrace | None
     # Always ``None``: a point's report is loaded on request (frontier select
     # with ``include_adjustments``), so applying the summary removes the solve's.
@@ -5716,8 +5735,11 @@ class OptimiserSolveResult(BaseModel):
     n_steps: int | None = None
     cd_iterations: int | None = None
     factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
-    # Online only: every online solve records its per-iteration history.
+    # Online, more than one constraint or none: the subgradient solve's iterations.
     history: list[OptimiserHistoryEntry] | None = None
+    # Online, one constraint: the solve's bisection on λ, probe by probe, as a bisection
+    # frontier point's trace (price-contour 0.11.0). Never beside ``history``.
+    bisection_history: list[OptimiserBisectionProbe] | None = Field(default=None, min_length=1)
     # Ratebook only: the live solve's coordinate-descent trace.
     ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
@@ -5766,6 +5788,16 @@ class OptimiserSolveResult(BaseModel):
         _require_convergence_record_of_its_mode(
             self.mode, self.history, self.ratebook_cd_trace, list(self.constraints)
         )
+        if self.bisection_history is not None:
+            if self.mode != "online" or self.history is not None:
+                raise ValueError(
+                    "bisection_history is a one-constraint online solve's, never beside history"
+                )
+            _require_constraint_names(
+                self.bisection_history[0].lambdas,
+                list(self.constraints),
+                field="bisection_history",
+            )
         return self
 
 

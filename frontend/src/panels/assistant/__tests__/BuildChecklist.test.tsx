@@ -28,6 +28,8 @@ function change(id: string, summary: string): AssistantChangeRecord {
       truncated: false,
     },
     warnings: [],
+    identity_required: false,
+    uncaptured: [],
     git_sha: null,
     parent_sha: null,
     revision: "e".repeat(64),

@@ -1,18 +1,23 @@
-"""Fresh-process evidence for training memory per model family.
+"""Fresh-process evidence for training memory per model family, and its gate.
 
-``_estimate_peak_bytes`` (``src/haute/_ram_estimate.py``) multiplies rows by the
-source row width and one overhead multiplier for every family. Each family here
-trains a canonical Haute job on the same generated parquet (30 numeric and 5 string
-categorical features, a Poisson frequency target, an exposure weight) in a fresh
-process, as the training worker runs it, at several row counts
-(``_training_family_memory_probe.py``). The figures set against the estimate's
-prediction for the same source decide whether the multiplier becomes per family.
+The pre-training RAM estimate sizes a job by its family's ``TrainingMemoryProfile``
+(``src/haute/modelling/_descriptors.py``): a fixed part plus a factor on the rows'
+estimated width. Each family here trains a canonical Haute job on the same generated
+parquet (30 numeric and 5 string categorical features, a Poisson frequency target, an
+exposure weight) in a fresh process, as the training worker runs it, at several row
+counts (``_training_family_memory_probe.py``), and again on numeric-only and
+high-cardinality data. Each job runs under a budget of its profile's prediction, as
+admission grants it, and every measured peak must stay within that prediction, so an
+engine upgrade that grows a job's memory fails here before it under-admits one. A GLM
+on high-cardinality data is held instead by the design check's test: its dense design
+has a column per level, and under a budget the in-memory fit would exceed, the job
+fits out of core within it.
 
 The second test compares XGBoost's external-memory ``ExtMemQuantileDMatrix`` with
 the in-memory ``QuantileDMatrix`` on the same data, seed and ``max_bin``: peak
 resident memory, wall time, predictions and the per-iteration training objective.
 
-Both tests assert only that every probe completes: the figures are evidence.
+The XGBoost comparisons assert only that every probe completes: the figures are evidence.
 
 The third test is MOD-M01's acceptance gate, so the pull-request perf lane runs it: the
 canonical GLM job out of core finishes within a memory budget the in-memory job exceeds.
@@ -42,6 +47,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute._frame_bytes import frame_bytes
 from tests.performance._training_family_memory_probe import (
     CATEGORICAL_LEVELS,
     EVALUATION,
@@ -51,10 +57,12 @@ from tests.performance._training_family_memory_probe import (
     PREDICTION_ROWS,
     ROW_GROUP_ROWS,
     TRAINING_THREADS,
+    WORKLOADS,
     XGBOOST_PARAMS,
     XGBOOST_ROUNDS,
     XGBOOST_VARIANTS,
     current_estimate,
+    predicted_peak_bytes,
     write_training_parquet,
 )
 
@@ -66,6 +74,14 @@ _FAMILY_ROWS_BY_SCALE = {
     "1m": (100_000, 400_000, 1_600_000),
     "10m": (100_000, 400_000, 1_600_000),
 }
+#: Rows for the numeric-only and high-cardinality workloads: their factors are measured
+#: once (specs/modelling/low-level.md), so the weekly lane holds them at one size.
+_WORKLOAD_ROWS_BY_SCALE = {"ci": (20_000,), "1m": (100_000,), "10m": (100_000, 400_000)}
+#: Rows for the design check's high-cardinality GLM, at every scale: enough for its dense
+#: in-memory design (16 KB a row) to outweigh the out-of-core fit's own state.
+_GLM_WIDE_DESIGN_ROWS = 100_000
+#: Its budget, as a share of what the design check says the in-memory fit takes.
+_GLM_WIDE_DESIGN_BUDGET_SHARE = 3 / 4
 #: Rows for the chunked GLM acceptance: where the in-memory fit's design dominates.
 _GLM_CHUNKED_ROWS_BY_SCALE = {"ci": 300_000, "1m": 1_600_000, "10m": 6_400_000}
 #: The out-of-core job's growth budget, as a share of the in-memory job's growth. Lean
@@ -149,24 +165,24 @@ def _record(request: pytest.FixtureRequest, **evidence: object) -> None:
 @pytest.fixture(scope="module")
 def training_source(
     tmp_path_factory: pytest.TempPathFactory,
-) -> Iterator[Callable[[int], dict[str, Any]]]:
-    """Generate each row count's parquet once, with its in-memory size and estimate."""
+) -> Iterator[Callable[..., dict[str, Any]]]:
+    """Generate each workload's parquet once per row count, with its size and estimate."""
     root = tmp_path_factory.mktemp("training-family-memory")
-    sources: dict[int, dict[str, Any]] = {}
+    sources: dict[tuple[int, str], dict[str, Any]] = {}
 
-    def source(rows: int) -> dict[str, Any]:
-        if rows not in sources:
-            path = root / f"training-{rows}.parquet"
-            write_training_parquet(path, rows)
+    def source(rows: int, workload: str = "canonical") -> dict[str, Any]:
+        if (rows, workload) not in sources:
+            path = root / f"training-{workload}-{rows}.parquet"
+            write_training_parquet(path, rows, workload)
             frame = pl.read_parquet(path)
-            sources[rows] = {
+            sources[rows, workload] = {
                 "path": path,
                 "parquet_bytes": path.stat().st_size,
-                "frame_bytes": int(frame.estimated_size()),
+                "frame_bytes": frame_bytes(frame),
                 "estimate": current_estimate(path),
             }
             del frame
-        return sources[rows]
+        return sources[rows, workload]
 
     yield source
     for generated in sources.values():
@@ -228,36 +244,56 @@ def _linear_fit(xs: list[float], ys: list[float]) -> dict[str, float] | None:
     return {"fixed_bytes": float(fixed), "slope": float(slope)}
 
 
-@pytest.mark.perf_evidence
-@pytest.mark.parametrize("family", FAMILIES)
-def test_training_family_peak_memory_is_measured(
+def _measure_family(
     family: str,
-    training_source: Callable[[int], dict[str, Any]],
-    tmp_path: Path,
-    request: pytest.FixtureRequest,
-) -> None:
+    workload: str,
+    row_counts: tuple[int, ...],
+    training_source: Callable[..., dict[str, Any]],
+    work: Path,
+) -> list[dict[str, Any]]:
+    """One fresh-process job per row count, with what the family's profile predicts.
+
+    Each job's budget is its prediction, as admission grants it, so a GLM whose dense
+    design would outgrow it fits out of core (the design check).
+    """
     measurements = []
-    for rows in _FAMILY_ROWS_BY_SCALE[_scale()]:
-        source = training_source(rows)
-        probe = _run_probe(
-            ["--mode", "family", "--family", family], source["path"], tmp_path / f"{rows}"
-        )
+    for rows in row_counts:
+        source = training_source(rows, workload)
         estimate = source["estimate"]
-        frame_bytes = source["frame_bytes"]
+        predicted = predicted_peak_bytes(estimate, family)
+        probe = _run_probe(
+            [
+                "--mode",
+                "family",
+                "--family",
+                family,
+                "--workload",
+                workload,
+                "--memory-limit-bytes",
+                str(predicted),
+            ],
+            source["path"],
+            work / f"{workload}-{rows}",
+        )
+        frame_size = source["frame_bytes"]
         width_bytes = rows * estimate["base_bytes_per_row"]
         growth = probe["peak_rss_bytes"] - probe["baseline_rss_bytes"]
         measurements.append(
             {
                 "rows": rows,
+                "workload": workload,
                 "parquet_bytes": source["parquet_bytes"],
-                "frame_bytes": frame_bytes,
+                "frame_bytes": frame_size,
                 "baseline_rss_bytes": probe["baseline_rss_bytes"],
                 "peak_rss_bytes": probe["peak_rss_bytes"],
-                "peak_minus_baseline_over_frame": growth / frame_bytes,
+                "address_space_peak_bytes": probe["address_space_peak_bytes"],
+                "baseline_address_space_bytes": probe["baseline_address_space_bytes"],
+                "peak_minus_baseline_over_frame": growth / frame_size,
                 "estimate_base_bytes_per_row": estimate["base_bytes_per_row"],
-                "estimate_predicted_peak_bytes": estimate["predicted_peak_bytes"],
-                "peak_over_estimate": probe["peak_rss_bytes"] / estimate["predicted_peak_bytes"],
-                # The multiplier the estimate would need on its own row width.
+                "estimate_predicted_peak_bytes": predicted,
+                "budget_bytes": predicted,
+                "peak_over_estimate": probe["peak_rss_bytes"] / predicted,
+                # The factor the estimate would need on its own row width, with no fixed part.
                 "implied_multiplier_peak": probe["peak_rss_bytes"] / width_bytes,
                 "implied_multiplier_peak_minus_baseline": growth / width_bytes,
                 "wall_seconds": probe["wall_seconds"],
@@ -270,7 +306,12 @@ def test_training_family_peak_memory_is_measured(
                 "diagnostics_errors": probe["diagnostics_errors"],
             }
         )
+    return measurements
 
+
+def _record_family(
+    request: pytest.FixtureRequest, family: str, measurements: list[dict[str, Any]]
+) -> None:
     _record(
         request,
         scenario="training_family_peak_memory",
@@ -283,13 +324,14 @@ def test_training_family_peak_memory_is_measured(
             "loss": "Poisson",
         },
         artifact_paths=[
-            "src/haute/_ram_estimate.py:_estimate_peak_bytes",
+            "src/haute/modelling/_descriptors.py:TrainingMemoryProfile",
+            "src/haute/_ram_estimate.py:_training_peak_bytes",
             "src/haute/modelling/_training_job.py:TrainingJob.run",
             "src/haute/routes/_training_worker.py:_run_training_process_job",
         ],
         measurements=measurements,
         # Peak RSS against the frame size, and against the estimator's own row width:
-        # the slope is the per-family multiplier, the fixed part the per-job overhead.
+        # the slope is the family's factor, the fixed part its per-job memory.
         peak_fit_by_frame_bytes=_linear_fit(
             [m["frame_bytes"] for m in measurements],
             [m["peak_rss_bytes"] for m in measurements],
@@ -299,6 +341,114 @@ def test_training_family_peak_memory_is_measured(
             [m["peak_rss_bytes"] for m in measurements],
         ),
     )
+
+
+def _over_their_prediction(measurements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            key: m[key]
+            for key in ("rows", "workload", "peak_rss_bytes", "estimate_predicted_peak_bytes")
+        }
+        for m in measurements
+        if m["peak_rss_bytes"] > m["estimate_predicted_peak_bytes"]
+    ]
+
+
+@pytest.mark.perf_evidence
+@pytest.mark.parametrize("family", FAMILIES)
+def test_training_family_peak_memory_stays_within_its_profile(
+    family: str,
+    training_source: Callable[..., dict[str, Any]],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    measurements = _measure_family(
+        family, "canonical", _FAMILY_ROWS_BY_SCALE[_scale()], training_source, tmp_path
+    )
+    _record_family(request, family, measurements)
+    assert _over_their_prediction(measurements) == []
+
+
+#: Every family on numeric-only and high-cardinality data, but a GLM on high-cardinality
+#: data: its design has a column per level, which no width-based profile holds (below).
+_WORKLOAD_CASES = [
+    (family, workload)
+    for workload in WORKLOADS
+    if workload != "canonical"
+    for family in FAMILIES
+    if (family, workload) != ("glm", "wide")
+]
+
+
+@pytest.mark.perf_evidence
+@pytest.mark.parametrize(("family", "workload"), _WORKLOAD_CASES)
+def test_numeric_and_high_cardinality_jobs_stay_within_the_profile(
+    family: str,
+    workload: str,
+    training_source: Callable[..., dict[str, Any]],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """No categoricals, and 1,984 levels across five: one profile holds both."""
+    measurements = _measure_family(
+        family, workload, _WORKLOAD_ROWS_BY_SCALE[_scale()], training_source, tmp_path
+    )
+    _record_family(request, family, measurements)
+    assert _over_their_prediction(measurements) == []
+
+
+@pytest.mark.perf_evidence
+def test_a_glm_whose_design_outgrows_its_budget_fits_out_of_core_within_it(
+    training_source: Callable[..., dict[str, Any]],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """The design check: 2,010 design columns, under a budget the in-memory fit exceeds.
+
+    The out-of-core fit keeps state that grows with the square of the design's columns,
+    so the rows are enough for the in-memory design to outweigh it.
+    """
+    from haute.modelling._rustystats import glm_in_memory_fit_bytes
+    from haute.modelling._train_config import build_training_job_kwargs
+    from tests.performance._training_family_memory_probe import node_config
+
+    source = training_source(_GLM_WIDE_DESIGN_ROWS, "wide")
+    job = build_training_job_kwargs(node_config("glm", "wide"), data=str(source["path"]))
+    in_memory_bytes = glm_in_memory_fit_bytes(
+        job["params"], pl.read_parquet(source["path"]), job["target"]
+    )
+    budget = int(in_memory_bytes * _GLM_WIDE_DESIGN_BUDGET_SHARE)
+    probe = _run_probe(
+        [
+            "--mode",
+            "family",
+            "--family",
+            "glm",
+            "--workload",
+            "wide",
+            "--memory-limit-bytes",
+            str(budget),
+        ],
+        source["path"],
+        tmp_path / "glm-wide",
+    )
+    growth = probe["peak_rss_bytes"] - probe["baseline_rss_bytes"]
+
+    _record(
+        request,
+        scenario="glm_design_check",
+        rows=_GLM_WIDE_DESIGN_ROWS,
+        in_memory_fit_bytes=in_memory_bytes,
+        budget_bytes=budget,
+        growth_bytes=growth,
+        peak_rss_bytes=probe["peak_rss_bytes"],
+        profile_predicted_peak_bytes=predicted_peak_bytes(source["estimate"], "glm"),
+        peak_stage=probe["peak_stage"],
+        wall_seconds=probe["wall_seconds"],
+        fit_evidence=probe["fit_evidence"],
+    )
+    assert probe["fit_evidence"]["mode"] == "out_of_core"
+    assert growth <= budget
 
 
 def _agreement(candidate: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
@@ -326,7 +476,7 @@ def _agreement(candidate: dict[str, Any], reference: dict[str, Any]) -> dict[str
 
 @pytest.mark.perf_evidence
 def test_xgboost_external_memory_is_measured_against_the_in_memory_fit(
-    training_source: Callable[[int], dict[str, Any]],
+    training_source: Callable[..., dict[str, Any]],
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
@@ -395,7 +545,7 @@ def test_xgboost_external_memory_is_measured_against_the_in_memory_fit(
 
 
 def test_glm_out_of_core_fits_within_a_budget_the_in_memory_fit_exceeds(
-    training_source: Callable[[int], dict[str, Any]],
+    training_source: Callable[..., dict[str, Any]],
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
@@ -458,7 +608,7 @@ def test_glm_out_of_core_fits_within_a_budget_the_in_memory_fit_exceeds(
 
 
 def test_evaluation_planning_and_split_stay_within_their_share_of_the_old_rise(
-    training_source: Callable[[int], dict[str, Any]],
+    training_source: Callable[..., dict[str, Any]],
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
@@ -493,7 +643,7 @@ def test_evaluation_planning_and_split_stay_within_their_share_of_the_old_rise(
 
 @pytest.mark.perf_evidence
 def test_the_xgboost_job_is_measured_end_to_end_in_both_fit_modes(
-    training_source: Callable[[int], dict[str, Any]],
+    training_source: Callable[..., dict[str, Any]],
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:

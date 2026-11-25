@@ -632,7 +632,12 @@ constraint, swept or not, as Constraint | Kind | Bound | Achieved | Slack | Stat
 the backend's `effective_bounds` for that result, the bound it was actually solved at, so the
 two panes cannot disagree. Status is text ("Met" or "Breached") with an icon, colour only a
 secondary cue, judged by a strict comparison with no tolerance; the signed slack percentage is
-always shown. There is no "binding" judgement. Quotes explores the per-quote chosen
+always shown. There is no "binding" judgement. A result that breaches a bound says so where it
+says it converged, in both modes, since a converged solve (a ratebook's above all) can still end
+short of a bound it could meet: the result header's status and the SOLVE pane's line add
+"1 bound breached" ("2 bounds breached", …) beside "Converged" or "Not converged", and a warning
+names each breach, e.g. "volume 1,835.1 is 1.78% under its minimum of 1,868.27.", from the same
+judgement as the Summary table, so the three never disagree. Quotes explores the per-quote chosen
 scenarios of the publish target on demand, a page at a time sorted, searched and filtered on the
 server over every quote: sortable headers, presets ("Highest adjustment", "Lowest adjustment",
 "At range edge", and for ratebook "Deployed ≠ evaluated"), a quote-id search, a filter per

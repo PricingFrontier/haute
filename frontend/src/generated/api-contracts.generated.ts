@@ -312,11 +312,13 @@ export interface AssistantTranscriptEntry {
   title: string;
 }
 /**
- * The value-free change card of one saved plan.
+ * The value-free change card of one saved plan, with its save's version capture.
  *
  * ``id`` is the hash of the plan it saved; a plan applies once, so it names
  * this change. ``summary`` and ``assumptions`` are the model's own words from
- * the plan's dry-run; everything else is built from what was saved.
+ * the plan's dry-run; everything else is built from what was saved, the
+ * capture fields (`SaveCapture`) as the save answered them, which the editor
+ * reports as it reports any save's.
  * ``data_check`` is the plan's data check, or ``None`` when no check was
  * attempted or its findings describe another graph.
  */
@@ -329,9 +331,11 @@ export interface AssistantChangeRecord {
   data_check: AssistantChangeDataCheck | null;
   git_sha: string | null;
   id: string;
+  identity_required: boolean;
   parent_sha: string | null;
   revision: string;
   summary: string;
+  uncaptured: string[];
   warnings: string[];
 }
 /**
@@ -435,10 +439,17 @@ export interface AssistantSessionSummary {
   session_id: string;
   title: string;
 }
+/**
+ * The change an undo undid, with the undo's save capture (``git_sha`` its commit, or
+ * None when it was not captured in Git).
+ */
 export interface AssistantUndoResponse {
   build_plan: AssistantBuildPlan | null;
   change_id: string;
   git_sha: string | null;
+  identity_required: boolean;
+  uncaptured: string[];
+  warnings: string[];
 }
 export interface AssistantTextDeltaEvent {
   text: string;
@@ -2242,6 +2253,7 @@ export interface TrainEstimateResponse {
   estimated_mb: number | null;
   evaluation_preview?: EvaluationPreviewPayload;
   fit_mode: 'in_memory' | 'out_of_core';
+  fixed_mb: number | null;
   gpu_vram_available_mb: number | null;
   gpu_vram_estimated_mb: number | null;
   gpu_vram_rows: number | null;
@@ -2418,6 +2430,7 @@ export interface OptimiserFrontierResponse {
  */
 export interface OptimiserFrontierPointSummary {
   adjustments: null;
+  bisection_history: null;
   cd_iterations: number | null;
   clamp_rate: number | null;
   constraints: {
@@ -2579,6 +2592,10 @@ export interface OptimiserSolveResult {
     [k: string]: number;
   };
   baseline_objective: number;
+  /**
+   * @minItems 1
+   */
+  bisection_history: OptimiserBisectionProbe[] | null;
   cd_iterations: number | null;
   clamp_rate: number | null;
   combined_factor_bounds: OptimiserCombinedFactorBounds | null;
@@ -2680,6 +2697,25 @@ export interface OptimiserAdjustmentQuantiles {
   p50: number;
   p75: number;
   p95: number;
+}
+/**
+ * One fixed-λ apply a bisection ran, a one-constraint solve's or a 1-D frontier
+ * point's (price-contour's ``history`` or ``point_history``), in the order it ran.
+ */
+export interface OptimiserBisectionProbe {
+  accepted: boolean;
+  all_constraints_satisfied: boolean;
+  bracket_hi: number | null;
+  bracket_lo: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  phase: 'bracket' | 'bisect';
+  step: number;
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
 }
 /**
  * The scenario range a ratebook solve scored: the deployed factor's collar.
@@ -2859,25 +2895,6 @@ export interface OptimiserBisectionPointHistory {
    * @minItems 1
    */
   probes: OptimiserBisectionProbe[];
-}
-/**
- * One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's
- * ``point_history``), in the order it ran.
- */
-export interface OptimiserBisectionProbe {
-  accepted: boolean;
-  all_constraints_satisfied: boolean;
-  bracket_hi: number | null;
-  bracket_lo: number | null;
-  lambdas: {
-    [k: string]: number;
-  };
-  phase: 'bracket' | 'bisect';
-  step: number;
-  total_constraints: {
-    [k: string]: number;
-  };
-  total_objective: number;
 }
 /**
  * A multi-constraint frontier point's subgradient iterations, as a solve records them.

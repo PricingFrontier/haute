@@ -11,6 +11,7 @@ import price_contour
 import pytest
 
 from haute.routes._frontier_point_summary import (
+    BEYOND_GRID_WARNING,
     NON_CONVERGED_WARNING,
     FrontierPointDataError,
     apply_frontier_point_summary,
@@ -173,6 +174,7 @@ def test_summary_reads_every_point_specific_field_from_the_typed_point() -> None
         "cd_iterations": None,
         "clamp_rate": None,
         "history": None,
+        "bisection_history": None,
         "ratebook_cd_trace": None,
         "adjustments": None,
         "factor_tables": None,
@@ -190,13 +192,23 @@ def test_a_ratebook_summary_reports_the_clamp_rate_and_no_report() -> None:
     assert summary["iterations"] == 7
 
 
-def test_a_non_converged_point_carries_the_warning() -> None:
+@pytest.mark.parametrize(
+    ("reason", "warning"),
+    [
+        ("above_envelope", BEYOND_GRID_WARNING),
+        ("bracket_exhausted", BEYOND_GRID_WARNING),
+        ("iteration_budget_exhausted", NON_CONVERGED_WARNING),
+    ],
+)
+def test_a_non_converged_point_says_why(reason: str, warning: str) -> None:
+    """A bisection point stops short only of a bound past the grid, which more iterations
+    never change; a subgradient point used up its iterations (OPM-02)."""
     summary = frontier_point_summary(
-        _online_point(converged=False, non_convergence_reason="bracket_exhausted"), _KINDS
+        _online_point(converged=False, non_convergence_reason=reason), _KINDS
     )
 
     assert summary["converged"] is False
-    assert summary["warning"] == NON_CONVERGED_WARNING
+    assert summary["warning"] == warning
 
 
 def test_applying_a_summary_replaces_point_fields_and_removes_absent_ones() -> None:

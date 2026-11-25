@@ -20,11 +20,13 @@ from haute._failure_answers import worker_failure_payload
 from haute._file_ops import path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import (
+    MALLOC_ARENA_MAX_ENV,
     NativeMemoryLease,
     cleanup_private_cgroups_for_pid,
     memory_error_for_thread_start_failure,
     native_memory_backend_scope,
     native_memory_caps_supported,
+    spawned_malloc_arena_environment,
     start_polars_thread_pools,
 )
 from haute._parent_watch import PARENT_PID_ENV, exit_with_parent
@@ -546,7 +548,9 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
     process stays in force here; the child is handed the setting it caps and
     applies it at entry (``apply_spawned_streaming_chunk_size``). Every child runs
     a Polars pool of at least ``MIN_POLARS_THREADS`` threads
-    (``spawned_polars_threads``).
+    (``spawned_polars_threads``), and every Linux child a bounded number of malloc
+    arenas, so its address-space cap is not spent on arena reservations
+    (``spawned_malloc_arena_environment``).
     """
     from haute._polars_utils import streaming_chunk_size_for_spawn
 
@@ -558,6 +562,7 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
         # does (see ``haute._parent_watch``).
         environment = {
             **chunk_environment,
+            **spawned_malloc_arena_environment(os.environ.get(MALLOC_ARENA_MAX_ENV)),
             **environment,
             **({} if threads is None else {POLARS_THREADS_ENV: threads}),
             PARENT_PID_ENV: str(os.getpid()),

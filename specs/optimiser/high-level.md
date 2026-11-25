@@ -8,7 +8,9 @@ problem shapes: **online** optimisation, which picks one winning scenario per qu
 scored candidate grid, and **ratebook** optimisation, which solves banded rating factors
 (e.g. age-band, region multipliers) against portfolio-level constraints instead of per-quote
 choices. Both shapes are solved by the external `price-contour` library using a Lagrangian
-(lambda-based) constrained-optimisation approach; this component is the orchestration layer
+(lambda-based) constrained-optimisation approach (an online solve with one constraint bisects its
+lambda, as the frontier's point at that bound does, so the two are one answer; more constraints
+run the subgradient method); this component is the orchestration layer
 around that library — running it as a background job, exposing efficient-frontier exploration,
 letting a user apply/preview/save/log the result, and later re-loading a saved result so a
 pipeline can price new data with it.
@@ -93,7 +95,11 @@ worker. The grid build, the solve, the inline frontier and frontier
 point applies then run in the job's *solver session*: one dedicated spawn worker per solve that
 holds the solver and quote grid for as long as the result keeps them, under a native memory cap
 re-sized before every command to what the machine can give at that moment and never lifted
-(OPT-W01). Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
+(OPT-W01). The editor shows one solve per node, so a node solved again lets go of the solves it
+replaces: once the new solve completes, that node's earlier solves in the project are slimmed
+to their summaries, as their retention window would later slim them, which ends their
+sessions; and at most three completed solves (`HAUTE_OPTIMISER_RETAINED_SOLVES`) keep their
+runtime at once, the least recently used slimmed first. Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
 that exceeds the cap stops, as `memory_limited`, with the server and other jobs unaffected;
 cancelling a solve terminates its session at once. The explicit `thread` compatibility mode runs
 the same steps on the job's thread and keeps the solve-memory forecast as its gate. Before a solve, the Solve
@@ -295,7 +301,8 @@ is impractical, and polling lets the UI show live progress.
 In process mode those heavy objects live only in the job's solver session process, never in
 the server: a native optimiser call cannot be stopped by the server's RSS supervision, so the
 only safe place for one is a process whose kernel cap kills it alone. The job store keeps the
-session handle under the same retention window, and dropping it ends the process. Heavy
+session handle under the same retention window, and dropping it ends the process; a solve the
+node's newer solve replaces, or one past the retained-solve ceiling, is dropped at once. Heavy
 runtime objects a solve produces (the solver instance, the built `QuoteGrid`, the raw
 solve result with its dataframe) are kept only for a short retention window,
 then the job is slimmed to its API-facing summary. Anything a later request might need past
@@ -307,7 +314,10 @@ memory for long solve sessions without forcing every result to be re-solved on e
 The grid builder reads each quote's scenario rows together, one quote after another, in
 scenario order, as the Scenario Expander writes them. A step between the Expander and the
 optimiser that leaves row order to Polars can mix quotes' rows; such an input fails setup
-with a 400 naming the quote column, and never becomes a grid.
+with a 400 naming the quote column, and never becomes a grid. Every quote shares one scenario
+grid, whose values rise strictly with the scenario index: an input whose values do not rise (an
+Expander whose Min is not below its Max) or whose quotes carry different values fails setup
+with a 400 naming the scenario value column, the step and the values.
 
 Grid construction itself avoids materialising the scored dataframe twice in Python. `_build_grid`
 (`_optimiser_service.py`) sinks the scored lazy frame to a temporary Parquet file via
@@ -433,7 +443,11 @@ column, an `analysis_input` that is not one exact connected input name, an analy
 without the configured quote-id column (or with one of an unsupported dtype), an analysis
 column the chosen frame does not have, and an analysis column that varies within a quote
 (`AnalysisColumnNotConstantError`, naming each column, how many quotes vary and one example
-quote). A second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
+quote). Scenario values that do not rise with the scenario index, and a quote whose scenario
+values are not the first quote's, are 400s naming the columns, the step and the values. A
+failure of the pipeline while setup writes the solver input or the quote-analysis table is said
+as a preview of the node says it (a 128-bit integer column, which no Parquet file Haute writes
+can hold, named with the cast that fixes it), never as an incident. A second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
 solve setup conflicts with a running background auto-range setup; a repeated background
 auto-range start for the same graph fingerprint/node returns the existing job id instead of
 creating, queuing, or superseding work.

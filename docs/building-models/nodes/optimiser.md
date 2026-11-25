@@ -28,6 +28,8 @@ If a mapped column is not in the input, the **SOLVE** pane names it (for example
 
 The optimiser reads each quote's scenario rows together, one quote after another, in **Scenario Index** order, as the [Expander](scenario-expander.md) writes them. A step between the Expander and the optimiser that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order** set to **None**, can mix quotes' rows; the solve then stops with a message naming the **Row ID** and **Scenario Index** columns and the first quote out of place.
 
+Every quote must have the same scenario values, rising with the **Scenario Index**. An Expander whose **Min** is not below its **Max** gives values that fall or stay the same, and the solve stops naming the **Scenario Value** column, the first step that does not rise and its value; a quote whose values differ from the first quote's stops it naming that quote, the step and both values.
+
 ## The FACTORS pane
 
 In **Ratebook** mode the pane opens with **RATING FACTOR SOURCE**: the connected [Banding](banding.md) input that supplies the rating-factor levels. Choosing it ticks every factor it defines for optimisation. With no Banding node connected the pane says **No Banding nodes found. Add a Banding node to define rating factors.**; a Banding output with no valid levels is named, asking you to add labelled rules before selecting it.
@@ -67,7 +69,7 @@ The pane opens with **SOLVER SETTINGS**:
 
 | Field | What it does |
 |---|---|
-| **Max iterations** | Maximum solver iterations. Defaults to 50. |
+| **Max iterations** | Maximum solver iterations. Defaults to 50. An **Online** solve with one constraint searches that constraint's λ directly, as a frontier point does, and does not use it. |
 | **Tolerance** | How close to optimal the solution needs to be before stopping. Smaller values give more precise results but take longer. Defaults to `1e-6`. |
 | **CD iterations** | Ratebook mode: maximum coordinate descent iterations. Defaults to 10. |
 | **CD tolerance** | Ratebook mode: coordinate descent convergence tolerance. Defaults to `1e-3`. |
@@ -80,7 +82,7 @@ Below the settings:
 - Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios / quote** and **Total rows**, and **Estimated solve memory** against the memory a solve started now would be given. The memory figure is an estimate from the input's size; a warning icon marks it when it is more than the machine can give, and **Optimise** still runs: the solve stops only if it really runs out. It warns when each quote has one scenario (**Each quote has one scenario, so the optimiser has nothing to choose between. Check the Scenario Index mapping.**) or when quotes have different numbers of scenarios.
 - **Optimise** runs the solve (Ctrl+Enter from anywhere in the node's panel does the same). If anything blocks the solve, the button is disabled and a **Complete before optimising** list names each problem with a **Go to …** link to the pane that fixes it.
 - While the solve runs, the pane shows its progress and a **Stop** button.
-- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with advice, usually to increase the maximum iterations or relax the tolerance. A failed solve shows **Optimisation failed** and the reason.
+- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with the reason: for an **Online** solve with one constraint, a bound beyond what the scenario grid allows, where only a wider scenario range or a looser bound helps; otherwise its iterations used up, where more iterations or a looser tolerance may help. A solve can converge and still end short of a bound, a ratebook solve above all: it then adds **1 bound breached** (or **2 bounds breached**, and so on) to that line, with a warning naming each constraint, what the solve achieved and how far it is from the bound, for example **volume 1,835.1 is 1.78% under its minimum of 1,868.27.** A failed solve shows **Optimisation failed** and the reason.
 
 ## The EXPORT pane
 
@@ -108,7 +110,7 @@ A ratebook result also states its **Combined factor collar**: the optimiser scor
 
 ## Reading the result
 
-A finished solve opens in a results panel under the canvas. Its header shows whether the solve converged, its iterations and its number of quotes. Every figure is an expected value from the scoring models on the solve's quotes, not an observed outcome. The views:
+A finished solve opens in a results panel under the canvas. Its header shows whether the solve converged, how many bounds it breached when it breached any, its iterations and its number of quotes; a breach also shows as a warning under the header. Every figure is an expected value from the scoring models on the solve's quotes, not an observed outcome. The views:
 
 - **Frontier** (when a frontier was computed): each point is a solve at a different constraint target, the highest expected objective found at that level. The line joins feasible points (converged, with every bound met); a hollow point did not converge and a cross converged but breaches a bound. The ringed marker is the solve itself. The points table beside the chart lists each point's bound, achieved total, objective and status. Selecting a point in either makes it what the **EXPORT** pane publishes, and the summary under the chart describes it. With more than one swept constraint, **X axis:** chooses the constraint to plot against and **Holding … at** chooses the values the others are held at (a % of baseline constraint's as percentages). Points that land on the same spot share one marker, which shows the selected point when it is one of them. The arrows in the panel header step to the previous or next point.
 - **Summary** (under the frontier chart, or a view of its own when nothing was swept): the objective and, per constraint, the bound the result was solved at, the achieved total, the slack, whether the bound is met, and λ, the constraint's multiplier. A min constraint enters each quote's choice as +λ × its column and a max constraint as −λ × its column. In ratebook mode, the clamp rate is the mean, over every grouped solve, of the share of (quote, candidate) targets strictly outside the scenario range; quotes at a grid edge are not counted. For the solve itself, it also shows the shares of quotes adjusted up, down and to the edge of the range, with a link to **Adjustments**. A ratebook result adds a **MECHANICAL PRICE EFFECT** chart: a dot for each level of the factors whose rates move most (the top 8, or **All**), placed by the effect of its rate on a log scale and coloured by the level's value.
@@ -116,7 +118,7 @@ A finished solve opens in a results panel under the canvas. Its header shows whe
 - **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, against 1.0, the base price with no adjustment.
 - **Segments**: the mean chosen scenario value for each level of a validation or rating factor, with the shares adjusted up, down and at the edge of the range.
 - **Quotes**: the scenario value chosen for each quote, with its expected objective and constraint values.
-- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes). With a frontier point selected, it shows that point's own solve; a point found by bisection shows each λ probed within its bracket.
+- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes). A solve with one constraint, and a frontier point found by bisection, shows each λ probed within its bracket. With a frontier point selected, it shows that point's own solve.
 - **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes. On these views the header describes the sampled input instead of the solve.
 
 When the node's settings have changed since the solve, the results panel says so and offers **Re-run**.

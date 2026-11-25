@@ -23,6 +23,7 @@ from haute._cache import CacheConsumer, checked_cache_input_values
 from haute._chunked_writes import _budgeted_rows, part_name, part_paths, scan_parts, sliceable
 from haute._execution_context import current_execution_context
 from haute._file_ops import ensure_disk_headroom
+from haute._frame_bytes import frame_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
@@ -1895,7 +1896,7 @@ def _batch_score_to_parquet(
         refuse_wide_integers(frame.schema)
         path = out_dir / part_name(len(written))
         written.append(path)
-        ensure_disk_headroom(out_dir, int(frame.estimated_size()))
+        ensure_disk_headroom(out_dir, frame_bytes(frame))
         if destination is None:
             frame.write_parquet(path, compression="lz4")
             return

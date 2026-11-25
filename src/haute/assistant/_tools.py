@@ -15,7 +15,8 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
@@ -56,6 +57,7 @@ from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind
 from haute._polars_io_registry import PolarsIoConfigError
+from haute._polars_steps import COMMENT_FIELD
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
@@ -315,11 +317,13 @@ def _submitted_names(submitted: object) -> set[str]:
     return names
 
 
-class _ToolCallPolicy:
-    """The egress policy of one tool call, read from ``haute.toml`` at most once.
+class _TurnPolicy:
+    """The egress policy one turn's tool calls answer under, read at most once.
 
-    *policy* seeds it where the call continues in a spawned worker, which cannot
-    inherit this context and must not read the configuration again.
+    *policy* is the turn's provider's, which the route passes; without one the
+    project's is read from ``haute.toml`` when a call first needs it and kept for
+    the rest of the turn. A spawned worker, which cannot inherit this context,
+    is seeded with the policy and never reads the configuration.
     """
 
     def __init__(self, policy: EgressPolicy | None = None) -> None:
@@ -333,19 +337,32 @@ class _ToolCallPolicy:
             return self._policy
 
 
-#: Set by the tool executor around one call. A context variable, because the
-#: error paths that decide what a message may quote run deep below the tools
-#: and on the worker threads ``asyncio.to_thread`` copies the context to.
-_TOOL_CALL_POLICY: ContextVar[_ToolCallPolicy | None] = ContextVar(
+#: Set by the tool executor around each call of its turn, to the turn's one `_TurnPolicy`.
+#: A context variable, because the error paths that decide what a message may quote run
+#: deep below the tools and on the worker threads ``asyncio.to_thread`` copies the
+#: context to.
+_TOOL_CALL_POLICY: ContextVar[_TurnPolicy | None] = ContextVar(
     "assistant_tool_call_policy", default=None
 )
 
 
-def _egress_policy() -> EgressPolicy:
-    """The project's egress policy: once per tool call, or read afresh outside one."""
+@contextmanager
+def _answering_under(policy: _TurnPolicy) -> Iterator[None]:
+    """Everything below answers under *policy*: a tool call of the turn, or the context a
+    turn is sent, whose error texts decide what they quote from it as a tool's do."""
 
-    call = _TOOL_CALL_POLICY.get()
-    return resolve_egress_policy(current_project().root) if call is None else call.get()
+    token = _TOOL_CALL_POLICY.set(policy)
+    try:
+        yield
+    finally:
+        _TOOL_CALL_POLICY.reset(token)
+
+
+def _egress_policy() -> EgressPolicy:
+    """The running turn's egress policy, or the project's read afresh outside a tool call."""
+
+    turn = _TOOL_CALL_POLICY.get()
+    return resolve_egress_policy(current_project().root) if turn is None else turn.get()
 
 
 def _submitted_scalars(submitted: object) -> set[str]:
@@ -1142,7 +1159,10 @@ def _occurrence_schema(
 _MAX_PROFILE_LEVELS = 50
 _MAX_PROFILE_ROWS = 1_000_000
 _MAX_PROFILE_VALUE_CHARS = 120
-_EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script"})
+#: The configuration keys whose values are executable source, withheld unless
+#: `allow_executable_source` permits them. A structured step's `comment` is the
+#: authored text above its statement, as much source as the code it sits in.
+_EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script", COMMENT_FIELD})
 _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
 # Only columns of these kinds carry a value list. A categorical encoding is exactly
 # what authoring needs ("is `fault` Y/N or true/false?"). The cardinality cap
@@ -1496,6 +1516,32 @@ def build_turn_context(
     undone: Sequence[AssistantChangeRecord] = (),
     build_plan: AssistantBuildPlan | None = None,
 ) -> TurnContext:
+    """Gather the turn context's facts for the saved pipeline, under the turn's *egress*.
+
+    The preview error's text decides what it quotes by *egress*, never by a
+    ``haute.toml`` saved since the turn's provider was resolved.
+    """
+
+    with _answering_under(_TurnPolicy(egress)):
+        return _gather_turn_context(
+            source_file,
+            egress,
+            selected_node_ids=selected_node_ids,
+            preview_error_node_id=preview_error_node_id,
+            undone=undone,
+            build_plan=build_plan,
+        )
+
+
+def _gather_turn_context(
+    source_file: str,
+    egress: EgressPolicy,
+    *,
+    selected_node_ids: Sequence[str],
+    preview_error_node_id: str | None,
+    undone: Sequence[AssistantChangeRecord],
+    build_plan: AssistantBuildPlan | None,
+) -> TurnContext:
     """Gather the turn context's facts for the saved pipeline.
 
     The graph brief, revision, selection and preview error are `internal`
@@ -1550,6 +1596,17 @@ def build_turn_context(
 
 
 def build_context_update(
+    source_file: str,
+    egress: EgressPolicy,
+    changes: Sequence[AssistantChangeRecord],
+) -> ContextUpdate:
+    """Gather the turn context update's facts after *changes*, under the turn's *egress*."""
+
+    with _answering_under(_TurnPolicy(egress)):
+        return _gather_context_update(source_file, egress, changes)
+
+
+def _gather_context_update(
     source_file: str,
     egress: EgressPolicy,
     changes: Sequence[AssistantChangeRecord],
@@ -1861,11 +1918,10 @@ def _run_column_profile_worker(
     """The preview worker's half: profile under the budget the server admitted."""
 
     context = create_isolated_execution_context(budget)
-    policy_token = _TOOL_CALL_POLICY.set(_ToolCallPolicy(request.policy))
     try:
-        return _collect_column_profile(request, context)
+        with _answering_under(_TurnPolicy(request.policy)):
+            return _collect_column_profile(request, context)
     finally:
-        _TOOL_CALL_POLICY.reset(policy_token)
         context.release_admission(preserve_primary_error=True)
 
 
@@ -3654,8 +3710,15 @@ def build_tool_executor(
     session_id: str = "legacy",
     evidence: SourceEvidenceLedger | None = None,
     plan: BuildPlan | None = None,
+    egress: EgressPolicy | None = None,
 ) -> Callable[[str, dict[str, Any]], Awaitable[Mapping[str, object]]]:
     """Build the loop's non-raising, source-bound async tool dispatcher for one turn.
+
+    *egress* is the policy of the turn's provider, which every call of the turn
+    answers under, whatever ``haute.toml`` says by the time the call runs: a
+    policy saved during the turn never widens what its provider is sent. An
+    executor built without one reads the project's policy once, when a call
+    first needs it.
 
     *evidence* is the session's evidence ledger; building the executor starts a
     turn on it, so what earlier turns observed is carried. *plan* is the
@@ -3665,6 +3728,7 @@ def build_tool_executor(
     """
 
     project_root = current_project().root
+    turn_policy = _TurnPolicy(egress)
     ledger = SourceEvidenceLedger() if evidence is None else evidence
     build_plan = BuildPlan() if plan is None else plan
     ledger.begin_turn()
@@ -3676,11 +3740,8 @@ def build_tool_executor(
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         started = time.monotonic()
-        token = _TOOL_CALL_POLICY.set(_ToolCallPolicy())
-        try:
+        with _answering_under(turn_policy):
             result = _with_retryable(await _dispatch_tool(name, arguments))
-        finally:
-            _TOOL_CALL_POLICY.reset(token)
         _log_tool_outcome(name, result, elapsed_ms=(time.monotonic() - started) * 1000)
         return result
 
