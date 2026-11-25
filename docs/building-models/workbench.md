@@ -1270,7 +1270,7 @@ exactly what it sent, and keeps it if you close it: the app offers it back, with
 again** or **Discard**, the next time it opens in that tab, so a quote is never made twice.
 
 ### A quote
-A quote opens at its own address, read only from **Read** (with **Edit** in its bar) or
+A quote opens at its own address, read only from **Read** (the same bar, with **Save** greyed out) or
 held as yours from **Edit**; a new quote opens to edit. While you edit it, nobody else can
 save or change it; if your page stops renewing its hold, say after the laptop slept, and
 someone else starts editing, your page turns read only, naming them, and keeps what you

@@ -2413,7 +2413,8 @@ Out of scope:
 - **A quote in the app.** A quote opens to read at `/quotes/{reference}/{option}`, the
   address Copy link copies, and to edit at `/quotes/{reference}/{option}/edit`, a new quote
   opening to edit once it is made. Read shows the quote as saved, its price as saved, taking
-  no typing and no change, with Edit in its bar. One person edits a quote at a time, the same
+  no typing and no change, under the bar a quote opened to edit has, each button where it is
+  there and Save greyed out: the bar holds no Edit, which the Quotes page's row has. One person edits a quote at a time, the same
   person from any tab: Edit holds the quote for its editor, and pressed on a quote someone
   else is editing it says who and opens nothing. The hold is a lease the page renews every 30
   seconds while the quote is open to edit, let go as the page leaves the quote or the tab

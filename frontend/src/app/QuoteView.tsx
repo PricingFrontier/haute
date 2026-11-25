@@ -6,7 +6,7 @@
  * anything that stands in the way. The quote is priced as it is typed. Values not saved are
  * kept in the browser and leaving with them asks first.
  */
-import { ArrowLeft, BadgeCheck, History, LockOpen, Pencil } from "lucide-react"
+import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
 import { Fragment, useEffect, useRef, useState } from "react"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
@@ -29,7 +29,7 @@ import { editPath, followLink, listPath, navigate, quotePath, setLeaveGuard, typ
 import { BUTTON, Notice, ReleaseNotice, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
-import useOpenQuoteStore, { busy, canEdit, editQuote, openQuotePart, readOnlyReason, takesChanges } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, canEdit, openQuotePart, readOnlyReason, takesChanges } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "quote" }>
 
@@ -255,7 +255,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   // Why a quote read only takes no change, in the words its controls say it in.
   const closedWhy =
     reason === "read"
-      ? "Press Edit to change this quote"
+      ? "Open this quote with Edit on the Quotes page to change it"
       : reason === "editing"
         ? "Someone else is editing this quote"
         : "This quote does not take changes as it is"
@@ -366,13 +366,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           </ToolbarButton>
         )}
       </ToolbarColumn>
-      {reason === "read" && editor && quote !== null && (
-        <ToolbarColumn role="group" aria-label="Edit">
-          <ToolbarButton icon={Pencil} onClick={() => void editQuote(quote)} title="Edit the quote, held as yours while you do">
-            Edit
-          </ToolbarButton>
-        </ToolbarColumn>
-      )}
       <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />
       {error !== null && (
         <span data-testid="app-pricing-error" className="max-w-96 truncate text-xs" style={{ color: "var(--warning)" }} title={error}>

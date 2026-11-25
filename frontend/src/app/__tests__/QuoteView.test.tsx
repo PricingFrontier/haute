@@ -482,7 +482,7 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
   })
 
-  it("reads a quote, changing nothing and holding nothing, with Edit to edit it", async () => {
+  it("reads a quote, changing nothing and holding nothing, under the bar of one opened to edit", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     await navigate("/quotes/Q-000001/1", { force: true })
     await opened({ ...QUOTE, mode: "read" })
@@ -492,10 +492,9 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("save-quote")).toBeDisabled()
     expect(screen.getByRole("button", { name: "Mark final" })).toBeDisabled()
     expect(screen.getByLabelText("Assigned to")).toBeDisabled()
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }))
-
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit"))
-    expect(editAppQuote).toHaveBeenCalledWith("Q-000001", 1, expect.any(String))
+    // The bar is the one a quote opened to edit has, button for button: it holds no Edit.
+    const bar = within(screen.getByRole("toolbar", { name: "Quote toolbar" })).getAllByRole("button").map((button) => button.textContent)
+    expect(bar).toEqual(["Save", "History", "Validation", "Mark final", "Zoom In", "Zoom Out"])
   })
 
   it("takes no handover note on a quote opened to read", async () => {
@@ -524,8 +523,8 @@ describe("QuoteView", () => {
 
     expect(screen.getByTestId("quote-read-only")).toHaveTextContent("Read only")
     expect(screen.getByTestId("notice-final")).toHaveTextContent("Marked final by jo@example.com")
-    expect(screen.getByTestId("save-quote")).toHaveAttribute("title", "Press Edit to change this quote")
-    expect(screen.getByRole("button", { name: "Amend" })).toHaveAttribute("title", "Press Edit to change this quote")
+    expect(screen.getByTestId("save-quote")).toHaveAttribute("title", "Open this quote with Edit on the Quotes page to change it")
+    expect(screen.getByRole("button", { name: "Amend" })).toHaveAttribute("title", "Open this quote with Edit on the Quotes page to change it")
   })
 
   it("holds a quote open to edit, renewing it while it is open and letting it go as it is left", async () => {
