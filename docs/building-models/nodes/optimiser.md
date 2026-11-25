@@ -28,6 +28,8 @@ If a mapped column is not in the input, the **SOLVE** pane names it (for example
 
 The optimiser reads each quote's scenario rows together, one quote after another, in **Scenario Index** order, as the [Expander](scenario-expander.md) writes them. A step between the Expander and the optimiser that leaves row order to Polars, such as an [Edge Join](edge-join.md) with **Order** set to **None**, can mix quotes' rows; the solve then stops with a message naming the **Row ID** and **Scenario Index** columns and the first quote out of place.
 
+Every quote must have the same scenario values, rising with the **Scenario Index**. An Expander whose **Min** is not below its **Max** gives values that fall or stay the same, and the solve stops naming the **Scenario Value** column, the first step that does not rise and its value; a quote whose values differ from the first quote's stops it naming that quote, the step and both values.
+
 ## The FACTORS pane
 
 In **Ratebook** mode the pane opens with **RATING FACTOR SOURCE**: the connected [Banding](banding.md) input that supplies the rating-factor levels. Choosing it ticks every factor it defines for optimisation. With no Banding node connected the pane says **No Banding nodes found. Add a Banding node to define rating factors.**; a Banding output with no valid levels is named, asking you to add labelled rules before selecting it.

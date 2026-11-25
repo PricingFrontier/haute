@@ -1835,6 +1835,13 @@ class TestEstimateRoute:
                 UNNAMED,
                 id="library-value-error",
             ),
+            pytest.param(
+                pl.exceptions.InvalidOperationError("conversion from `str` to `f32` failed"),
+                422,
+                "contract_error",
+                "conversion from `str` to `f32` failed",
+                id="the-pipelines-own-failure",
+            ),
         ],
     )
     def test_frontier_auto_range_classifies_a_reducer_failure(

@@ -15,68 +15,15 @@ the node's default settings.
 
 ## Priorities
 
-**Start with:** `OPM-01`
+**Start with:** `OPM-02`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPM-01 | Planned | P2 | Scenario values that do not rise with the step, and a quote whose scenario values differ from the others', are refused naming the column, the step and the values, not "Grid construction failed. Check the server logs for details." |
 | OPM-02 | Planned | P2 | A solve with one binding constraint converges and meets its bound, as point 0 of its own frontier does. |
 | OPM-03 | Decision | P2 | A ratebook solve that ends short of a bound says so in its status and warning, not only in the Summary table. |
 | OPM-04 | Planned | P2 | Solving a node again ends the solver process of its earlier solve, so tuning a constraint does not hold one process per press for fifteen minutes. |
 
 ## Planned improvements
-
-### OPM-01 — A scenario grid the solver cannot use is refused in words
-**Why:** Reproduced on 11 November 2026 through the routes, with Haute's own
-Expander making the scenarios. The Expander's editor lets Min be above Max
-and says only "Warning: min value should be less than max value". With Min
-1.2 and Max 0.8 the scenario values fall as the step index rises, and an
-Optimiser fed by it ends its solve with "Grid construction failed. Check
-the server logs for details." So does an Expander with Min and Max both 1,
-where every step has the same value, and so does a scored file in which one
-quote's scenario values differ from the others' (0.8, 1.0, 1.3 against
-0.85, 1.0, 1.15). The log has the reason each time: "scenario_values must
-be sorted and strictly increasing, but [1]=1.1 <= [0]=1.2", and "Quote
-'q_2' row 6: scenario_value=0.8, expected 0.85 for step 0 (all chunks must
-share the same scenario grid)". The analyst is sent to a log for a mistake
-in two boxes of their own node. An analysis column of a 128-bit integer
-type ends a solve with the same sentence (run on 13 November 2026). There
-the log holds Haute's own message, that the column "is Int128" and should
-be cast "upstream to Int64", and the answer leaves it out.
-
-The error policy gives that fixed sentence to an "Unknown grid-construction
-catch-all", and the specification says input problems "surface as 4xx
-errors with a specific, actionable message". These causes are known: the
-low-level specification lists "scenario values that are not strictly
-increasing" among what the library refuses. A neighbour shows the pattern.
-Rows of a quote that are not together are "checked once the grid builder
-refuses the file" and answered naming the quote column, the index column
-and the first quote out of place. Run the same day, a quote with one
-scenario row where the others have three, and two quotes that share an id,
-were both answered that way, naming the quote.
-
-**Plan:** After the grid builder refuses the file and before the catch-all,
-check the file for the two causes as the row-order check does. For scenario
-values that do not rise with the scenario index, name the two columns, the
-first step that does not rise and its values, and say that an Expander's
-Min must be below its Max. For a quote whose scenario values differ from
-the first quote's, name the quote, the step and both values. Answer each as
-a `contract_error`.
-
-**Acceptance:** A solve fed by an Expander with Min 1.2 and Max 0.8, one
-fed by an Expander with Min and Max both 1, and one whose scored rows give
-one quote other scenario values each end as `contract_error`, with a
-message that names the scenario value column, the step and the values. None
-says "Check the server logs".
-
-**Dependencies:** None.
-
-**Evidence:**
-`src/haute/routes/_optimiser_input.py::grid_construction_failures`;
-`src/haute/routes/_optimiser_input.py::build_quote_grid`;
-`specs/optimiser/error-detail-policy.md`; `specs/optimiser/low-level.md`;
-`frontend/src/panels/editors/ScenarioExpanderEditor.tsx`;
-`docs/building-models/nodes/scenario-expander.md`.
 
 ### OPM-02 — A one-constraint solve finds what its frontier's first point finds
 **Why:** Reproduced on 11 November 2026 through the routes, on 5,000 quotes

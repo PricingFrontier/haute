@@ -805,7 +805,7 @@ def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None
     assert "expected_income" in str(missing.value.detail)
 
     with pytest.raises(OptimiserSetupError) as contract:
-        with grid_construction_failures("opt"):
+        with grid_construction_failures("opt", runs_pipeline=True):
             raise _group_by_contract_error()
     assert contract.value.status_code == 422
     assert contract.value.fields["error_code"] == "group_by_execution_unsupported"

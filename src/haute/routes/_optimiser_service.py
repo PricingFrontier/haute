@@ -3328,7 +3328,7 @@ class OptimiserSolveService:
         """
         with (
             self._recorded_setup_failures(job_id, execution_context),
-            grid_construction_failures(node_id),
+            grid_construction_failures(node_id, runs_pipeline=True),
             _execution_stage(
                 execution_context, "optimiser_extract_quote_analysis", node_id=node_id
             ),
@@ -3419,7 +3419,7 @@ class OptimiserSolveService:
         """
         with (
             self._recorded_setup_failures(job_id, execution_context),
-            grid_construction_failures(node_id),
+            grid_construction_failures(node_id, runs_pipeline=False),
             _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
         ):
             if n_steps is None:

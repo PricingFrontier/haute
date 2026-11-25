@@ -304,6 +304,34 @@ class TestDataInputPath:
         assert "q004" in status["message"]
         assert "quote_analysis" not in (_store.require_job(job_id).get("artifact_handles") or {})
 
+    def test_a_128_bit_analysis_column_is_refused_with_the_cast_that_fixes_it(
+        self, client, tmp_path
+    ):
+        """Writing the analysis table runs the pipeline: its refusal is the pipeline's own."""
+        widen = "df = source.with_columns(pl.lit(7, dtype=pl.Int128).alias('region_code'))"
+        graph = make_graph(
+            {
+                "nodes": [
+                    _node(
+                        "source", "dataInput", make_ready_file_input_config(str(_scored(tmp_path)))
+                    ),
+                    _node("widen", "polars", {"code": widen}),
+                    _node("opt", "optimiser", _config(analysis_columns=["region_code"])),
+                ],
+                "edges": [
+                    make_edge("source", "widen").model_dump(),
+                    make_edge("widen", "opt").model_dump(),
+                ],
+            }
+        ).model_dump()
+        status = _poll(client, _start(client, graph))
+
+        assert status["status"] == "contract_error"
+        assert status["message"].startswith(
+            "Column 'region_code' is Int128, a 128-bit integer that no model, MLflow signature "
+            "or Arrow reader takes: cast it upstream to Int64"
+        )
+
     def test_a_missing_analysis_column_is_refused_by_name(self, client, tmp_path):
         job_id = _start(
             client, _data_graph(_scored(tmp_path, region=False), analysis_columns=["region"])
@@ -609,6 +637,9 @@ class TestSideInputPath:
             )
         with pytest.raises(OptimiserSetupError, match=r"Missing analysis columns .*\['region'\]"):
             resolve_analysis_frame({"regions": pl.LazyFrame({"quote_id": ["q1"]})}, config, plan)
+        wide = pl.LazyFrame({"quote_id": ["q1"], "region": pl.Series([7], dtype=pl.Int128)})
+        with pytest.raises(OptimiserSetupError, match=r"^Column 'region' is Int128, .*cast it"):
+            resolve_analysis_frame({"regions": wide}, config, plan)
 
     def test_a_frame_whose_rows_disagree_within_a_quote_is_refused(self, client, tmp_path):
         regions = tmp_path / "disagree.parquet"

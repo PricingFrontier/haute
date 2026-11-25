@@ -485,7 +485,9 @@ def test_optimiser_codegen_rejects_removed_input_selector_fields(removed_key: st
         graph_to_code(graph, pipeline_name="optimiser_identity")
 
 
-def _make_expander_optimiser_graph(data_path: str) -> dict:
+def _make_expander_optimiser_graph(
+    data_path: str, *, min_value: float = 0.8, max_value: float = 1.2
+) -> dict:
     graph = make_graph(
         {
             "nodes": [
@@ -504,8 +506,8 @@ def _make_expander_optimiser_graph(data_path: str) -> dict:
                         "nodeType": "scenarioExpander",
                         "config": {
                             "column_name": "scenario_value",
-                            "min_value": 0.8,
-                            "max_value": 1.2,
+                            "min_value": min_value,
+                            "max_value": max_value,
                             "step_count": 5,
                             "step_column": "scenario_index",
                             "code": (
@@ -1042,15 +1044,19 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
     assert "Null quote_id values found in optimiser input (2 rows)." in status["message"]
 
 
-def _solver_input(quote_ids: list[str], steps: list[int]) -> pl.LazyFrame:
-    """A scored, scenario-expanded solver input with the quotes and steps given, row by row."""
+def _solver_input(
+    quote_ids: list[str], steps: list[int], values: list[float] | None = None
+) -> pl.LazyFrame:
+    """A scored, scenario-expanded solver input with the quotes, steps and (by default 0.9 and
+    1.1) scenario values given, row by row."""
     rows = len(quote_ids)
     return pl.LazyFrame(
         {
             "quote_id": pl.Series(quote_ids, dtype=pl.Categorical),
             "scenario_index": pl.Series(steps, dtype=pl.Int32),
             "scenario_value": pl.Series(
-                [0.9 if step == 0 else 1.1 for step in steps], dtype=pl.Float32
+                values if values is not None else [0.9 if step == 0 else 1.1 for step in steps],
+                dtype=pl.Float32,
             ),
             "expected_income": pl.Series(
                 [100.0 + index for index in range(rows)], dtype=pl.Float32
@@ -1118,6 +1124,106 @@ def test_a_well_formed_solver_input_has_no_layout_fault(tmp_path: Path) -> None:
     _solver_input(["q1", "q1", "q2", "q2", "q3", "q3"], [0, 1, 0, 1, 0, 1]).sink_parquet(path)
 
     assert quote_layout_fault(path, "quote_id", "scenario_index", 2) is None
+
+
+_RISE = (
+    "The 'scenario_value' values must rise with 'scenario_index', as an Expander's do when its "
+    "Min is below its Max."
+)
+
+
+@pytest.mark.parametrize(
+    ("values", "detail"),
+    [
+        pytest.param(
+            [1.2, 1.0, 0.8] * 2,
+            f"{_RISE} Step 1 is 1.0, not above step 0's 1.2.",
+            id="falling",
+        ),
+        pytest.param(
+            [1.0, 1.0, 1.0] * 2,
+            f"{_RISE} Step 1 is 1.0, not above step 0's 1.0.",
+            id="flat",
+        ),
+        pytest.param(
+            [0.85, 1.0, 1.15, 0.85, 1.0, 1.3],
+            "Every quote must have the same 'scenario_value' at each 'scenario_index' step, as "
+            "an Expander gives them. Quote 'q2' has 1.3 at step 2, where the first quote, 'q1', "
+            "has 1.15.",
+            id="a_quote_of_its_own",
+        ),
+    ],
+)
+def test_a_scenario_grid_the_solver_cannot_use_fails_naming_the_step_and_values(
+    values: list[float], detail: str
+) -> None:
+    failure, job = _build_grid_failure(
+        _solver_input(["q1"] * 3 + ["q2"] * 3, [0, 1, 2] * 2, values)
+    )
+
+    assert failure.status_code == 400
+    assert failure.detail == detail
+    assert job["status"] == "contract_error"
+    assert job["message"] == detail
+
+
+def test_a_scenario_value_within_the_builders_tolerance_has_no_grid_fault(tmp_path: Path) -> None:
+    from haute.routes._optimiser_input import scenario_grid_fault
+
+    path = tmp_path / "solver_input.parquet"
+    _solver_input(["q1", "q1", "q2", "q2"], [0, 1, 0, 1], [0.9, 1.1, 0.9, 1.1000005]).sink_parquet(
+        path
+    )
+
+    assert scenario_grid_fault(path, "quote_id", "scenario_index", "scenario_value", 2) is None
+
+
+def test_a_pipeline_failure_while_the_solver_input_is_written_is_the_pipelines() -> None:
+    """Writing the solver input runs the pipeline: a failure there is said as a preview says it."""
+    scored = _solver_input(["q1", "q1", "q2", "q2"], [0, 1, 0, 1]).with_columns(
+        pl.col("quote_id").cast(pl.String).cast(pl.Float32).alias("volume")
+    )
+    failure, job = _build_grid_failure(scored)
+
+    assert failure.status_code == 422
+    assert failure.detail.startswith("conversion from `str` to `f32` failed")
+    assert job["status"] == "contract_error"
+    assert job["error_code"] == "pipeline_failed"
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+@pytest.mark.parametrize(
+    ("min_value", "max_value", "detail"),
+    [
+        pytest.param(
+            1.2, 0.8, f"{_RISE} Step 1 is 1.1, not above step 0's 1.2.", id="min_above_max"
+        ),
+        pytest.param(1.0, 1.0, f"{_RISE} Step 1 is 1.0, not above step 0's 1.0.", id="min_is_max"),
+    ],
+)
+def test_a_solve_fed_by_an_expander_whose_values_do_not_rise_says_so(
+    client, tmp_path, clean_job_store, min_value: float, max_value: float, detail: str
+) -> None:
+    source_path = tmp_path / "quotes.parquet"
+    pl.DataFrame(
+        {"quote_id": ["q1", "q2"], "base_income": [100.0, 200.0], "base_volume": [1.0, 1.1]}
+    ).write_parquet(source_path)
+    graph = _make_expander_optimiser_graph(
+        str(source_path), min_value=min_value, max_value=max_value
+    )
+
+    from haute.routes import optimiser as optimiser_routes
+
+    with patch.object(optimiser_routes._solve_service, "_launch_background"):
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
+        assert resp.status_code == 200
+        status = _poll_solve_status(client, resp.json()["job_id"])
+
+    assert status["status"] == "contract_error"
+    assert status["message"] == detail
 
 
 def test_build_grid_sanitises_a_refusal_that_is_not_the_quote_layout() -> None:

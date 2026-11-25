@@ -16,7 +16,7 @@ The **INPUT** chip at the top names the node's connection; its × removes the co
 | **VALUE COLUMN** | Optional. The name of the new column holding the generated values. Without it, only the index column is added. |
 | **VALUE RANGE** | Shown once a **VALUE COLUMN** is set; the range is used only then. **Min** and **Max** are the ends of the range, both included; left blank, Min is `0.8` and Max is `1.2`. **Steps** is as above, and **Step Size** shows the gap between neighbouring values, (Max − Min) / (Steps − 1). |
 
-A **Min** or **Max** that is not a number is outlined in red and not saved; fix it or clear it. When Min is not below Max, the range shows "Warning: min value should be less than max value".
+A **Min** or **Max** that is not a number is outlined in red and not saved; fix it or clear it. When Min is not below Max, the range shows "Warning: min value should be less than max value"; an [Optimiser](optimiser.md) fed by it refuses to solve, since its values do not rise with the step.
 
 ## The TRANSFORM tab
 
