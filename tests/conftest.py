@@ -472,7 +472,7 @@ _STOP_REASONS = frozenset({"cancelled", "timed_out", "superseded"})
 
 
 @pytest.fixture(autouse=True)
-def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
+def _outcomes_follow_their_release():
     """A job records a completed or failed outcome only once its memory reservation is free.
 
     A client that sees the outcome may start new work at once, which a reservation the
@@ -482,6 +482,8 @@ def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
     and so is a correction of a completed record, which is not the work's outcome (later
     work under the job's id, a point apply, may hold its own grant then). The reservation
     fixture requests this one, so the check also covers work that ends while it waits.
+    It patches with its own ``MonkeyPatch``: taking the test's ``monkeypatch`` would set
+    that up first and so undo the test's patches only after that wait.
     """
     from haute.routes._job_store import JobStore
     from tests._process_state import execution_admission_reservations_of
@@ -512,9 +514,10 @@ def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
             early.append(f"'completed' for job {job_id} while it held {', '.join(held)}")
         return published
 
-    monkeypatch.setattr(JobStore, "transition_terminal", transition_terminal)
-    monkeypatch.setattr(JobStore, "compare_and_publish_completion", compare_and_publish_completion)
-    yield
+    with pytest.MonkeyPatch.context() as patches:
+        patches.setattr(JobStore, "transition_terminal", transition_terminal)
+        patches.setattr(JobStore, "compare_and_publish_completion", compare_and_publish_completion)
+        yield
     if early:
         pytest.fail(
             "A job recorded its outcome before releasing its memory: "
