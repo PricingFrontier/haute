@@ -755,6 +755,7 @@ _NOT_DRIVEN: dict[str, str] = {
         "Polars' is_float(), before they are cast to the solver's Float32"
     ),
     "src/haute/_pipeline_settings.py": _PYTHON_NUMBER,
+    "src/haute/_workbench_checks.py": _PYTHON_NUMBER,
     "src/haute/_workbench_export.py": _PYTHON_NUMBER,
     "src/haute/_workbench_tables.py": _PYTHON_NUMBER,
     "src/haute/_workbench_test_quotes.py": _PYTHON_NUMBER,

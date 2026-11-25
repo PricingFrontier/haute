@@ -320,8 +320,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 1,840 KiB (approved, 24 November 2026) restores about 2.0 KiB headroom. The optimiser
 // roadmap (a solve that breaches a bound saying so beside "Converged", a one-constraint solve's
 // bisection history and its validator) brings main's 1,839.9 KiB to 1,840.5 KiB (initial
-// 308.9 KiB); 1,842 KiB (approved, 25 November 2026) restores about 1.5 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1842
+// 308.9 KiB); 1,842 KiB (approved, 25 November 2026) restores about 1.5 KiB headroom. Workbench
+// validation (Mark final checking every rule, validations, the Validation button and
+// quote_details' validation_passed on the sheets and the Quotes page) brings it to
+// 1,843.1 KiB (initial 309.1 KiB); 1,845 KiB (approved, 25 November 2026) restores about
+// 1.9 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1845
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
