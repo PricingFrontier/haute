@@ -289,7 +289,8 @@ and by whom; **haute_version** is the version of Haute the app ran then;
 **Mark final** makes, the same answer the **Validation** button gives for a saved quote. It is
 set each time the quote is saved, so in a database that had quotes before the column was
 added it is empty until a quote's next save; set it to true in SQL for the quotes already
-final, which are not saved again. The two dates are
+final, which are not saved again. On a sheet its box cannot be ticked by hand, in Preview
+or in the app: it shows what the **Validation** button says of the values on the sheets. The two dates are
 dates in UTC, so near midnight they can differ by a day from the time the app shows you.
 The pipeline receives **quote_reference**, **quote_option**, **created_date** and
 **created_by**, and every other column of `quote_details`, whatever the sheets hide.

@@ -9,7 +9,9 @@
  * rows (`withPresetRows`), as the server prices them. Each is made only while `active`, as
  * the sheet uses one at a time, and stays the same object through a change that leaves
  * what it holds and shows alone, as dragging a component makes, so the components on the
- * sheet are not drawn again.
+ * sheet are not drawn again. In Preview and the app, quote_details' validation_passed cell
+ * is worked out, whatever the values hold for it: whether they and their price pass every
+ * check, as Validation says it (`withValidationPassed`), and it takes no typing.
  */
 import { createContext, useContext, useMemo, useState } from "react"
 import type { FormSchema, FormSpec, Page } from "../api/types"
@@ -19,8 +21,10 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore, { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
+import { quoteChecks } from "../utils/quoteChecks"
+import { QUOTE_DETAILS, QUOTE_DETAILS_NAME } from "../utils/quoteIdentity"
 import { indexProblemCells, newQuoteValues, quoteProblems, withPresetRows, type RowsByTable } from "../utils/sheetValues"
-import { basisOf, quoteEligible, quoteIndexProblems, quotedSchema, sheetVisibility, withPrice, type SheetVisibility } from "../utils/sheetVisibility"
+import { basisOf, columnKey, quoteEligible, quoteIndexProblems, quotedSchema, sheetVisibility, withPrice, type SheetVisibility } from "../utils/sheetVisibility"
 import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
 export interface SheetValues {
@@ -109,6 +113,20 @@ function useSteadyVisibility(next: SheetVisibility): SheetVisibility {
   return next
 }
 
+/** The cell that is worked out in Preview, which takes no typing there; the app locks it among the columns it sets. */
+const WORKED_OUT: ReadonlySet<string> = new Set([columnKey(QUOTE_DETAILS_NAME, QUOTE_DETAILS.validation_passed)])
+
+/**
+ * `rows` with quote_details' validation_passed as the checks on `values` and the price they
+ * were given come to (`quoteChecks`, which Validation reads too): ticked while every one
+ * passes, whatever the cell held.
+ */
+function withValidationPassed(form: FormSpec, values: RowsByTable, rows: RowsByTable, price: SamplePrice | null): RowsByTable {
+  const passed = quoteChecks(form, values, price?.tables ?? null).every((check) => check.passed)
+  const [details = {}, ...rest] = rows[QUOTE_DETAILS_NAME] ?? []
+  return { ...rows, [QUOTE_DETAILS_NAME]: [{ ...details, [QUOTE_DETAILS.validation_passed]: passed }, ...rest] }
+}
+
 /** The schema as a quote with `visibility` reads it, made again only when either changes. */
 const useQuoted = (schema: FormSchema | null, visibility: SheetVisibility): FormSchema =>
   useMemo(() => (schema === null ? NO_SCHEMA : quotedSchema(schema, visibility.hidden)), [schema, visibility])
@@ -169,7 +187,10 @@ export function useSampleValues(active = true): SheetValues {
   const context = usePricingContext()
   const schema = form?.schema ?? null
   const sample = form?.sample ?? null
-  const rows = useMemo(() => (schema === null || sample === null ? NO_ROWS : withPresetRows(schema, sample)), [schema, sample])
+  const rows = useMemo(
+    () => (form === null || schema === null || sample === null ? NO_ROWS : withValidationPassed(form, sample, withPresetRows(schema, sample), price)),
+    [form, schema, sample, price],
+  )
   const shown = useMemo(() => (form === null ? NO_VISIBILITY : withPrice(form, form.sample, sheetVisibility(form, form.sample), price)), [form, price])
   const visibility = useSteadyVisibility(shown)
   const quoted = useQuoted(schema, visibility)
@@ -196,7 +217,7 @@ export function useSampleValues(active = true): SheetValues {
       visibility,
       quoted,
       readOnly: false,
-      locked: NOTHING_LOCKED,
+      locked: WORKED_OUT,
       exportCells,
       importRows,
     }),
@@ -220,7 +241,10 @@ export function useQuoteValues(active = true): SheetValues {
   const exportCells = useWorkbenchPreviewStore((s) => s.exporter)
   const importer = useWorkbenchPreviewStore((s) => s.importer)
   const schema = form?.schema ?? null
-  const rows = useMemo(() => (schema === null ? quote : withPresetRows(schema, quote)), [schema, quote])
+  const rows = useMemo(
+    () => (form === null || schema === null ? quote : withValidationPassed(form, quote, withPresetRows(schema, quote), price)),
+    [form, schema, quote, price],
+  )
   const shown = useMemo(() => (form === null ? NO_VISIBILITY : withPrice(form, quote, sheetVisibility(form, quote), price)), [form, quote, price])
   const visibility = useSteadyVisibility(shown)
   const quoted = useQuoted(schema, visibility)

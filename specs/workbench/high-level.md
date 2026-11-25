@@ -3085,7 +3085,11 @@ Out of scope:
   and one that cannot for a check says false; nothing else changes it, so a quote saved
   before the column was added holds none until its next save, and one final since before
   then, which takes no save, holds none unless whoever adds the column sets it in SQL
-  (true for each final quote, which passed the checks to become one); `quote_reference`, `quote_option`, `created_date`, `created_by` and the details the
+  (true for each final quote, which passed the checks to become one). On a sheet its cell
+  takes no typing, in Preview as in the app, and shows what the checks come to on the
+  values the sheets hold and the price they were last given, as Validation says it,
+  whatever the sample or the quote holds for it: unticked until priced where a
+  validation is the pipeline's to fill; `quote_reference`, `quote_option`, `created_date`, `created_by` and the details the
   underwriter types do. Every column of `quote_details` is stored, and each that reaches the
   pipeline is priced, whatever the sheets hide; any other cell a Show when hides is saved
   blank, as the request leaves it out, so the input tables hold what the quote was priced on.
