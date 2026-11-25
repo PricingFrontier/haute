@@ -74,12 +74,13 @@ describe("OptimiserDataPreview", () => {
 
   describe("computeScenarioStatsBySeries", () => {
     it("computes exact stats for multiple series in one pass over rows", () => {
-      const rows = [
-        { scenario_index: 0, scenario_value: 0.9, margin: 100, volume: 1 },
-        { scenario_index: 0, scenario_value: 0.9, margin: 200, volume: 3 },
-        { scenario_index: 2, scenario_value: 1.1, margin: 300, volume: 5 },
-        { scenario_index: 2, scenario_value: 1.1, margin: 500, volume: 9 },
-      ]
+      const row = (scenarioIndex: number, scenarioValue: number, margin: number, volume: number) => ({
+        quoteId: "Q",
+        scenarioIndex,
+        scenarioValue,
+        values: { margin, volume },
+      })
+      const rows = [row(0, 0.9, 100, 1), row(0, 0.9, 200, 3), row(2, 1.1, 300, 5), row(2, 1.1, 500, 9)]
       let rowVisits = 0
       const countedRows = {
         *[Symbol.iterator]() {
@@ -92,64 +93,36 @@ describe("OptimiserDataPreview", () => {
 
       const stats = computeScenarioStatsBySeries({
         rows: countedRows,
-        scenarioIndices: [0, 1, 2],
         series: ["margin", "volume"],
-        scenarioIndexCol: "scenario_index",
         scenarioValueCol: "scenario_value",
       })
 
       expect(rowVisits).toBe(rows.length)
-      expect(stats.get("margin")?.[0]).toMatchObject({
+      // Only the scenarios the rows hold, in order.
+      expect(stats.get("margin")?.map((s) => s.scenarioIndex)).toEqual([0, 2])
+      expect(stats.get("margin")?.[0]).toEqual({
         scenarioIndex: 0,
         scenarioValue: 0.9,
         count: 2,
-        mean: 150,
-        min: 100,
-        p25: 125,
-        median: 150,
-        p75: 175,
-        max: 200,
+        summary: { mean: 150, std: 50, min: 100, p25: 125, median: 150, p75: 175, max: 200 },
       })
-      expect(stats.get("margin")?.[1]).toEqual({
-        scenarioIndex: 1,
-        scenarioValue: 0,
-        count: 0,
-        mean: 0,
-        std: 0,
-        min: 0,
-        p25: 0,
-        median: 0,
-        p75: 0,
-        max: 0,
-      })
-      expect(stats.get("volume")?.[2]).toMatchObject({
+      expect(stats.get("volume")?.[1]).toMatchObject({
         scenarioIndex: 2,
         scenarioValue: 1.1,
         count: 2,
-        mean: 7,
-        min: 5,
-        p25: 6,
-        median: 7,
-        p75: 8,
-        max: 9,
+        summary: { mean: 7, min: 5, p25: 6, median: 7, p75: 8, max: 9 },
       })
     })
 
-    it("handles empty input while preserving requested series and scenario buckets", () => {
+    it("gives a series no summary at a scenario where it has no value", () => {
       const stats = computeScenarioStatsBySeries({
-        rows: [],
-        scenarioIndices: [3],
+        rows: [{ quoteId: "Q", scenarioIndex: 3, scenarioValue: 1, values: { constraint: 4 } }],
         series: ["objective", "constraint"],
-        scenarioIndexCol: "scenario_index",
         scenarioValueCol: "scenario_value",
       })
 
-      expect(stats.get("objective")).toEqual([
-        { scenarioIndex: 3, scenarioValue: 0, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 },
-      ])
-      expect(stats.get("constraint")).toEqual([
-        { scenarioIndex: 3, scenarioValue: 0, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 },
-      ])
+      expect(stats.get("objective")).toEqual([{ scenarioIndex: 3, scenarioValue: 1, count: 0, summary: null }])
+      expect(stats.get("constraint")?.[0].summary?.mean).toBe(4)
     })
   })
 
@@ -658,6 +631,101 @@ describe("OptimiserDataPreview", () => {
       // Chart SVG should be back
       const chartSvg = container.querySelector('svg[style*="background"]')
       expect(chartSvg).toBeInTheDocument()
+    })
+  })
+
+  describe("Missing and unreadable values", () => {
+    function withCell(quote: string, scenario: number, cell: Record<string, unknown>) {
+      return makePreviewData().preview.map((row) =>
+        row.quote_id === quote && row.scenario_index === scenario ? { ...row, ...cell } : row,
+      )
+    }
+
+    it("draws no point for a null objective cell, keeps Statistics rendering, and counts it in both", () => {
+      const { container } = renderComponent(
+        { preview: withCell("Q001", 1, { margin: null }) },
+        { constraints: {} },
+      )
+      const chart = container.querySelector('svg[style*="background"]')!
+      // Q001's margin is 100, (none), 120: two points, and the line breaks at the gap.
+      expect(chart.querySelectorAll("circle")).toHaveLength(2)
+      expect(chart.querySelector("path")!.getAttribute("d")!.match(/M/g)).toHaveLength(2)
+      const notice = "Null values found in optimiser input: 'margin' (1 null row)."
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(notice)
+
+      fireEvent.click(screen.getByText("Statistics"))
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(notice)
+      const scenarioOne = Array.from(container.querySelectorAll("tbody tr"))
+        .map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent))
+        .find((cells) => cells[0] === "1")!
+      // Scenario 1's count and mean are Q002's 220 alone, not a mean with a zero.
+      expect(scenarioOne[2]).toBe("1")
+      expect(scenarioOne[3]).toBe("220")
+    })
+
+    it("shows no statistics, not zeros, for a scenario whose objective is null in every quote", () => {
+      const preview = makePreviewData().preview.map((row) =>
+        row.scenario_index === 1 ? { ...row, margin: null } : row,
+      )
+      const { container } = renderComponent({ preview })
+      fireEvent.click(screen.getByText("Statistics"))
+      const marginTable = container.querySelector("table")!
+      const scenarioOne = Array.from(marginTable.querySelectorAll("tbody tr"))
+        .map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent))
+        .find((cells) => cells[0] === "1")!
+      expect(scenarioOne.slice(2)).toEqual(["0", "—", "—", "—", "—", "—", "—", "—"])
+    })
+
+    it("keeps the notices when the solve would refuse every row", () => {
+      const preview = makePreviewData().preview.map((row) => ({ ...row, scenario_value: null }))
+      const { container } = renderComponent({ preview })
+      const notice = "Null values found in optimiser input: 'scenario_value' (6 null rows)."
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(notice)
+      expect(screen.queryByText(/No scenario data in preview/)).not.toBeInTheDocument()
+      expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+      expect(container.querySelector('svg[style*="background"]')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByText("Statistics"))
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(notice)
+    })
+
+    it("reports a NaN constraint cell as non-finite and leaves its point out", () => {
+      const { container } = renderComponent({
+        preview: withCell("Q001", 0, { volume: { __haute_type__: "non_finite_float", value: "nan" } }),
+      })
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(
+        "Non-finite values found in optimiser input: 'volume' (1 NaN row).",
+      )
+      const chart = container.querySelector('svg[style*="background"]')!
+      expect(chart.querySelectorAll("circle")).toHaveLength(5)
+      expect(chart.innerHTML).not.toContain("NaN")
+    })
+
+    it("leaves out a row without a scenario index", () => {
+      renderComponent({ preview: withCell("Q001", 2, { scenario_index: null }) })
+      expect(screen.getByText(/2 scenarios/)).toBeInTheDocument()
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(
+        "Null values found in optimiser input: 'scenario_index' (1 null row).",
+      )
+    })
+
+    it("shows a text cell as a message in both panes and keeps the tabs working", () => {
+      renderComponent({ preview: withCell("Q002", 0, { volume: "n/a" }) })
+      const message = 'Expected a number in "volume", received "n/a"'
+      expect(screen.getByRole("alert")).toHaveTextContent(message)
+      expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByText("Statistics"))
+      expect(screen.getByRole("tab", { name: "Statistics" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("alert")).toHaveTextContent(message)
+      fireEvent.click(screen.getByText("Chart"))
+      expect(screen.getByRole("tab", { name: "Chart" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("shows rows disagreeing on a scenario's value in the Statistics pane alone", () => {
+      const { container } = renderComponent({ preview: withCell("Q002", 0, { scenario_value: 0.8 }) })
+      expect(container.querySelector('svg[style*="background"]')).toBeInTheDocument()
+      fireEvent.click(screen.getByText("Statistics"))
+      expect(screen.getByRole("alert")).toHaveTextContent("Conflicting scenario_value for scenario 0: 0.9 vs 0.8")
     })
   })
 })

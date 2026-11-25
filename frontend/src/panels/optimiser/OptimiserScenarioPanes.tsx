@@ -10,8 +10,9 @@ import { ChevronLeft, ChevronRight, Search } from "lucide-react"
 import { CHART_COLORS } from "../../theme/colors"
 import { chartDomain, chartTickSpan, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
 import { formatNumber } from "../../utils/formatValue"
-import type { ScenarioStats } from "../optimiserScenarioStats"
-import type { OptimiserScenarioData, QuoteRow } from "./useOptimiserScenarioData"
+import type { ScenarioStats, ScenarioSummary } from "../optimiserScenarioStats"
+import type { ScenarioRow } from "./scenarioRows"
+import type { OptimiserScenarioData } from "./useOptimiserScenarioData"
 
 // ─── Colours for series lines (CVD-safe Okabe-Ito subset) ─────────
 const SERIES_COLORS = CHART_COLORS.optimiserSeries
@@ -46,7 +47,7 @@ interface ScaleContext {
 }
 
 function buildSeriesScale(
-  rows: QuoteRow[],
+  rows: ScenarioRow[],
   column: string,
   h: number,
   yPadFraction = 0,
@@ -55,7 +56,9 @@ function buildSeriesScale(
 
   // The shared padded domain: a constant series sits mid-axis, and a spread
   // that is only rounding noise reads as flat rather than filling the axis.
-  const values = rows.length > 0 ? rows.map((r) => r.values[column] ?? 0) : [0]
+  // A series with no value in this quote has nothing to draw: its axis spans 0.
+  const present = rows.flatMap((r) => (column in r.values ? [r.values[column]] : []))
+  const values = present.length > 0 ? present : [0]
   const [low, high] = chartDomain(values)
   const [tickLow, tickHigh] = chartTickSpan(values)
   const ticks = chartTicks(tickLow, tickHigh, 5)
@@ -72,7 +75,7 @@ function buildSeriesScale(
 }
 
 function buildScales(
-  rows: QuoteRow[],
+  rows: ScenarioRow[],
   columns: string[],
   w: number,
   h: number,
@@ -213,27 +216,31 @@ function SeriesLine({
   color,
   ctx,
 }: {
-  rows: QuoteRow[]
+  rows: ScenarioRow[]
   column: string
   color: string
   ctx: ScaleContext
 }) {
   const yScale = ctx.seriesScales[column]?.yScale
   if (!yScale) return null
-  const path = rows
-    .map(
-      (r, idx) =>
-        `${idx === 0 ? "M" : "L"}${ctx.xScale(r.scenarioIndex).toFixed(1)},${yScale(r.values[column] ?? 0).toFixed(1)}`,
+  // A scenario without a value is not drawn: the line breaks there and starts again.
+  const points = rows.map((r) =>
+    column in r.values ? { x: ctx.xScale(r.scenarioIndex), y: yScale(r.values[column]) } : null,
+  )
+  const path = points
+    .map((point, idx) =>
+      point && `${idx === 0 || points[idx - 1] === null ? "M" : "L"}${point.x.toFixed(1)},${point.y.toFixed(1)}`,
     )
+    .filter(Boolean)
     .join(" ")
   return (
     <g>
       <path d={path} fill="none" stroke={color} strokeWidth={1.5} />
-      {rows.map((r, i) => (
+      {points.map((point, i) => point && (
         <circle
           key={i}
-          cx={ctx.xScale(r.scenarioIndex)}
-          cy={yScale(r.values[column] ?? 0)}
+          cx={point.x}
+          cy={point.y}
           r={2.5}
           fill={color}
         />
@@ -252,7 +259,7 @@ const ChartArea = memo(function ChartArea({
   visibleSeries,
   allSeries,
 }: {
-  currentRows: QuoteRow[]
+  currentRows: ScenarioRow[]
   visibleSeries: string[]
   allSeries: string[]
 }) {
@@ -287,6 +294,9 @@ const ChartArea = memo(function ChartArea({
 // ─── Scenario-level summary statistics ───────────────────────────
 
 const STAT_COLUMNS = ["Count", "Mean", "Std", "Min", "P25", "Median", "P75", "Max"] as const
+const SUMMARY_FIELDS: (keyof ScenarioSummary)[] = ["mean", "std", "min", "p25", "median", "p75", "max"]
+const EMPHASISED: ReadonlySet<keyof ScenarioSummary> = new Set(["mean", "median"])
+const NO_VALUE = "—"
 
 function ScenarioStatsTable({
   column,
@@ -333,13 +343,15 @@ function ScenarioStatsTable({
                 <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-primary)" }}>{s.scenarioIndex}</td>
                 <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-muted)" }}>{formatNumber(s.scenarioValue)}</td>
                 <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{s.count}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatNumber(s.mean)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.std)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.min)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.p25)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatNumber(s.median)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.p75)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.max)}</td>
+                {SUMMARY_FIELDS.map((field) => (
+                  <td
+                    key={field}
+                    className="px-2 py-0.5 font-mono text-right"
+                    style={{ color: EMPHASISED.has(field) ? "var(--text-primary)" : "var(--text-secondary)" }}
+                  >
+                    {s.summary ? formatNumber(s.summary[field]) : NO_VALUE}
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -350,6 +362,25 @@ function ScenarioStatsTable({
 }
 
 // ─── Component ────────────────────────────────────────────────────
+
+/** The preview's cells the solve would refuse, above either pane. */
+function ScenarioGapNotices({ notices }: { notices: string[] }) {
+  if (notices.length === 0) return null
+  return (
+    <div data-testid="optimiser-scenario-gaps" className="mb-3 space-y-0.5 text-xs" style={{ color: "var(--warning-strong)" }}>
+      {notices.map((notice) => <div key={notice}>{notice}</div>)}
+    </div>
+  )
+}
+
+/** A scenario cell that cannot be read, in place of a pane's content. */
+function ScenarioDataProblem({ message }: { message: string }) {
+  return (
+    <div role="alert" className="px-3 py-2 rounded text-xs" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
+      {message}
+    </div>
+  )
+}
 
 export function ScenarioDataNotice({
   scenario,
@@ -385,6 +416,8 @@ export function ScenarioQuoteNavigation({ scenario }: { scenario: OptimiserScena
     setSearchValue,
     handleSearchSubmit,
   } = scenario
+  // An unreadable cell, or rows all refused, leave no quotes to move between.
+  if (scenario.valueError !== null || quoteIds.length === 0) return null
   return (
     <>
       <div className="flex items-center gap-1" data-testid="optimiser-quote-navigation">
@@ -460,100 +493,107 @@ export function ScenarioCurvesPane({ scenario }: { scenario: OptimiserScenarioDa
     currentRows,
     visibleSeries,
   } = scenario
+  if (scenario.valueError !== null) return <ScenarioDataProblem message={scenario.valueError} />
   return (
-    <div className="flex gap-6">
-      {/* Legend / series checkboxes */}
-      <div className="shrink-0 space-y-1 min-w-[140px]">
-        <label
-          className="text-[11px] font-bold uppercase tracking-[0.08em]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Series
-        </label>
-        {allSeries.map((col, i) => (
-          <label
-            key={col}
-            className="flex items-center gap-1.5 text-xs cursor-pointer select-none"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            <input
-              type="checkbox"
-              checked={checkedSeries.has(col)}
-              onChange={() => toggleSeries(col)}
-              style={{ accentColor: SERIES_COLORS[i % SERIES_COLORS.length] }}
-            />
-            <span
-              className="inline-block w-2 h-2 rounded-full shrink-0"
-              style={{
-                background: SERIES_COLORS[i % SERIES_COLORS.length],
-                opacity: checkedSeries.has(col) ? 1 : 0.3,
-              }}
-            />
-            <span className="font-mono truncate max-w-[120px]" title={col}>
-              {col}
-              {col === objectiveCol && (
-                <span
-                  className="ml-1 text-[9px] font-sans"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  obj
-                </span>
-              )}
-            </span>
-          </label>
-        ))}
-
-        {/* Per-quote summary */}
-        <div className="mt-3 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+    <>
+      <ScenarioGapNotices notices={scenario.gapNotices} />
+      {currentRows.length > 0 && <div className="flex gap-6">
+        {/* Legend / series checkboxes */}
+        <div className="shrink-0 space-y-1 min-w-[140px]">
           <label
             className="text-[11px] font-bold uppercase tracking-[0.08em]"
             style={{ color: "var(--text-muted)" }}
           >
-            Quote
+            Series
           </label>
-          <div className="mt-1 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
-            <div className="flex justify-between gap-2">
-              <span style={{ color: "var(--text-muted)" }}>ID</span>
-              <span title={currentQuoteId}>
-                {currentQuoteId.length > 14
-                  ? currentQuoteId.slice(0, 12) + "…"
-                  : currentQuoteId}
+          {allSeries.map((col, i) => (
+            <label
+              key={col}
+              className="flex items-center gap-1.5 text-xs cursor-pointer select-none"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <input
+                type="checkbox"
+                checked={checkedSeries.has(col)}
+                onChange={() => toggleSeries(col)}
+                style={{ accentColor: SERIES_COLORS[i % SERIES_COLORS.length] }}
+              />
+              <span
+                className="inline-block w-2 h-2 rounded-full shrink-0"
+                style={{
+                  background: SERIES_COLORS[i % SERIES_COLORS.length],
+                  opacity: checkedSeries.has(col) ? 1 : 0.3,
+                }}
+              />
+              <span className="font-mono truncate max-w-[120px]" title={col}>
+                {col}
+                {col === objectiveCol && (
+                  <span
+                    className="ml-1 text-[9px] font-sans"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    obj
+                  </span>
+                )}
               </span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span style={{ color: "var(--text-muted)" }}>Scenarios</span>
-              <span>{currentRows.length}</span>
+            </label>
+          ))}
+
+          {/* Per-quote summary */}
+          <div className="mt-3 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+            <label
+              className="text-[11px] font-bold uppercase tracking-[0.08em]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Quote
+            </label>
+            <div className="mt-1 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
+              <div className="flex justify-between gap-2">
+                <span style={{ color: "var(--text-muted)" }}>ID</span>
+                <span title={currentQuoteId}>
+                  {currentQuoteId.length > 14
+                    ? currentQuoteId.slice(0, 12) + "…"
+                    : currentQuoteId}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span style={{ color: "var(--text-muted)" }}>Scenarios</span>
+                <span>{currentRows.length}</span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Chart area */}
-      <div className="flex-1 min-w-0">
-        {visibleSeries.length === 0 ? (
-          <div
-            className="text-xs py-4 text-center"
-            style={{ color: "var(--text-muted)" }}
-          >
-            Select at least one series to plot.
-          </div>
-        ) : (
-          <ChartArea
-            currentRows={currentRows}
-            visibleSeries={visibleSeries}
-            allSeries={allSeries}
-          />
-        )}
-      </div>
-    </div>
+        {/* Chart area */}
+        <div className="flex-1 min-w-0">
+          {visibleSeries.length === 0 ? (
+            <div
+              className="text-xs py-4 text-center"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Select at least one series to plot.
+            </div>
+          ) : (
+            <ChartArea
+              currentRows={currentRows}
+              visibleSeries={visibleSeries}
+              allSeries={allSeries}
+            />
+          )}
+        </div>
+      </div>}
+    </>
   )
 }
 
 /** Per-scenario summary statistics of the objective and each constraint, across the preview's quotes. */
 export function ScenarioStatisticsPane({ scenario }: { scenario: OptimiserScenarioData }) {
   const { allSeries, scenarioStatsBySeries, objectiveCol } = scenario
+  const problem = scenario.valueError ?? scenario.statisticsError
+  if (problem !== null) return <ScenarioDataProblem message={problem} />
   return (
     <div>
+      <ScenarioGapNotices notices={scenario.gapNotices} />
       {allSeries.map((col, i) => {
         const stats = scenarioStatsBySeries.get(col)
         if (!stats) return null

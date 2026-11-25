@@ -85,9 +85,9 @@ const OWN_STATE: Record<string, string> = {
     "the dropdown's active option and where its menu is placed",
   "frontend/src/panels/modelling/FeatureBrowser.tsx::FeatureBrowser::field":
     "the feature list's search box",
-  "frontend/src/panels/modelling/TermTableView.tsx::TermTableView::copy":
+  "frontend/src/panels/modelling/TermTableView.tsx::TermTableViewOfAxes::copy":
     "which axes a fitted table is shown by: a view of a training result",
-  "frontend/src/panels/modelling/TermTableView.tsx::TermTableView::seed":
+  "frontend/src/panels/modelling/TermTableView.tsx::TermTableViewOfAxes::seed":
     "which axes a fitted table is shown by: a view of a training result",
   "frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx::ScenarioQuoteNavigation::field":
     "the quote number to jump to in a solved scenario",

@@ -80,7 +80,6 @@ export function TBoostTablesTab({ result }: { result: TrainResult }) {
         </div>
         {table && (
           <TermTableView
-            key={table.term}
             title={`Table for ${table.term}`}
             axes={table.axes}
             values={shownScale === "relativity" && table.relativities ? table.relativities : table.scores}

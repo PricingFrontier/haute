@@ -111,7 +111,18 @@ results are supplied by API and result-store layers.
   state — disabled with the off-reason and a "Configure MLflow" link when tracking is unavailable.
   The optimiser Export pane opens its MLflow section with the same manual-logging
   explainer the modelling Export pane uses. The data preview
-  groups and charts bounded scenario samples and can calculate statistics.
+  groups and charts bounded scenario samples and can calculate statistics. A preview row whose
+  quote id, scenario index or scenario value has no finite value is left out of the curves and
+  the statistics, and a missing or non-finite objective or constraint value is left out of its
+  series alone (no point is drawn for it, and it is not counted); above both, one line per kind
+  counts those cells per column in the words the solve refuses them with (for example "Null
+  values found in optimiser input: 'expected_income' (1 null row)."), and a configured column
+  the rows do not have is named as missing ("Missing columns in scored data: ['volume']."). A present value that is not
+  a number (a text cell, say) replaces the curves and the statistics with a message naming the
+  column and the value, and the frame and its tabs stay usable. A scenario at which a series has
+  no value lists a count of 0 and a dash for each statistic, never zeros. When the solve would
+  refuse every previewed row, the panes still open with the notices (no chart and no quote
+  navigation), rather than the no-data notice.
 - Modelling and optimiser action areas render actionable memory-pressure and
   rejected-strategy diagnostics with profile, blocking node/operator, cost,
   reason, and remediation when the guarded payload supplies them. Other,
@@ -779,7 +790,11 @@ this discrete solve a positive λ can sit beside positive slack.
   missing cell stated. A table of two or more factors is a heatmap of two chosen axes, the
   longest axis on the rows and the shortest other axis on the columns by default, with a
   selector for each remaining axis; its chart draws the row axis along x and one line per
-  column cell. Labels stay on one line and a narrow table scrolls sideways. Under a log link the tab shows
+  column cell. The axis choices, the remaining axes' cells and the chart's pointed cell are
+  kept while the term's axes stay the same (the same features with the same cells, in order),
+  so training again with the same cells keeps the view, and start afresh when the axes change:
+  another term, or a retrain that gave the term other cells. The EBM Terms tab's view does the
+  same. Labels stay on one line and a narrow table scrolls sideways. Under a log link the tab shows
   relativities by default and can switch to link-scale values; other links show link-scale
   values only. Factored effects, which have no dense table, are listed by name and importance.
   A traced t-boost prediction lists one contribution per table, an interaction as one row.

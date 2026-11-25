@@ -1,11 +1,6 @@
-import type { PreviewData } from "./DataPreview"
+import { ScenarioDataError, type ScenarioRow } from "./optimiser/scenarioRows"
 
-type PreviewRow = PreviewData["preview"][number]
-
-export type ScenarioStats = {
-  scenarioIndex: number
-  scenarioValue: number
-  count: number
+export type ScenarioSummary = {
   mean: number
   std: number
   min: number
@@ -15,11 +10,19 @@ export type ScenarioStats = {
   max: number
 }
 
+export type ScenarioStats = {
+  scenarioIndex: number
+  scenarioValue: number
+  count: number
+  /** Null when the series has no value at this scenario. */
+  summary: ScenarioSummary | null
+}
+
 type ScenarioStatsInput = {
-  rows: Iterable<PreviewRow>
-  scenarioIndices?: number[]
+  /** Rows read by `readScenarioRows`: every value present is finite. */
+  rows: Iterable<ScenarioRow>
   series: string[]
-  scenarioIndexCol: string
+  /** The scenario value column, named when rows disagree on a scenario's value. */
   scenarioValueCol: string
 }
 
@@ -28,28 +31,14 @@ type ScenarioBucket = {
   valuesBySeries: Map<string, number[]>
 }
 
-function readFiniteNumber(row: PreviewRow, column: string): number {
-  const rawValue = row[column]
-  const value = Number(rawValue)
-  if (rawValue == null || (typeof rawValue === "string" && rawValue.trim() === "") || !Number.isFinite(value)) {
-    throw new Error(`Expected finite numeric value in "${column}", received ${String(rawValue)}`)
-  }
-  return value
-}
-
-function emptyScenarioStats(scenarioIndex: number, scenarioValue = 0): ScenarioStats {
-  return { scenarioIndex, scenarioValue, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 }
-}
-
-function statsFromValues(scenarioIndex: number, scenarioValue: number, values: number[]): ScenarioStats {
+function summaryOf(values: number[]): ScenarioSummary | null {
   const vals = [...values].sort((a, b) => a - b)
   const n = vals.length
-  if (n === 0) return emptyScenarioStats(scenarioIndex, scenarioValue)
+  if (n === 0) return null
 
   const sum = vals.reduce((a, b) => a + b, 0)
   const mean = sum / n
   const variance = vals.reduce((a, v) => a + (v - mean) ** 2, 0) / n
-  const std = Math.sqrt(variance)
   const percentile = (p: number) => {
     const idx = (p / 100) * (n - 1)
     const lo = Math.floor(idx)
@@ -59,11 +48,8 @@ function statsFromValues(scenarioIndex: number, scenarioValue: number, values: n
   }
 
   return {
-    scenarioIndex,
-    scenarioValue,
-    count: n,
     mean,
-    std,
+    std: Math.sqrt(variance),
     min: vals[0],
     p25: percentile(25),
     median: percentile(50),
@@ -72,62 +58,42 @@ function statsFromValues(scenarioIndex: number, scenarioValue: number, values: n
   }
 }
 
+/** Per series, the statistics of each scenario in the rows, in scenario order. */
 export function computeScenarioStatsBySeries({
   rows,
-  scenarioIndices,
   series,
-  scenarioIndexCol,
   scenarioValueCol,
 }: ScenarioStatsInput): Map<string, ScenarioStats[]> {
   const bucketsByScenario = new Map<number, ScenarioBucket>()
-  const discoveredScenarioIndices: number[] = []
-  const shouldDiscoverScenarioIndices = scenarioIndices == null
 
-  for (const row of rows) {
-    const scenarioIndex = readFiniteNumber(row, scenarioIndexCol)
-    if (!Number.isInteger(scenarioIndex)) {
-      throw new Error(`Expected integer scenario index in "${scenarioIndexCol}", received ${scenarioIndex}`)
-    }
-    const scenarioValue = readFiniteNumber(row, scenarioValueCol)
+  for (const { scenarioIndex, scenarioValue, values: rowValues } of rows) {
     let bucket = bucketsByScenario.get(scenarioIndex)
     if (!bucket) {
-      bucket = {
-        scenarioValue,
-        valuesBySeries: new Map(),
-      }
+      bucket = { scenarioValue, valuesBySeries: new Map() }
       bucketsByScenario.set(scenarioIndex, bucket)
-      if (shouldDiscoverScenarioIndices) discoveredScenarioIndices.push(scenarioIndex)
-    } else {
-      if (bucket.scenarioValue !== scenarioValue) {
-        throw new Error(
-          `Conflicting ${scenarioValueCol} for scenario ${scenarioIndex}: ${bucket.scenarioValue} vs ${scenarioValue}`,
-        )
-      }
+    } else if (bucket.scenarioValue !== scenarioValue) {
+      throw new ScenarioDataError(
+        `Conflicting ${scenarioValueCol} for scenario ${scenarioIndex}: ${bucket.scenarioValue} vs ${scenarioValue}`,
+      )
     }
 
     for (const column of series) {
-      const value = readFiniteNumber(row, column)
+      // A series without a value in this row is left out of its statistics.
+      if (!(column in rowValues)) continue
       const values = bucket.valuesBySeries.get(column)
-      if (values) {
-        values.push(value)
-      } else {
-        bucket.valuesBySeries.set(column, [value])
-      }
+      if (values) values.push(rowValues[column])
+      else bucket.valuesBySeries.set(column, [rowValues[column]])
     }
   }
 
-  const orderedScenarioIndices = scenarioIndices ?? discoveredScenarioIndices.sort((a, b) => a - b)
-  const statsBySeries = new Map<string, ScenarioStats[]>()
-  for (const column of series) {
-    statsBySeries.set(
+  const scenarios = [...bucketsByScenario.entries()].sort(([a], [b]) => a - b)
+  return new Map(
+    series.map((column) => [
       column,
-      orderedScenarioIndices.map((scenarioIndex) => {
-        const bucket = bucketsByScenario.get(scenarioIndex)
-        const scenarioValue = bucket?.scenarioValue ?? 0
-        const values = bucket?.valuesBySeries.get(column) ?? []
-        return statsFromValues(scenarioIndex, scenarioValue, values)
+      scenarios.map(([scenarioIndex, bucket]) => {
+        const values = bucket.valuesBySeries.get(column) ?? []
+        return { scenarioIndex, scenarioValue: bucket.scenarioValue, count: values.length, summary: summaryOf(values) }
       }),
-    )
-  }
-  return statsBySeries
+    ]),
+  )
 }

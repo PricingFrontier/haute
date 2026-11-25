@@ -8,33 +8,17 @@
 import { useCallback, useMemo, useState } from "react"
 import type { PreviewData } from "../DataPreview"
 import { computeScenarioStatsBySeries, type ScenarioStats } from "../optimiserScenarioStats"
+import {
+  attemptScenarioRead,
+  readScenarioRows,
+  scenarioGapNotices,
+  type ScenarioRow,
+} from "./scenarioRows"
 
 export const OPTIMISER_DATA_PREVIEW_ROW_LIMIT = 5_000
 
-export type QuoteRow = {
-  scenarioIndex: number
-  scenarioValue: number
-  values: Record<string, number> // objective + constraint column values
-}
-
-type PreviewRow = PreviewData["preview"][number]
-
-function toQuoteRow(
-  row: PreviewRow,
-  scenarioIndexCol: string,
-  scenarioValueCol: string,
-  allSeries: string[],
-): QuoteRow {
-  const vals: Record<string, number> = {}
-  for (const col of allSeries) {
-    vals[col] = Number(row[col] ?? 0)
-  }
-  return {
-    scenarioIndex: Number(row[scenarioIndexCol] ?? 0),
-    scenarioValue: Number(row[scenarioValueCol] ?? 0),
-    values: vals,
-  }
-}
+const NO_ROWS: ScenarioRow[] = []
+const NO_NOTICES: string[] = []
 
 export interface OptimiserScenarioData {
   /** The objective column; "" when none is configured. */
@@ -49,13 +33,19 @@ export interface OptimiserScenarioData {
   quoteIds: string[]
   clampedIndex: number
   currentQuoteId: string
-  currentRows: QuoteRow[]
+  currentRows: ScenarioRow[]
   goPrev: () => void
   goNext: () => void
   searchValue: string
   setSearchValue: (value: string) => void
   handleSearchSubmit: () => void
   scenarioStatsBySeries: Map<string, ScenarioStats[]>
+  /** The preview's cells the solve would refuse, one line per kind, shown above both panes. */
+  gapNotices: string[]
+  /** A present cell that is not a number: both panes show it in place of their content. */
+  valueError: string | null
+  /** Statistics that cannot be computed (rows disagreeing on a scenario's value). */
+  statisticsError: string | null
   /** "N quotes | M scenarios", with the preview budget when rows were capped. */
   metadata: string
 }
@@ -126,12 +116,28 @@ export function useOptimiserScenarioData(
     })
   }, [])
 
-  // ── Group preview rows by quote_id ──
+  // ── Every cell is read once, here; the curves and the statistics share the reading ──
+  const read = useMemo(
+    () => attemptScenarioRead(() => readScenarioRows(previewRows, {
+      quoteIdCol,
+      scenarioIndexCol,
+      scenarioValueCol,
+      series: allSeries,
+    })),
+    [allSeries, previewRows, quoteIdCol, scenarioIndexCol, scenarioValueCol],
+  )
+  const scenarioRows = read.value?.rows ?? NO_ROWS
+  const gapNotices = useMemo(
+    () => (read.value ? scenarioGapNotices(read.value) : NO_NOTICES),
+    [read.value],
+  )
+
+  // ── Group the scenario rows by quote id ──
   const { quoteIds, quoteRowsByQuote } = useMemo(() => {
-    const map = new Map<string, PreviewRow[]>()
+    const map = new Map<string, ScenarioRow[]>()
     const ids: string[] = []
-    for (const row of previewRows) {
-      const qid = String(row[quoteIdCol] ?? "")
+    for (const row of scenarioRows) {
+      const qid = row.quoteId
       const rows = map.get(qid)
       if (rows) {
         rows.push(row)
@@ -141,7 +147,7 @@ export function useOptimiserScenarioData(
       }
     }
     return { quoteIds: ids, quoteRowsByQuote: map }
-  }, [previewRows, quoteIdCol])
+  }, [scenarioRows])
 
   // ── Quote navigation: back to the first quote whenever the quotes change ──
   // Keyed by the quote ids in order, so another quote-id column or another
@@ -159,11 +165,9 @@ export function useOptimiserScenarioData(
   const clampedIndex = Math.min(current.index, Math.max(0, quoteIds.length - 1))
   const currentQuoteId = quoteIds[clampedIndex] ?? ""
   const currentRows = useMemo(() => {
-    const rows = quoteRowsByQuote.get(currentQuoteId) ?? []
-    return rows
-      .map((row) => toQuoteRow(row, scenarioIndexCol, scenarioValueCol, allSeries))
-      .sort((a, b) => a.scenarioIndex - b.scenarioIndex)
-  }, [quoteRowsByQuote, currentQuoteId, scenarioIndexCol, scenarioValueCol, allSeries])
+    const rows = quoteRowsByQuote.get(currentQuoteId) ?? NO_ROWS
+    return [...rows].sort((a, b) => a.scenarioIndex - b.scenarioIndex)
+  }, [quoteRowsByQuote, currentQuoteId])
 
   const goPrev = useCallback(
     () => setNavigation((prev) => ({ ...prev, index: Math.max(0, prev.index - 1) })),
@@ -195,15 +199,15 @@ export function useOptimiserScenarioData(
   // ── Scenario-level summary statistics (aggregated across all quotes) ──
   // Deferred: only computed while the statistics pane is showing to avoid
   // expensive O(n·log·n × #series) sorting on every render.
-  const scenarioStatsBySeries = useMemo(() => {
-    if (!statisticsActive) return new Map<string, ScenarioStats[]>()
-    return computeScenarioStatsBySeries({
-      rows: previewRows,
+  const statistics = useMemo(() => {
+    if (!statisticsActive) return { value: new Map<string, ScenarioStats[]>(), error: null }
+    return attemptScenarioRead(() => computeScenarioStatsBySeries({
+      rows: scenarioRows,
       series: allSeries,
-      scenarioIndexCol,
       scenarioValueCol,
-    })
-  }, [allSeries, previewRows, scenarioIndexCol, scenarioValueCol, statisticsActive])
+    }))
+  }, [allSeries, scenarioRows, scenarioValueCol, statisticsActive])
+  const scenarioStatsBySeries = statistics.value ?? new Map<string, ScenarioStats[]>()
 
   const metadata = `${quoteIds.length.toLocaleString()} quotes | ${currentRows.length.toLocaleString()} scenarios${previewBudgetLabel ? ` | ${previewBudgetLabel}` : ""}`
 
@@ -225,6 +229,9 @@ export function useOptimiserScenarioData(
     setSearchValue,
     handleSearchSubmit,
     scenarioStatsBySeries,
+    gapNotices,
+    valueError: read.error,
+    statisticsError: statistics.error,
     metadata,
   }
 }
@@ -234,6 +241,8 @@ export function scenarioDataUnavailable(
   scenario: OptimiserScenarioData,
 ): "no_objective" | "no_data" | null {
   if (!scenario.objectiveCol) return "no_objective"
+  // An unreadable cell, or rows the solve would refuse, are shown by the panes themselves.
+  if (scenario.valueError !== null || scenario.gapNotices.length > 0) return null
   if (scenario.quoteIds.length === 0 || scenario.currentRows.length === 0) return "no_data"
   return null
 }

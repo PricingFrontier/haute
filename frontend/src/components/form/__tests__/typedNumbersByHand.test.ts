@@ -134,8 +134,8 @@ const NOT_TYPED: Record<string, string> = {
     "a ratebook answer's feature value, matched by its pattern",
   "frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx::numericFeatureValue::parse::Number(match[0])":
     "a ratebook answer's feature value, matched by its pattern",
-  "frontend/src/panels/optimiserScenarioStats.ts::readFiniteNumber::parse::Number(rawValue)":
-    "a solve answer's statistic",
+  "frontend/src/panels/optimiser/scenarioRows.ts::readCell::parse::Number(raw)":
+    "a preview answer's cell, a wide integer the server wrote as text",
   "frontend/src/trace/derivationTreeHelpers.ts::substitutionRestatesValue::parse::Number(text)":
     "a trace answer's substituted figure",
   "frontend/src/utils/chartHelpers.ts::decade::parse::Number(`1e${exponent}`)":
