@@ -69,7 +69,7 @@ The pane opens with **SOLVER SETTINGS**:
 
 | Field | What it does |
 |---|---|
-| **Max iterations** | Maximum solver iterations with more than one constraint. Defaults to 50. With one constraint the solver searches that constraint's λ directly, as a frontier point does, and needs no iteration limit. |
+| **Max iterations** | Maximum solver iterations. Defaults to 50. An **Online** solve with one constraint searches that constraint's λ directly, as a frontier point does, and does not use it. |
 | **Tolerance** | How close to optimal the solution needs to be before stopping. Smaller values give more precise results but take longer. Defaults to `1e-6`. |
 | **CD iterations** | Ratebook mode: maximum coordinate descent iterations. Defaults to 10. |
 | **CD tolerance** | Ratebook mode: coordinate descent convergence tolerance. Defaults to `1e-3`. |
@@ -82,7 +82,7 @@ Below the settings:
 - Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios / quote** and **Total rows**, and **Estimated solve memory** against the memory a solve started now would be given. The memory figure is an estimate from the input's size; a warning icon marks it when it is more than the machine can give, and **Optimise** still runs: the solve stops only if it really runs out. It warns when each quote has one scenario (**Each quote has one scenario, so the optimiser has nothing to choose between. Check the Scenario Index mapping.**) or when quotes have different numbers of scenarios.
 - **Optimise** runs the solve (Ctrl+Enter from anywhere in the node's panel does the same). If anything blocks the solve, the button is disabled and a **Complete before optimising** list names each problem with a **Go to …** link to the pane that fixes it.
 - While the solve runs, the pane shows its progress and a **Stop** button.
-- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with the reason: a bound beyond what the scenario grid allows, where only a wider scenario range or a looser bound helps, or, with more than one constraint, its iterations used up, where more iterations or a looser tolerance may help. A solve can converge and still end short of a bound, a ratebook solve above all: it then adds **1 bound breached** (or **2 bounds breached**, and so on) to that line, with a warning naming each constraint, what the solve achieved and how far it is from the bound, for example **volume 1,835.1 is 1.78% under its minimum of 1,868.27.** A failed solve shows **Optimisation failed** and the reason.
+- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with the reason: for an **Online** solve with one constraint, a bound beyond what the scenario grid allows, where only a wider scenario range or a looser bound helps; otherwise its iterations used up, where more iterations or a looser tolerance may help. A solve can converge and still end short of a bound, a ratebook solve above all: it then adds **1 bound breached** (or **2 bounds breached**, and so on) to that line, with a warning naming each constraint, what the solve achieved and how far it is from the bound, for example **volume 1,835.1 is 1.78% under its minimum of 1,868.27.** A failed solve shows **Optimisation failed** and the reason.
 
 ## The EXPORT pane
 

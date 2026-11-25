@@ -1646,30 +1646,33 @@ class OptimiserSolveService:
     def _release_replaced_solves(self, job_id: str) -> None:
         """Slim the solves *job_id*'s published solve replaces, as their retention would.
 
-        The editor shows one solve per node, so the node's earlier completed solves in the
-        project go first; then the least recently used others while more than
-        ``_retained_solve_limit()`` solves, this one counted, would keep their runtime.
-        Slimming a session's job ends its process once a command it runs returns.
+        The editor shows one solve per node, so the node's solves in the project that
+        completed earlier go first; then the least recently used other earlier solves
+        while more than ``_retained_solve_limit()`` solves, this one counted, would keep
+        their runtime. The store decides and slims in one write, among earlier
+        completions only (``JobStore.expire_heavy_objects_before``), so two completions
+        racing never release each other. Slimming a session's job ends its process once
+        a command it runs returns.
         """
-        job = self._store.get_job(job_id)
-        if job is None:
-            return
-        node = job[_SOLVE_NODE_KEY]
-        retained = [
-            (other_id, other)
-            for other_id, other in self._store.retained_heavy_jobs()
-            if other_id != job_id and other.get(_JOB_TYPE_KEY) == _SOLVE_JOB_TYPE
-        ]
-        replaced = [other_id for other_id, other in retained if other.get(_SOLVE_NODE_KEY) == node]
-        others = [other_id for other_id, _other in retained if other_id not in replaced]
-        over_limit = others[: max(len(others) + 1 - _retained_solve_limit(), 0)]
-        released = self._store.expire_heavy_objects([*replaced, *over_limit])
+        limit = _retained_solve_limit()
+
+        def choose(job: Mapping[str, Any], earlier: list[tuple[str, Any]]) -> list[str]:
+            node = job[_SOLVE_NODE_KEY]
+            solves = [
+                (other_id, other)
+                for other_id, other in earlier
+                if other.get(_JOB_TYPE_KEY) == _SOLVE_JOB_TYPE
+            ]
+            replaced = [
+                other_id for other_id, other in solves if other.get(_SOLVE_NODE_KEY) == node
+            ]
+            others = [other_id for other_id, other in solves if other.get(_SOLVE_NODE_KEY) != node]
+            return [*replaced, *others[: max(len(others) + 1 - limit, 0)]]
+
+        released = self._store.expire_heavy_objects_before(job_id, choose)
         if released:
             logger.info(
-                "optimiser_replaced_solves_released",
-                job_id=job_id,
-                replaced=[other_id for other_id in released if other_id in replaced],
-                over_limit=[other_id for other_id in released if other_id in over_limit],
+                "optimiser_replaced_solves_released", job_id=job_id, released=list(released)
             )
 
     def _run_optimiser_input_stage(

@@ -1428,7 +1428,8 @@ whose message already names every problem and the remedy.
   tests solve one node again and again in process mode: one session process stays alive, the
   earlier jobs answer their summaries and Quotes pages and record `runtime_unavailable`
   `expired`; solves of other nodes past `HAUTE_OPTIMISER_RETAINED_SOLVES` slim the least
-  recently used; a failed solve of the node releases nothing.
+  recently used; a failed solve of the node releases nothing. `tests/test_optimiser_service_validation.py`
+  forces two completions of one node to release in each order and keeps the later one's runtime.
 - `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
   preparation (thread and process mode): a non-solver `region` column configured as an analysis
   column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
@@ -2751,11 +2752,13 @@ The solve thread:
 **Replaced solves.** A solve job records `solve_node` at creation: the project root, the
 graph's `source_file` and the node's address (`occurrence`, `node_id`), never its label or the
 graph fingerprint, so a node whose constraint was tuned is still the same node. Once a solve
-publishes, `_release_replaced_solves` takes the completed solve jobs that still hold heavy state
-(`JobStore.retained_heavy_jobs`, least recently used first) and slims, through
-`JobStore.expire_heavy_objects`, exactly as the retention window's expiry does: every earlier
-solve with the same `solve_node`, then the least recently used others while more than
+publishes, `_release_replaced_solves` slims, through one `JobStore.expire_heavy_objects_before`
+write and exactly as the retention window's expiry does, among the solve jobs that completed
+before it and still hold heavy state (least recently used first): every one with the same
+`solve_node`, then the least recently used others while more than
 `HAUTE_OPTIMISER_RETAINED_SOLVES` (default 3, counting the new solve) would hold heavy state.
+Only earlier completions are candidates and a solve already slimmed releases nothing, so two
+solves completing together never release each other's runtime, in either order.
 A slimmed session job records `runtime_unavailable` `expired` and its process ends, after a
 command it is running returns; its summary, retained point artifacts, the Quotes page from its
 persisted apply artifact, save and MLflow log keep answering, and a request that needs the

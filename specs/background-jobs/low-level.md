@@ -300,13 +300,18 @@ otherwise computes `min(now + heavy_object_ttl_seconds, created_at + ttl_seconds
 (never extends past the job's own metadata TTL) and, only if that's strictly later
 than the current expiry, updates the stamp and reschedules the cleanup timer.
 
-`retained_heavy_jobs()` returns the completed jobs that still hold heavy objects, as
-`(job_id, snapshot)` pairs, least recently used first (earliest `heavy_objects_expires_at`,
-then job id), after evicting stale jobs. `expire_heavy_objects(job_ids)` ends the retention
-window now for each named job that is completed and still holds heavy objects: the same
-`_clear_heavy_objects_locked` slimming the window's expiry does (the `heavy_objects_cleared_at`
-and `heavy_objects_retention_seconds` stamps included), its resource-owning heavy values
-released after the lock; any other id is skipped. It returns the ids it slimmed.
+`expire_heavy_objects_before(job_id, choose)` ends the retention window now for jobs a
+caller picks, in one write. Unless `job_id` is completed and still holds heavy objects it does
+nothing. Otherwise the candidates are the other completed jobs that still hold heavy objects
+and whose `completed_at` is earlier than `job_id`'s, as `(job_id, snapshot)` pairs least
+recently used first (earliest `heavy_objects_expires_at`, then job id); `choose(job,
+candidates)` runs under the lock, only selecting, and an id it returns that is not a candidate
+raises `ValueError`. Each chosen job gets the same `_clear_heavy_objects_locked` slimming the
+window's expiry does (the `heavy_objects_cleared_at` and `heavy_objects_retention_seconds`
+stamps included), its resource-owning heavy values released after the lock, and the slimmed
+ids are returned. Because only earlier completions are candidates and a slimmed job slims
+nothing, two completions racing to release each other leave the later one's heavy objects in
+place, whatever order their calls run in.
 
 **`atomic_update` / `atomic_update_if_heavy_present`** both take an optional
 `expected_status` compare-and-swap guard: if the stored status doesn't match, the
@@ -620,9 +625,10 @@ is only warranted for a concrete thread callable that can honour such a signal.
   shorter than metadata TTL, zero-retention edge case, value-equality status checks
   for dynamically-built `"completed"` strings, active-timer scheduling/cancellation
   across every status transition, `touch_heavy_objects` window extension and
-  timer replacement, `expire_heavy_objects` slimming as the expiry does and releasing the
-  resource-owning value while skipping a running or already slim job, and
-  `retained_heavy_jobs` least recently used first), including namespace reset of orphaned auxiliary state, and
+  timer replacement, `expire_heavy_objects_before` slimming only earlier completions as the
+  expiry does, least recently used first, releasing the resource-owning value, doing nothing
+  for a job already slim or not completed, and refusing a pick that is not a candidate),
+  including namespace reset of orphaned auxiliary state, and
   artifact leases (a lease defers the cleaner across eviction, `delete_job` and
   `detach_artifact_handle` until the last release; an unavailable handle raises).
   Concurrency is exercised with real `threading.Barrier`-

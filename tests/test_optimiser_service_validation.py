@@ -1059,3 +1059,45 @@ def test_a_frontier_without_its_documented_trace_breaks_the_library_contract() -
     )
     # Only the points the frontier payload returns keep their traces.
     assert kept["point_index"].to_list() == [0]
+
+
+class _Session:
+    """A solve's runtime: owns a process, records its release."""
+
+    def __init__(self) -> None:
+        self.releases = 0
+
+    def release(self) -> None:
+        self.releases += 1
+
+
+_NODE = {"project": "/project", "source_file": "main.py", "occurrence": None, "node_id": "opt"}
+
+
+def _completed_solve(store: JobStore, at: float) -> tuple[str, _Session]:
+    from haute.routes._job_lifecycle import JobLifecycle
+
+    session = _Session()
+    with patch("haute.routes._job_store.time.time", return_value=at):
+        job_id = store.create_job({"status": "running", "job_type": "solve", "solve_node": _NODE})
+        JobLifecycle(store).transition(job_id, to="completed", fields={"solver_session": session})
+    return job_id, session
+
+
+@pytest.mark.parametrize("order", ["earlier_first", "later_first"])
+def test_two_completions_of_one_node_never_release_the_later_one(order: str) -> None:
+    """OPM-04: A publishes and pauses, B publishes, then both release in either order.
+    Only A, the solve B replaces, is released; B, the one the editor shows, keeps its
+    runtime."""
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    earlier, earlier_session = _completed_solve(store, time.time() - 2)
+    later, later_session = _completed_solve(store, time.time() - 1)
+
+    for job_id in (earlier, later) if order == "earlier_first" else (later, earlier):
+        service._release_replaced_solves(job_id)
+
+    assert earlier_session.releases == 1
+    assert later_session.releases == 0
+    assert "solver_session" not in store.require_job(earlier)
+    assert "solver_session" in store.require_job(later)
