@@ -622,6 +622,41 @@ class JobStore:
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
         return result
 
+    def retained_heavy_jobs(self) -> list[tuple[str, JobSnapshot]]:
+        """The completed jobs still holding heavy objects, least recently used first.
+
+        Ordered by when their retention window ends (``touch_heavy_objects`` extends it),
+        then by id; stale jobs are evicted first.
+        """
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            retained = [
+                (self._heavy_objects_expires_at(job), job_id, self._snapshot(job))
+                for job_id, job in self._jobs.items()
+                if job.get("status") == "completed"
+                and any(key in job for key in _HEAVY_OBJECT_KEYS)
+            ]
+        retained.sort(key=lambda entry: (entry[0], entry[1]))
+        return [(job_id, snapshot) for _expires_at, job_id, snapshot in retained]
+
+    def expire_heavy_objects(self, job_ids: Iterable[str]) -> tuple[str, ...]:
+        """End the retention window now for each of *job_ids* that is completed and still
+        holds heavy objects, slimming it exactly as the window's expiry does; any other id
+        is skipped. Resource-owning heavy values are released after the lock. Returns the
+        ids slimmed."""
+        expired: list[str] = []
+        with self._write_locked_with_artifact_cleanup():
+            now = time.time()
+            for job_id in job_ids:
+                job = self._jobs.get(job_id)
+                if job is None or job.get("status") != "completed":
+                    continue
+                if not any(key in job for key in _HEAVY_OBJECT_KEYS):
+                    continue
+                self._clear_heavy_objects_locked(job_id, job, now=now)
+                expired.append(job_id)
+        return tuple(expired)
+
     def transition_terminal(
         self,
         job_id: str,

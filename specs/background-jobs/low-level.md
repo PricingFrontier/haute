@@ -300,6 +300,14 @@ otherwise computes `min(now + heavy_object_ttl_seconds, created_at + ttl_seconds
 (never extends past the job's own metadata TTL) and, only if that's strictly later
 than the current expiry, updates the stamp and reschedules the cleanup timer.
 
+`retained_heavy_jobs()` returns the completed jobs that still hold heavy objects, as
+`(job_id, snapshot)` pairs, least recently used first (earliest `heavy_objects_expires_at`,
+then job id), after evicting stale jobs. `expire_heavy_objects(job_ids)` ends the retention
+window now for each named job that is completed and still holds heavy objects: the same
+`_clear_heavy_objects_locked` slimming the window's expiry does (the `heavy_objects_cleared_at`
+and `heavy_objects_retention_seconds` stamps included), its resource-owning heavy values
+released after the lock; any other id is skipped. It returns the ids it slimmed.
+
 **`atomic_update` / `atomic_update_if_heavy_present`** both take an optional
 `expected_status` compare-and-swap guard: if the stored status doesn't match, the
 call returns `None` without writing (a caller-visible "your read was stale" signal,
@@ -612,7 +620,9 @@ is only warranted for a concrete thread callable that can honour such a signal.
   shorter than metadata TTL, zero-retention edge case, value-equality status checks
   for dynamically-built `"completed"` strings, active-timer scheduling/cancellation
   across every status transition, `touch_heavy_objects` window extension and
-  timer replacement), including namespace reset of orphaned auxiliary state, and
+  timer replacement, `expire_heavy_objects` slimming as the expiry does and releasing the
+  resource-owning value while skipping a running or already slim job, and
+  `retained_heavy_jobs` least recently used first), including namespace reset of orphaned auxiliary state, and
   artifact leases (a lease defers the cleaner across eviction, `delete_job` and
   `detach_artifact_handle` until the last release; an unavailable handle raises).
   Concurrency is exercised with real `threading.Barrier`-

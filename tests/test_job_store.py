@@ -4188,6 +4188,48 @@ class TestHeavyResourceRelease:
         assert owned.releases == 1
         assert "solver_session" not in job
 
+    def test_expiring_it_now_releases_it_and_slims_as_the_window_does(self) -> None:
+        timers: list = []
+        store = JobStore(
+            heavy_object_ttl_seconds=10,
+            heavy_object_timer_factory=_manual_timer_factory(timers),
+        )
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id, owned = self._completed_with_session(store)
+            running = _create_job(store, {"status": "running"})
+            store.update_job(running, solver_session=_OwnedProcess())
+            slim = _create_job(store, {"status": "completed", "result": {"total": 1.0}})
+        with patch("haute.routes._job_store.time.time", return_value=103.0):
+            expired = store.expire_heavy_objects([job_id, running, slim, "missing"])
+            job = store.require_job(job_id)
+            still_running = store.require_job(running)
+            already_slim = store.require_job(slim)
+
+        assert expired == (job_id,)
+        assert owned.releases == 1
+        assert "solver_session" not in job
+        assert "heavy_objects_expires_at" not in job
+        assert job["heavy_objects_cleared_at"] == 103.0
+        assert job["heavy_objects_retention_seconds"] == 10
+        assert timers[0].cancelled is True
+        assert "solver_session" in still_running
+        assert already_slim["result"] == {"total": 1.0}
+
+    def test_retained_jobs_are_listed_least_recently_used_first(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=10)
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            first, _ = self._completed_with_session(store)
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            second, _ = self._completed_with_session(store)
+            _create_job(store, {"status": "completed", "result": {}})
+            running = _create_job(store, {"status": "running"})
+            store.update_job(running, solver_session=_OwnedProcess())
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            assert [job_id for job_id, _ in store.retained_heavy_jobs()] == [first, second]
+            # Reading the first solve's runtime makes it the most recently used.
+            assert store.touch_heavy_objects(first, required_keys=("solver_session",))
+            assert [job_id for job_id, _ in store.retained_heavy_jobs()] == [second, first]
+
     def test_correcting_a_completed_job_to_error_releases_it(self) -> None:
         store = JobStore()
         job_id, owned = self._completed_with_session(store)

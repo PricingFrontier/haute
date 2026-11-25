@@ -93,7 +93,11 @@ worker. The grid build, the solve, the inline frontier and frontier
 point applies then run in the job's *solver session*: one dedicated spawn worker per solve that
 holds the solver and quote grid for as long as the result keeps them, under a native memory cap
 re-sized before every command to what the machine can give at that moment and never lifted
-(OPT-W01). Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
+(OPT-W01). The editor shows one solve per node, so a node solved again lets go of the solves it
+replaces: once the new solve completes, that node's earlier solves in the project are slimmed
+to their summaries, as their retention window would later slim them, which ends their
+sessions; and at most three completed solves (`HAUTE_OPTIMISER_RETAINED_SOLVES`) keep their
+runtime at once, the least recently used slimmed first. Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
 that exceeds the cap stops, as `memory_limited`, with the server and other jobs unaffected;
 cancelling a solve terminates its session at once. The explicit `thread` compatibility mode runs
 the same steps on the job's thread and keeps the solve-memory forecast as its gate. Before a solve, the Solve
@@ -295,7 +299,8 @@ is impractical, and polling lets the UI show live progress.
 In process mode those heavy objects live only in the job's solver session process, never in
 the server: a native optimiser call cannot be stopped by the server's RSS supervision, so the
 only safe place for one is a process whose kernel cap kills it alone. The job store keeps the
-session handle under the same retention window, and dropping it ends the process. Heavy
+session handle under the same retention window, and dropping it ends the process; a solve the
+node's newer solve replaces, or one past the retained-solve ceiling, is dropped at once. Heavy
 runtime objects a solve produces (the solver instance, the built `QuoteGrid`, the raw
 solve result with its dataframe) are kept only for a short retention window,
 then the job is slimmed to its API-facing summary. Anything a later request might need past

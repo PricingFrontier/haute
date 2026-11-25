@@ -1399,7 +1399,11 @@ whose message already names every problem and the remedy.
   no trace. `tests/test_optimiser_service_validation.py` rejects an empty or mixed trace and a
   frontier without its documented frame, keeps only the returned points, and answers a `410` once
   the artifact is cleaned up. `tests/test_optimiser_solver_session.py` reads the trace from a
-  session solve and shows a solve that sweeps nothing leaves no directory behind.
+  session solve and shows a solve that sweeps nothing leaves no directory behind. Its OPM-04
+  tests solve one node again and again in process mode: one session process stays alive, the
+  earlier jobs answer their summaries and Quotes pages and record `runtime_unavailable`
+  `expired`; solves of other nodes past `HAUTE_OPTIMISER_RETAINED_SOLVES` slim the least
+  recently used; a failed solve of the node releases nothing.
 - `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
   preparation (thread and process mode): a non-solver `region` column configured as an analysis
   column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
@@ -2715,7 +2719,22 @@ The solve thread:
 3. starts the session, with a bounded start that polls the job's cancellation reason;
 4. runs `build_and_solve`;
 5. publishes the completion, with `solver_session` and `runtime_mode`, through the same
-   `publish_completion` claim the in-process finalize uses.
+   `publish_completion` claim the in-process finalize uses;
+6. releases the solves the new one replaces (`_release_replaced_solves`, run after a published
+   completion in both runtime modes).
+
+**Replaced solves.** A solve job records `solve_node` at creation: the project root, the
+graph's `source_file` and the node's address (`occurrence`, `node_id`), never its label or the
+graph fingerprint, so a node whose constraint was tuned is still the same node. Once a solve
+publishes, `_release_replaced_solves` takes the completed solve jobs that still hold heavy state
+(`JobStore.retained_heavy_jobs`, least recently used first) and slims, through
+`JobStore.expire_heavy_objects`, exactly as the retention window's expiry does: every earlier
+solve with the same `solve_node`, then the least recently used others while more than
+`HAUTE_OPTIMISER_RETAINED_SOLVES` (default 3, counting the new solve) would hold heavy state.
+A slimmed session job records `runtime_unavailable` `expired` and its process ends, after a
+command it is running returns; its summary, retained point artifacts, the Quotes page from its
+persisted apply artifact, save and MLflow log keep answering, and a request that needs the
+runtime answers its 410. A failed or cancelled solve releases nothing.
 
 **Cancellation and timeout** keep their existing immediate terminal transitions, which
 are the only claim needed against a concurrent completion:

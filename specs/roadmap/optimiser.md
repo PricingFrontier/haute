@@ -21,7 +21,6 @@ the node's default settings.
 |---|---|---:|---|
 | OPM-02 | Planned | P2 | A solve with one binding constraint converges and meets its bound, as point 0 of its own frontier does. |
 | OPM-03 | Decision | P2 | A ratebook solve that ends short of a bound says so in its status and warning, not only in the Summary table. |
-| OPM-04 | Planned | P2 | Solving a node again ends the solver process of its earlier solve, so tuning a constraint does not hold one process per press for fifteen minutes. |
 
 ## Planned improvements
 
@@ -108,46 +107,3 @@ Summary table.
 **Evidence:** `src/haute/routes/_optimiser_solver.py::_solve_ratebook`;
 `specs/frontend-modelling-optimiser-ui/high-level.md`;
 `docs/building-models/nodes/optimiser.md`.
-
-### OPM-04 — A node solved again lets go of its earlier solve
-**Why:** Reproduced on 11 November 2026 through the routes: one server, a
-book of 5,000 quotes, and the same Optimiser node solved five times with a
-different bound each time, as an analyst tuning a constraint does.
-
-| | Processes under the server | Memory committed |
-|---|---:|---:|
-| Before any solve | 1 | 1,749 MB |
-| After solve 1 | 2 | 2,628 MB |
-| After solve 2 | 3 | 3,499 MB |
-| After solve 3 | 4 | 4,385 MB |
-| After solve 4 | 5 | 5,255 MB |
-| After solve 5 | 6 | 6,139 MB |
-
-Each solve leaves one more process, holding about 880 MB of committed
-memory, the figure Windows counts against its limit; about 150 MB of it is
-resident. They are solver sessions. The specification gives each solve "one
-dedicated spawn worker per solve that holds the solver and quote grid for
-as long as the result keeps them", and the result keeps them for fifteen
-minutes (read, not waited for). The first solve's Quotes page was still
-served after the fifth.
-
-The editor shows one solve for a node. Once the node is solved again,
-nothing on the screen can reach the earlier one, and its process waits out
-the fifteen minutes all the same. Ten presses of Optimise in a quarter of
-an hour hold nearly 9 GB for results that cannot be opened. Another run was
-stopped by its 8,000 MB limit during its seventh solve, and the sweep's
-eleven solves of a few quotes each reached 6,010 MB.
-
-**Plan:** When a solve of a node completes, end the sessions of that node's
-earlier solves in the same project and slim those jobs to their summaries,
-as the retention window would later. Put a small ceiling on the sessions
-alive at once, oldest first, for solves of different nodes.
-
-**Acceptance:** After five solves of one node, one solver session process
-is alive. The earlier jobs still answer their summaries, and a request for
-their Quotes pages answers as it does after the retention window.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_optimiser_session.py::SolverSession`;
-`src/haute/routes/_job_store.py`; `specs/optimiser/high-level.md`.

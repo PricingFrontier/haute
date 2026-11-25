@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, cast
 import numpy as np
 
 from haute._node_addresses import address_entry
-from haute._project_context import context_thread, graph_pipeline_dir
+from haute._project_context import context_thread, current_project, graph_pipeline_dir
 from haute.errors import (
     ConflictError,
     InsufficientMemoryError,
@@ -229,6 +229,23 @@ def _optimisation_time_limit() -> int | None:
     return None if seconds is None else math.ceil(seconds)
 
 
+def _retained_solve_limit() -> int:
+    """How many completed solves may keep their runtime (a session, or the native objects)."""
+    return int_env("HAUTE_OPTIMISER_RETAINED_SOLVES", 3)
+
+
+def _solve_node(graph: PipelineGraph, node_id: str) -> dict[str, Any]:
+    """The node a solve solves: its project, pipeline file and address, never its label or
+    the graph's fingerprint, so a node whose settings changed is still the same node."""
+    address = address_entry(graph, node_id)
+    return {
+        "project": str(current_project().root),
+        "source_file": graph.source_file,
+        "occurrence": address.occurrence,
+        "node_id": address.node_id,
+    }
+
+
 def _default_reducer_budget_mb() -> int:
     # the auto-range reducer's byte budget cap, before the headroom term
     return int_env("HAUTE_OPTIMISER_REDUCER_BUDGET_MB", 512)
@@ -242,6 +259,8 @@ _ESTIMATE_JOB_TYPE: Literal["estimate"] = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE: Literal["frontier_auto_range"] = "frontier_auto_range"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
+#: The node a solve job solved, as ``_release_replaced_solves`` compares it.
+_SOLVE_NODE_KEY = "solve_node"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
 _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = TERMINAL_REASONS
 # How long a start waits for a graph/node owner whose job has already ended to
@@ -257,6 +276,7 @@ class _OptimiserSolveRunningJob(RunningJobFields):
     node_label: str
     # Absent on the worker process's private setup job, which never publishes.
     input_provenance: NotRequired[dict[str, Any]]
+    solve_node: NotRequired[dict[str, Any]]
     start_time: float
     timeout: int | None
 
@@ -1187,6 +1207,7 @@ class OptimiserSolveService:
                     source=body.source,
                     graph_fingerprint=setup_job_key[2],
                 ),
+                "solve_node": _solve_node(body.graph, body.node_id),
                 "start_time": start_time,
                 "timeout": _optimisation_time_limit(),
             }
@@ -1619,6 +1640,37 @@ class OptimiserSolveService:
             if session.last_command is not None:
                 self._store.update_job(job_id, solver_session_command=dict(session.last_command))
             self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
+        if adopted:
+            self._release_replaced_solves(job_id)
+
+    def _release_replaced_solves(self, job_id: str) -> None:
+        """Slim the solves *job_id*'s published solve replaces, as their retention would.
+
+        The editor shows one solve per node, so the node's earlier completed solves in the
+        project go first; then the least recently used others while more than
+        ``_retained_solve_limit()`` solves, this one counted, would keep their runtime.
+        Slimming a session's job ends its process once a command it runs returns.
+        """
+        job = self._store.get_job(job_id)
+        if job is None:
+            return
+        node = job[_SOLVE_NODE_KEY]
+        retained = [
+            (other_id, other)
+            for other_id, other in self._store.retained_heavy_jobs()
+            if other_id != job_id and other.get(_JOB_TYPE_KEY) == _SOLVE_JOB_TYPE
+        ]
+        replaced = [other_id for other_id, other in retained if other.get(_SOLVE_NODE_KEY) == node]
+        others = [other_id for other_id, _other in retained if other_id not in replaced]
+        over_limit = others[: max(len(others) + 1 - _retained_solve_limit(), 0)]
+        released = self._store.expire_heavy_objects([*replaced, *over_limit])
+        if released:
+            logger.info(
+                "optimiser_replaced_solves_released",
+                job_id=job_id,
+                replaced=[other_id for other_id in released if other_id in replaced],
+                over_limit=[other_id for other_id in released if other_id in over_limit],
+            )
 
     def _run_optimiser_input_stage(
         self,
@@ -3625,6 +3677,8 @@ class OptimiserSolveService:
                         job_id=job_id,
                         event="solve_worker_orphan_quote_analysis_cleanup_failed",
                     )
+            if adopted:
+                self._release_replaced_solves(job_id)
 
         def _solve_background_in_worker_context() -> None:
             with self._job_ownership_scope(

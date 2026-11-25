@@ -342,6 +342,19 @@ class TestDataInputPath:
         assert status["status"] != "completed"
         assert "missing=['region']" in status["message"]
 
+    def test_a_node_solved_again_drops_its_earlier_solves_runtime(self, client, tmp_path):
+        """OPM-04, thread mode: the replaced solve keeps its summary, not its native objects."""
+        scored = _scored(tmp_path)
+        earlier, earlier_status = _solved(client, _data_graph(scored))
+        assert "quote_grid" in _store.require_job(earlier)
+        later, _status = _solved(client, _data_graph(scored, constraints={"volume": {"min": 1.0}}))
+
+        replaced = _store.require_job(earlier)
+        for key in ("solver", "solve_result", "quote_grid"):
+            assert key not in replaced
+        assert replaced["result"]["total_objective"] == earlier_status["result"]["total_objective"]
+        assert "quote_grid" in _store.require_job(later)
+
     def test_without_analysis_columns_no_side_table_is_written(self, client, tmp_path):
         job_id, status = _solved(client, _data_graph(_scored(tmp_path)))
 
