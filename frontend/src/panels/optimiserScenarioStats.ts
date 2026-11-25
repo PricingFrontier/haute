@@ -1,6 +1,4 @@
-import type { PreviewData } from "./DataPreview"
-
-type PreviewRow = PreviewData["preview"][number]
+import { ScenarioDataError, type ScenarioRow } from "./optimiser/scenarioRows"
 
 export type ScenarioStats = {
   scenarioIndex: number
@@ -16,25 +14,17 @@ export type ScenarioStats = {
 }
 
 type ScenarioStatsInput = {
-  rows: Iterable<PreviewRow>
+  /** Rows read by `readScenarioRows`: every value present is finite. */
+  rows: Iterable<ScenarioRow>
   scenarioIndices?: number[]
   series: string[]
-  scenarioIndexCol: string
+  /** The scenario value column, named when rows disagree on a scenario's value. */
   scenarioValueCol: string
 }
 
 type ScenarioBucket = {
   scenarioValue: number
   valuesBySeries: Map<string, number[]>
-}
-
-function readFiniteNumber(row: PreviewRow, column: string): number {
-  const rawValue = row[column]
-  const value = Number(rawValue)
-  if (rawValue == null || (typeof rawValue === "string" && rawValue.trim() === "") || !Number.isFinite(value)) {
-    throw new Error(`Expected finite numeric value in "${column}", received ${String(rawValue)}`)
-  }
-  return value
 }
 
 function emptyScenarioStats(scenarioIndex: number, scenarioValue = 0): ScenarioStats {
@@ -76,19 +66,13 @@ export function computeScenarioStatsBySeries({
   rows,
   scenarioIndices,
   series,
-  scenarioIndexCol,
   scenarioValueCol,
 }: ScenarioStatsInput): Map<string, ScenarioStats[]> {
   const bucketsByScenario = new Map<number, ScenarioBucket>()
   const discoveredScenarioIndices: number[] = []
   const shouldDiscoverScenarioIndices = scenarioIndices == null
 
-  for (const row of rows) {
-    const scenarioIndex = readFiniteNumber(row, scenarioIndexCol)
-    if (!Number.isInteger(scenarioIndex)) {
-      throw new Error(`Expected integer scenario index in "${scenarioIndexCol}", received ${scenarioIndex}`)
-    }
-    const scenarioValue = readFiniteNumber(row, scenarioValueCol)
+  for (const { scenarioIndex, scenarioValue, values: rowValues } of rows) {
     let bucket = bucketsByScenario.get(scenarioIndex)
     if (!bucket) {
       bucket = {
@@ -97,16 +81,16 @@ export function computeScenarioStatsBySeries({
       }
       bucketsByScenario.set(scenarioIndex, bucket)
       if (shouldDiscoverScenarioIndices) discoveredScenarioIndices.push(scenarioIndex)
-    } else {
-      if (bucket.scenarioValue !== scenarioValue) {
-        throw new Error(
-          `Conflicting ${scenarioValueCol} for scenario ${scenarioIndex}: ${bucket.scenarioValue} vs ${scenarioValue}`,
-        )
-      }
+    } else if (bucket.scenarioValue !== scenarioValue) {
+      throw new ScenarioDataError(
+        `Conflicting ${scenarioValueCol} for scenario ${scenarioIndex}: ${bucket.scenarioValue} vs ${scenarioValue}`,
+      )
     }
 
     for (const column of series) {
-      const value = readFiniteNumber(row, column)
+      // A series without a value in this row is left out of its statistics.
+      if (!(column in rowValues)) continue
+      const value = rowValues[column]
       const values = bucket.valuesBySeries.get(column)
       if (values) {
         values.push(value)

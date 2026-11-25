@@ -3,7 +3,8 @@ type HauteNonFiniteFloat = {
   value: "nan" | "inf" | "-inf"
 }
 
-function isHauteNonFiniteFloat(value: unknown): value is HauteNonFiniteFloat {
+/** A NaN or infinity as the server's `to_json_safe` writes it into JSON. */
+export function isHauteNonFiniteFloat(value: unknown): value is HauteNonFiniteFloat {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false
   const obj = value as Record<string, unknown>
   return (

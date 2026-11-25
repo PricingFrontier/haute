@@ -119,7 +119,7 @@ A finished solve opens in a results panel under the canvas. Its header shows whe
 - **Segments**: the mean chosen scenario value for each level of a validation or rating factor, with the shares adjusted up, down and at the edge of the range.
 - **Quotes**: the scenario value chosen for each quote, with its expected objective and constraint values.
 - **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes). A solve with one constraint, and a frontier point found by bisection, shows each λ probed within its bracket. With a frontier point selected, it shows that point's own solve.
-- **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes. On these views the header describes the sampled input instead of the solve.
+- **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes. On these views the header describes the sampled input instead of the solve. A previewed row without a quote ID, scenario index or scenario value is left out of both, and an objective or constraint value that is null, NaN or infinite is left out of its own series; a line above the curves and the statistics counts those cells per column, in the words a solve refuses them with. Fix them upstream before you solve. A value that is not a number at all (text in a numeric column) is shown in place of the curves and the statistics.
 
 When the node's settings have changed since the solve, the results panel says so and offers **Re-run**.
 

@@ -111,7 +111,15 @@ results are supplied by API and result-store layers.
   state — disabled with the off-reason and a "Configure MLflow" link when tracking is unavailable.
   The optimiser Export pane opens its MLflow section with the same manual-logging
   explainer the modelling Export pane uses. The data preview
-  groups and charts bounded scenario samples and can calculate statistics.
+  groups and charts bounded scenario samples and can calculate statistics. A preview row whose
+  quote id, scenario index or scenario value has no finite value is left out of the curves and
+  the statistics, and a missing or non-finite objective or constraint value is left out of its
+  series alone (no point is drawn for it, and it is not counted); above both, one line per kind
+  counts those cells per column in the words the solve refuses them with (for example "Null
+  values found in optimiser input: 'expected_income' (1 null row)."), and a configured column
+  the rows do not have is named as missing ("Missing columns in scored data: ['volume']."). A present value that is not
+  a number (a text cell, say) replaces the curves and the statistics with a message naming the
+  column and the value, and the frame and its tabs stay usable.
 - Modelling and optimiser action areas render actionable memory-pressure and
   rejected-strategy diagnostics with profile, blocking node/operator, cost,
   reason, and remediation when the guarded payload supplies them. Other,
