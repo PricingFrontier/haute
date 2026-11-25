@@ -3,8 +3,8 @@
  * passes every check marking it final makes, red while it fails any, saying how many fail,
  * and the box it opens under it, as Display opens one: the checks, those failing first, then
  * those passing, each by its table and its column's label with what it asks for. The checks
- * are `quoteChecks`' on the `values` typed and the `tables` their price gave (null for no
- * price, or one of other values). Pressing outside the box, or Escape, closes it, Escape
+ * are `quoteChecks`' on the `values` typed and the `tables` their price gave as last made
+ * (null for none). Pressing outside the box, or Escape, closes it, Escape
  * giving the focus back to the button.
  */
 import { ShieldAlert, ShieldCheck } from "lucide-react"
@@ -64,7 +64,8 @@ export default function ValidationButton({ form, values, tables, disabled = fals
         title={passes ? "The quote passes every check marking it final makes" : `${failing.length} ${failing.length === 1 ? "check fails" : "checks fail"}: the quote cannot be marked final yet`}
         data-testid="validation-button"
         data-state={passes ? "passing" : "failing"}
-        style={off ? undefined : { outline: `1.5px solid ${colour}`, outlineOffset: "-1.5px" }}
+        // Inside the button's edge, leaving its focus ring its own.
+        style={off ? undefined : { boxShadow: `inset 0 0 0 1.5px ${colour}` }}
       >
         Validation{passes || off ? "" : ` (${failing.length})`}
       </ToolbarButton>

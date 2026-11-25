@@ -203,7 +203,7 @@ describe("WorkbenchToolbar", () => {
     renderToolbar()
     const building = screen.getByRole("button", { name: "Validation" })
     expect(building).toBeDisabled()
-    expect(building.style.outline).toBe("")
+    expect(building.style.boxShadow).toBe("")
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     const failing = screen.getByRole("button", { name: "Validation (1)" })

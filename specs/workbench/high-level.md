@@ -2438,7 +2438,8 @@ Out of scope:
   and each validation, by its table's name and its column's label, a failing one of a
   many-row table naming its rows, a failing validation showing its message. The checks are
   made in the browser on what the sheets hold, the values typed and the price as last made,
-  a price of other values counting as none, by the rules the server marks a quote final by
+  which follows the typing once it pauses, so the button does not turn red at each key, by
+  the rules the server marks a quote final by
   (`frontend/src/utils/quoteChecks.ts` and `src/haute/_workbench_checks.py`, both held to
   `frontend/src/utils/__tests__/fixtures/quoteChecks.json`), so the button says what Mark
   final would for the quote once saved as it stands; the server's answer is the one that
@@ -3113,8 +3114,8 @@ Out of scope:
   text of spaces alone is empty, zero and false are values and null is not (an
   unticked box in a filled row is false; a True/false output left unfilled is null); an
   empty value passes a range and allowed values, which are Required's to ask for. An
-  input the sheets hide for the quote's values (`visibility`) is left out of the quote,
-  so its checks are not made: a required field nobody can reach stops nothing. An
+  input the sheets hide for the quote's values (`visibility`) is one nobody can reach on
+  them, so its checks are not made: a required field hidden stops nothing. An
   output's are always made, whatever the sheets place or show, as the pipeline fills it
   either way. A
   final quote takes no save; Amend takes it back to draft, giving a reason, and its next
@@ -3803,8 +3804,7 @@ Out of scope:
   needs before it is offered, so Mark final checks them, Required on inputs and outputs
   alike, a range and allowed values with it, and what later work gates behind final,
   exports first, never sees a quote breaking one. A rule on an input the sheets hide for
-  the quote is not checked: the quote leaves the value out, so nobody could put it right
-  (decided 2026-11-25).
+  the quote is not checked: nobody could put it right (decided 2026-11-25).
 - **A validation is a column the pipeline fills.** A project's own conditions on a quote
   (a premium above its minimum, a schedule within the line) are True/false outputs marked
   Validation, not conditions written on the form. The pipeline is where an analyst

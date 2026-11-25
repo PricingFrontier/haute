@@ -464,6 +464,7 @@ strict = [
     "test_verify_pypi_release.py",
     "test_wide_integers.py",
     "test_workbench_app_quotes.py",
+    "test_workbench_checks.py",
     "test_workbench_config.py",
     "test_workbench_form.py",
     "test_workbench_output.py",

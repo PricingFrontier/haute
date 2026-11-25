@@ -20,7 +20,7 @@ describe("ValidationButton", () => {
     render(<ValidationButton form={form} {...PASSING} />)
     const button = screen.getByRole("button", { name: "Validation" })
     expect(button).toHaveAttribute("data-state", "passing")
-    expect(button.style.outline).toContain("var(--success)")
+    expect(button.style.boxShadow).toContain("var(--success)")
     expect(screen.queryByTestId("validation-box")).toBeNull()
 
     fireEvent.click(button)
@@ -39,7 +39,7 @@ describe("ValidationButton", () => {
     )
     const button = screen.getByRole("button", { name: "Validation (3)" })
     expect(button).toHaveAttribute("data-state", "failing")
-    expect(button.style.outline).toContain("var(--danger)")
+    expect(button.style.boxShadow).toContain("var(--danger)")
 
     fireEvent.click(button)
     expect(lines("validation-failing")).toEqual(["policy · Age 17 to 99", "policy · Premium check The premium is below the minimum", "drivers · Name Needs a value · Row 2"])
@@ -79,7 +79,7 @@ describe("ValidationButton", () => {
     const { rerender } = render(<ValidationButton form={form} values={{}} tables={null} disabled />)
     const button = screen.getByRole("button", { name: "Validation" })
     expect(button).toBeDisabled()
-    expect(button.style.outline).toBe("")
+    expect(button.style.boxShadow).toBe("")
 
     rerender(<ValidationButton form={null} values={{}} tables={null} />)
     expect(screen.getByRole("button", { name: "Validation" })).toBeDisabled()

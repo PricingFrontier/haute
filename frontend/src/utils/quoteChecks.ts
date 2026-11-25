@@ -14,7 +14,7 @@
  */
 import type { FormSpec, SchemaColumn, SchemaTable } from "../api/types"
 import { hasInputs, isOutputColumn, tableColumns, tableIndex } from "./quoteIdentity"
-import { rowFilled, typedIndexValue, withPresetRows, type PricedRows, type RowsByTable } from "./sheetValues"
+import { rowFilled, rowHolds, typedIndexValue, withPresetRows, type PricedRows, type RowsByTable } from "./sheetValues"
 import { columnKey, sheetVisibility } from "./sheetVisibility"
 import { readTypedNumber, readTypedWhole, trimTyped } from "./typedNumbers"
 import { readableName, type SampleRow, type SampleValue } from "./workbenchForm"
@@ -81,7 +81,7 @@ function rowName(index: SchemaColumn, row: SampleRow, place: number): string {
 
 /**
  * Every check of `form` on the `values` typed into its sheets and the `tables` their price
- * gave, by table name (null for no price, or one of other values), passed or not.
+ * gave, by table name (null for no price), passed or not.
  */
 export function quoteChecks(form: FormSpec, values: RowsByTable, tables: Readonly<Record<string, PricedRows>> | null): QuoteCheck[] {
   const hidden = sheetVisibility(form, values).hidden
@@ -98,7 +98,8 @@ export function quoteChecks(form: FormSpec, values: RowsByTable, tables: Readonl
       held.push({ name: "", typed: typed[0] ?? {}, filled: rowFilled(table, typed[0]), priced: answered[0] })
     } else if (index !== null && hasInputs(table)) {
       typed.forEach((row, place) => {
-        if (!rowFilled(table, row)) return
+        // A row holding values in store columns the form no longer holds is a row the store keeps too.
+        if (!rowHolds(table, row)) return
         const name = rowName(index, row, place)
         held.push({ name, typed: row, filled: true, priced: answered.find((candidate) => candidate[index.name] !== null && candidate[index.name] !== undefined && String(candidate[index.name]) === name) })
       })
@@ -132,6 +133,8 @@ export interface CheckLine {
 export function checkLine(form: FormSpec, check: QuoteCheck): CheckLine {
   const table = form.schema.tables.find((held) => held.name === check.table) as SchemaTable
   const column = tableColumns(table).find((held) => held.name === check.column) as SchemaColumn
+  const low = column.min === null ? "" : bound(column.min)
+  const high = column.max === null ? "" : bound(column.max)
   const rule =
     check.kind === "required"
       ? "Needs a value"
@@ -139,11 +142,11 @@ export function checkLine(form: FormSpec, check: QuoteCheck): CheckLine {
         ? "One of its allowed values"
         : check.kind === "validation"
           ? column.validation_message
-          : column.min === null
-            ? `At most ${bound(column.max ?? 0)}`
-            : column.max === null
-              ? `At least ${bound(column.min)}`
-              : `${bound(column.min)} to ${bound(column.max)}`
+          : low !== "" && high !== ""
+            ? `${low} to ${high}`
+            : low !== ""
+              ? `At least ${low}`
+              : `At most ${high}`
   const rows = check.rows.length === 0 ? "" : `${check.rows.length === 1 ? "Row" : "Rows"} ${check.rows.join(", ")}`
   return { name: `${table.name} · ${column.label || readableName(column.name)}`, rule, rows }
 }

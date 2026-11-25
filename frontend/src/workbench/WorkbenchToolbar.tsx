@@ -1,10 +1,10 @@
 import { ClipboardCheck, Database, Eye, RotateCcw, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import SourcePipelineControls from "../components/SourcePipelineControls"
+import type { FormSpec } from "../api/types"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import { useSampleValues } from "./useSheetValues"
 import ValidationButton from "./ValidationButton"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
@@ -41,6 +41,9 @@ interface WorkbenchToolbarProps {
  * the project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
+/** The sample before the form is read. */
+const NO_SAMPLE: FormSpec["sample"] = {}
+
 export default function WorkbenchToolbar({
   onSave,
   onCommit,
@@ -62,9 +65,8 @@ export default function WorkbenchToolbar({
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const error = useWorkbenchPricingStore((s) => s.error)
   const form = useWorkbenchFormStore((s) => s.form)
-  // The sample as Preview holds it, and its price while it is of the sample as it stands.
-  const sample = useSampleValues(previewing)
-  const current = sample.price !== null && sample.price.basis === sample.basis
+  // The sample's price as last made: it follows the typing once it pauses.
+  const price = useWorkbenchPricingStore((s) => s.price)
   const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
   const setTestQuotesOpen = useWorkbenchTestQuotesStore((s) => s.setOpen)
 
@@ -104,7 +106,7 @@ export default function WorkbenchToolbar({
           </ToolbarButton>
         </ToolbarColumn>
         <ToolbarColumn>
-          <ValidationButton form={form} values={sample.rows} tables={sample.price !== null && current ? sample.price.tables : null} disabled={!ready || !previewing} />
+          <ValidationButton form={form} values={form?.sample ?? NO_SAMPLE} tables={price?.tables ?? null} disabled={!ready || !previewing} />
         </ToolbarColumn>
         {previewing && error !== null && (
           <span

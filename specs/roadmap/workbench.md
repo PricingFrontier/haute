@@ -67,7 +67,7 @@ without stopping Mark final.
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 | WB-77 | Planned | P3 | A PostgreSQL quote store whose server keeps the connection open but never answers is refused within the statement deadline, as one that stops acknowledging is. |
-| WB-78 | Planned | P3 | A validation can be a warning: shown failing, and passed over by an underwriter giving a reason, without stopping Mark final. |
+| WB-78 | Planned | P3 | A validation can be a warning: shown failing, without stopping Mark final. |
 
 ## Planned improvements
 
@@ -688,15 +688,13 @@ project's conditions are for an underwriter to weigh, not for the form to enforc
 premium far from the last one, a rate under the technical rate. Today those either stop
 the quote or are not validations at all.
 
-**Plan:** A validation column takes a level, stop or warn. A warning shows as failing in
-the toolbar's Validation box, apart from what stops the quote, and Mark final asks for a
-reason to pass over each one failing, recorded in the quote's activity with who and when.
-The button's outline says the two apart. Whether required columns, ranges and allowed
-values take a level too is decided with it.
+**Plan:** To be designed. The questions it has to answer: whether a level is a
+validation's alone or a required column's, a range's and allowed values' too; whether
+passing over a warning takes a reason, and where that is recorded; and how the toolbar's
+Validation button tells a warning from what stops the quote.
 
-**Acceptance:** A quote failing only warnings is marked final once a reason is given, its
-activity naming each warning passed over and the reason; one failing a validation that
-stops is refused as now.
+**Acceptance:** A quote failing only warnings can be marked final, and one failing a check
+that stops is refused as now.
 
 **Dependencies:** None.
 

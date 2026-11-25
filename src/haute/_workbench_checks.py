@@ -7,7 +7,7 @@ fills, that it holds true. A check passes when a one-row table's one row passes 
 row of a many-row table does, a table without rows passing; a failing check of a many-row
 table names its rows by their index. An empty value passes a range and allowed values, which
 are Required's to ask for. The rules of an input the sheets hide for the quote's values are
-not checked: the quote leaves the value out, so nobody could put it right. An output's are
+not checked: nobody could put it right. An output's are
 always checked, as the pipeline fills it whatever the sheets show.
 
 The checks read the quote as the store holds it: each table's rows, its inputs and outputs
@@ -22,7 +22,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from haute._workbench_form import FormSpec, SchemaColumn, SchemaTable
+from haute._workbench_form import FormSpec, SchemaColumn
 from haute._workbench_tables import allowed_values
 
 #: Which of a column's rules a check is of.
@@ -74,18 +74,10 @@ def _passes(kind: CheckKind, column: SchemaColumn, value: Any) -> bool:
         return True
     if kind == "allowed":
         return value in allowed_values(column)
-    # A number alone is in a range: the store holds nothing else in a number column.
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return False
+    # A range is a number column's, and the store holds nothing but numbers in one.
     return (column.min is None or value >= column.min) and (
         column.max is None or value <= column.max
     )
-
-
-def _row_name(table: SchemaTable, row: Mapping[str, Any]) -> str:
-    """A many-row table's *row* as a check names it: its index's value as text."""
-    index = table.index
-    return "" if index is None else str(row.get(index.name))
 
 
 def quote_checks(
@@ -101,6 +93,8 @@ def quote_checks(
         held = list(rows.get(table.name, []))
         # A one-row table is one row whether or not the store holds it yet.
         tested = held if table.rows == "many" else [held[0] if held else {}]
+        # A many-row table's rows are named by its index; a one-row table has none.
+        index = table.index
         for column in table.columns:
             is_input = not table.is_output(column.name)
             off = is_input and (table.name, column.name) in hidden
@@ -112,9 +106,9 @@ def quote_checks(
                         table=table.name,
                         column=column.name,
                         passed=not failing,
-                        rows=tuple(_row_name(table, row) for row in failing)
-                        if table.rows == "many"
-                        else (),
+                        rows=()
+                        if index is None
+                        else tuple(str(row.get(index.name)) for row in failing),
                     )
                 )
     return checks
@@ -146,8 +140,8 @@ def check_text(form: FormSpec, check: Check) -> str:
             if column.validation_message
             else (f"{named} does not pass")
         )
-    if column.min is None:
-        return f"{named} must be at most {_number(column.max or 0)}"
-    if column.max is None:
-        return f"{named} must be at least {_number(column.min)}"
-    return f"{named} must be from {_number(column.min)} to {_number(column.max)}"
+    low = "" if column.min is None else _number(column.min)
+    high = "" if column.max is None else _number(column.max)
+    if low and high:
+        return f"{named} must be from {low} to {high}"
+    return f"{named} must be at least {low}" if low else f"{named} must be at most {high}"

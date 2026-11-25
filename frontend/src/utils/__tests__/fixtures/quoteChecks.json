@@ -461,6 +461,186 @@
               "use_grouping": true
             }
           ]
+        },
+        {
+          "name": "perils",
+          "rows": "many",
+          "inputs": [
+            {
+              "name": "quote_reference",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_option",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "peril",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [
+                "AOP",
+                "EQ"
+              ],
+              "options_source": {
+                "file": "perils.csv",
+                "column": "peril"
+              },
+              "validation": false,
+              "validation_message": "",
+              "index": "values",
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "limit",
+              "type": "float",
+              "label": "Limit",
+              "group": "",
+              "required": false,
+              "min": 0.0,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            }
+          ],
+          "outputs": []
+        },
+        {
+          "name": "items",
+          "rows": "many",
+          "inputs": [
+            {
+              "name": "quote_reference",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_option",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "item",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": "typed",
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "value",
+              "type": "int",
+              "label": "Value",
+              "group": "",
+              "required": false,
+              "min": 1.0,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "validation": false,
+              "validation_message": "",
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            }
+          ],
+          "outputs": []
         }
       ]
     },
@@ -771,6 +951,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -874,6 +1068,20 @@
           "kind": "validation",
           "table": "summary",
           "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
           "passed": true,
           "rows": []
         }
@@ -1003,6 +1211,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -1130,6 +1352,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -1248,6 +1484,20 @@
           "kind": "validation",
           "table": "summary",
           "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
           "passed": true,
           "rows": []
         }
@@ -1370,6 +1620,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -1487,6 +1751,20 @@
           "kind": "validation",
           "table": "summary",
           "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
           "passed": true,
           "rows": []
         }
@@ -1609,6 +1887,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -1727,6 +2019,20 @@
           "kind": "validation",
           "table": "summary",
           "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
           "passed": true,
           "rows": []
         }
@@ -1849,6 +2155,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -1967,6 +2287,20 @@
           "kind": "validation",
           "table": "summary",
           "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
           "passed": true,
           "rows": []
         }
@@ -2128,6 +2462,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -2271,6 +2619,20 @@
           "column": "within_line",
           "passed": true,
           "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
         }
       ]
     },
@@ -2402,6 +2764,312 @@
           "passed": false,
           "rows": [
             "2"
+          ]
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
+        }
+      ]
+    },
+    {
+      "name": "an index of values names its rows by their values",
+      "values": {
+        "policy": [
+          {
+            "region": "south",
+            "age": "40",
+            "agreed": true
+          }
+        ],
+        "perils": [
+          {
+            "peril": "AOP",
+            "limit": "5"
+          },
+          {
+            "peril": "EQ",
+            "limit": "-1"
+          }
+        ]
+      },
+      "tables": {
+        "policy": [
+          {
+            "premium": 250.0,
+            "premium_ok": true
+          }
+        ]
+      },
+      "expected": [
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "excess",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "band",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "agreed",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "premium",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "policy",
+          "column": "premium_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "name",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "drivers",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "loading",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "drivers",
+          "column": "licence_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "summary",
+          "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": false,
+          "rows": [
+            "EQ"
+          ]
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": true,
+          "rows": []
+        }
+      ]
+    },
+    {
+      "name": "a typed index names its rows by the value typed, read as its type",
+      "values": {
+        "policy": [
+          {
+            "region": "south",
+            "age": "40",
+            "agreed": true
+          }
+        ],
+        "items": [
+          {
+            "item": "07",
+            "value": "0"
+          },
+          {
+            "item": "12",
+            "value": "3"
+          }
+        ]
+      },
+      "tables": {
+        "policy": [
+          {
+            "premium": 250.0,
+            "premium_ok": true
+          }
+        ]
+      },
+      "expected": [
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "region",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "policy",
+          "column": "excess",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "allowed",
+          "table": "policy",
+          "column": "band",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "agreed",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "policy",
+          "column": "premium",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "policy",
+          "column": "premium_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "name",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "drivers",
+          "column": "age",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "required",
+          "table": "drivers",
+          "column": "loading",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "drivers",
+          "column": "licence_ok",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "validation",
+          "table": "summary",
+          "column": "within_line",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "perils",
+          "column": "limit",
+          "passed": true,
+          "rows": []
+        },
+        {
+          "kind": "range",
+          "table": "items",
+          "column": "value",
+          "passed": false,
+          "rows": [
+            "7"
           ]
         }
       ]

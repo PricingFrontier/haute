@@ -368,7 +368,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         </ToolbarColumn>
       )}
       <ToolbarColumn role="group" aria-label="Validation">
-        <ValidationButton form={form} values={values} tables={priced && price !== null ? price.tables : null} disabled={!ready} />
+        <ValidationButton form={form} values={values} tables={price?.tables ?? null} disabled={!ready} />
       </ToolbarColumn>
       <ToolbarColumn role="group" aria-label="History">
         <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
