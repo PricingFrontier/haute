@@ -44,7 +44,6 @@ export function EBMTermsTab({ result }: { result: TrainResult }) {
           <ViewSwitch label="Term display" options={TERM_DISPLAY_OPTIONS} value={display} onChange={setDisplay} />
         </div>
         <TermTableView
-          key={active.term}
           title={`${interaction ? "Interaction surface" : "Shape function"} for ${active.term}`}
           axes={active.axes}
           values={active.scores}

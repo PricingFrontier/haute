@@ -184,6 +184,38 @@ describe("TBoostTablesTab", () => {
     expect(cellTexts(table())).toEqual([["0.01", "0.011"], ["0.11", "0.111"]])
   })
 
+  it("shows a retrained three-way table with fewer cells, the last fixed cell picked before", () => {
+    const { rerender } = render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
+    select("region × age × cover")
+    fireEvent.click(screen.getByRole("button", { name: "Link scale" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "cover" }), { target: { value: "1" } })
+
+    // Trained again: the same term, with one cell fewer on every axis.
+    const retrained: TBoostTables = {
+      ...TABLES,
+      tables: TABLES.tables.map((table) =>
+        table.term !== "region × age × cover"
+          ? table
+          : {
+            ...table,
+            axes: [
+              { feature: "region", type: "nominal", labels: ["east"] },
+              { feature: "age", type: "continuous", labels: ["Missing", "> 25"], cuts: [] },
+              { feature: "cover", type: "nominal", labels: ["full"] },
+            ],
+            scores: [[[0.5], [0.7]]],
+            relativities: [[[Math.exp(0.5)], [Math.exp(0.7)]]],
+            support: [[[10], [10]]],
+          },
+      ),
+    }
+    rerender(<TBoostTablesTab result={makeTrainResult({ tboost_tables: retrained })} />)
+
+    expect(screen.getByRole("heading", { name: "region × age × cover" })).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "cover" })).toHaveValue("0")
+    expect(cellTexts(screen.getByRole("table", { name: "Table for region × age × cover" }))).toEqual([["0.5"], ["0.7"]])
+  })
+
   it("draws a two-way table as one line per column cell, with its axes swappable", () => {
     render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
     select("region × age")

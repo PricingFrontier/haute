@@ -40,20 +40,7 @@ function tableSlice(
   )
 }
 
-/**
- * Give it a ``key`` per term: the axis choices are the term's own and start
- * afresh for the next one.
- */
-export function TermTableView({
-  title,
-  axes,
-  values,
-  reference,
-  valueLabel,
-  display,
-  mass,
-  massLabel,
-}: {
+type TermTableViewProps = {
   title: string
   axes: EbmTermAxis[]
   /** The term's values nested one array level per axis, in axis order. */
@@ -65,7 +52,32 @@ export function TermTableView({
   /** Training mass per cell, nested as ``values`` is. */
   mass?: NestedNumbers[]
   massLabel?: string
-}) {
+}
+
+/**
+ * Everything the view keeps (its axis choices, the remaining axes' fixed
+ * cells, a chart's pointed cell) is a position in *axes*, so it is kept by
+ * them: the same features with the same cells keep it, and other axes (the
+ * next term, or a retrain that gave this term other cells) start it afresh.
+ */
+export function TermTableView(props: TermTableViewProps) {
+  return <TermTableViewOfAxes key={axesIdentity(props.axes)} {...props} />
+}
+
+function axesIdentity(axes: EbmTermAxis[]): string {
+  return JSON.stringify(axes.map((axis) => [axis.feature, axis.type, axis.labels]))
+}
+
+function TermTableViewOfAxes({
+  title,
+  axes,
+  values,
+  reference,
+  valueLabel,
+  display,
+  mass,
+  massLabel,
+}: TermTableViewProps) {
   const sizes = axes.map((axis) => axis.labels.length)
   // The longest axis runs down the rows (along a chart's x axis) and the
   // shortest other axis across the columns (a chart's lines), so a fine

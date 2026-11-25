@@ -787,7 +787,11 @@ this discrete solve a positive λ can sit beside positive slack.
   missing cell stated. A table of two or more factors is a heatmap of two chosen axes, the
   longest axis on the rows and the shortest other axis on the columns by default, with a
   selector for each remaining axis; its chart draws the row axis along x and one line per
-  column cell. Labels stay on one line and a narrow table scrolls sideways. Under a log link the tab shows
+  column cell. The axis choices, the remaining axes' cells and the chart's pointed cell are
+  kept while the term's axes stay the same (the same features with the same cells, in order),
+  so training again with the same cells keeps the view, and start afresh when the axes change:
+  another term, or a retrain that gave the term other cells. The EBM Terms tab's view does the
+  same. Labels stay on one line and a narrow table scrolls sideways. Under a log link the tab shows
   relativities by default and can switch to link-scale values; other links show link-scale
   values only. Factored effects, which have no dense table, are listed by name and importance.
   A traced t-boost prediction lists one contribution per table, an interaction as one row.
