@@ -52,6 +52,7 @@ from haute._execution_context import (
 )
 from haute._failure_answers import answer_failure, answer_pipeline_failure, failure_refusal
 from haute._flatten import flatten_executable_graph
+from haute._frame_bytes import frame_bytes
 from haute._graph_utils import (
     upstream_node_ids,
 )
@@ -687,13 +688,15 @@ class _ScenarioFrontierRangeAccumulator:
 
     def _update_fallback_availability(self, partial: pl.DataFrame) -> None:
         """Re-check G_min with the widest key seen; once unavailable, the fallback stays so."""
-        from haute._ram_estimate import string_view_bytes_per_row
+        import polars as pl
+
+        from haute._frame_bytes import series_bytes_per_row
 
         if self.fallback_available is False:
             return
         self.key_width = max(
             self.key_width,
-            string_view_bytes_per_row(partial.get_column(self.quote_id_col)),
+            series_bytes_per_row(partial.get_column(self.quote_id_col).cast(pl.String)),
         )
         self.min_budget_bytes = _reducer_min_budget_bytes(
             len(self.constraint_cols),
@@ -958,7 +961,7 @@ class _ScenarioFrontierRangeAccumulator:
             if piece.height == 0:
                 continue
             pieces.append(piece)
-            buffered_bytes += int(piece.estimated_size())
+            buffered_bytes += frame_bytes(piece)
             if buffered_bytes >= piece_threshold:
                 state = self._merge_pass_pieces(state, pieces)
                 pieces = []

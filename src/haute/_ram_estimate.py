@@ -8,7 +8,8 @@ memory footprint from parquet metadata alone:
 2. Read parquet row-group metadata — row count and column count — from
    those sources.  This is instant (reads only the file footer).
 3. Estimate ``bytes_per_row`` from column count × dtype width, then
-   apply an algorithm-specific overhead multiplier.
+   apply the model family's measured training memory profile (a fixed
+   part plus a factor on that width).
 4. If the estimate exceeds available RAM, calculate a safe row limit.
 
 This replaces the previous probe-based approach which ran a 1 000-row
@@ -29,9 +30,10 @@ import math
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import polars as pl
 
@@ -43,6 +45,7 @@ from haute._edge_join import (
     edge_join_key_columns_by_role,
     resolve_edge_join_role_indices,
 )
+from haute._frame_bytes import VIEW_BYTES, series_bytes, series_bytes_per_row
 from haute._graph_utils import (
     build_parents_of,
     code_input_bindings,
@@ -57,6 +60,9 @@ from haute._polars_utils import read_parquet_metadata, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError
 from haute.projection import ProjectionEdgeKey
+
+if TYPE_CHECKING:
+    from haute.modelling._descriptors import TrainingMemoryProfile
 
 logger = get_logger(component="ram_estimate")
 
@@ -86,7 +92,6 @@ __all__ = [
     "estimate_materialisation_boundaries",
     "estimate_safe_training_rows",
     "decoded_frame_row_width_bytes",
-    "string_view_bytes_per_row",
     "RamEstimate",
     "TrainingEstimateUnavailableReason",
 ]
@@ -98,29 +103,7 @@ def decoded_frame_row_width_bytes(frame: pl.DataFrame) -> float:
         raise TypeError("frame must be a Polars DataFrame")
     if frame.height == 0:
         return float(8 * frame.width)
-    return sum(
-        max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
-    )
-
-
-_STRING_VIEW_BYTES = 16
-_STRING_VIEW_INLINE_BYTES = 12
-
-
-def string_view_bytes_per_row(series: pl.Series) -> float:
-    """Bytes per value of a String column as Arrow string views hold it.
-
-    Every value is a 16-byte view; a value longer than 12 bytes also keeps its
-    payload in a data buffer, while shorter values are inlined in the view.
-    Normalised by height like :func:`decoded_frame_row_width_bytes`.
-    """
-    if not isinstance(series, pl.Series):
-        raise TypeError("series must be a Polars Series")
-    if series.len() == 0:
-        return float(_STRING_VIEW_BYTES)
-    lengths = series.cast(pl.String).str.len_bytes()
-    payload = lengths.filter(lengths > _STRING_VIEW_INLINE_BYTES).sum()
-    return _STRING_VIEW_BYTES + float(payload or 0) / series.len()
+    return sum(max(8, series_bytes_per_row(column)) for column in frame.get_columns())
 
 
 class MaterialisationEstimateState(StrEnum):
@@ -616,9 +599,7 @@ def _detailed_dataframe_metadata(
 
     row_count = frame.height
     columns = {str(name): str(dtype) for name, dtype in frame.schema.items()}
-    column_sizes = {
-        column: math.ceil(frame.get_column(column).estimated_size()) for column in columns
-    }
+    column_sizes = {column: series_bytes(frame.get_column(column)) for column in columns}
     return _source_scoped_metadata(
         _DetailedSourceMetadata(
             row_count=row_count,
@@ -665,10 +646,7 @@ def _probe_expanded_variable_widths(
     if probe.height == 0:
         return MappingProxyType({})
     return MappingProxyType(
-        {
-            column: probe.get_column(column).estimated_size() / probe.height
-            for column in variable_columns
-        }
+        {column: series_bytes_per_row(probe.get_column(column)) for column in variable_columns}
     )
 
 
@@ -1507,31 +1485,56 @@ def _resolve_row_cardinality_from_index(
 # Estimation
 # ---------------------------------------------------------------------------
 #
-# The training lifecycle has multiple memory-intensive phases:
-#   0. Pipeline execution — _execute_and_sink collects the full lazy
-#      plan to parquet.  Intermediate joins and transforms can hold
-#      multiple large DataFrames simultaneously.
-#   1. Split — reads the full dataset eagerly to add _partition column.
-#   2. model.fit() — train + eval CatBoost Pools + internal buffers.
-#   3. Diagnostics — SHAP, PDP, feature importance.
-#   4. Cross-validation (if enabled).
-#
-# Pipeline execution is typically the peak because it holds join
-# intermediates in memory.  Empirically validated: the peak is
-# approximately 3× the raw dataset size at the training node.
-#
-# We use: N_rows × N_cols × 8 bytes (Float64) × 3.0
+# Two estimates share the row width. A training job runs in its own worker on the
+# sunk training parquet, so its peak is the family's measured profile: a fixed part
+# (the engine, its pools and the job's bookkeeping) plus a factor on the width
+# (TrainingMemoryProfile, specs/modelling/low-level.md). A materialisation boundary
+# is rows x width x 3.0 times the boundary operator's certified factor
+# (specs/execution-engine/low-level.md).
 
 _RAM_SAFETY_FACTOR = 0.7
 _MIN_SAFE_ROWS = 500
 
-# Empirical overhead multiplier.  Covers pipeline execution (join
-# intermediates), split, CatBoost Pool construction, and training
-# buffers (gradients, hessians, histograms).  Validated against
-# observed 25 GB peak for 10M × 101 cols (~8 GB raw data).
+# The materialisation model's overhead on the rows' width, which every boundary
+# operator's certified factor multiplies (EXEC-P07).
 _OVERHEAD_MULTIPLIER = 3.0
 
 _BYTES_PER_COL = 8  # Float64 in Polars
+
+
+def _width_ratio(n_cols: int, base_bytes_per_row: float | None) -> tuple[int, int]:
+    """The row width as an exact ratio: *base_bytes_per_row*, else 8 bytes a column."""
+    if not isinstance(n_cols, int) or isinstance(n_cols, bool) or n_cols < 0:
+        raise ValueError("n_cols must be a non-negative integer")
+    if base_bytes_per_row is None:
+        return n_cols * _BYTES_PER_COL, 1
+    if (
+        not isinstance(base_bytes_per_row, (int, float))
+        or isinstance(base_bytes_per_row, bool)
+        or not math.isfinite(base_bytes_per_row)
+        or base_bytes_per_row < 0
+    ):
+        raise ValueError("base_bytes_per_row must be a finite non-negative number")
+    return float(base_bytes_per_row).as_integer_ratio()
+
+
+def _require_row_count(n_rows: int) -> None:
+    if not isinstance(n_rows, int) or isinstance(n_rows, bool) or n_rows < 0:
+        raise ValueError("n_rows must be a non-negative integer")
+
+
+def _training_peak_bytes(
+    n_rows: int,
+    base_bytes_per_row: float,
+    profile: TrainingMemoryProfile,
+) -> tuple[int, Fraction]:
+    """A training job's peak bytes over *n_rows*, and the part each row adds."""
+    _require_row_count(n_rows)
+    width_numerator, width_denominator = _width_ratio(0, base_bytes_per_row)
+    per_row = Fraction(width_numerator * profile.width_factor_basis_points, width_denominator * 100)
+    # Rounded up: admission is a safety boundary, and the exact ratio keeps a
+    # repeated join product from overflowing a float before the bound is formed.
+    return profile.fixed_bytes + math.ceil(n_rows * per_row), per_row
 
 
 def _estimate_peak_bytes(
@@ -1540,23 +1543,9 @@ def _estimate_peak_bytes(
     *,
     base_bytes_per_row: float | None = None,
 ) -> int:
-    """Estimate peak RAM for the full training lifecycle."""
-    if not isinstance(n_rows, int) or isinstance(n_rows, bool) or n_rows < 0:
-        raise ValueError("n_rows must be a non-negative integer")
-    if not isinstance(n_cols, int) or isinstance(n_cols, bool) or n_cols < 0:
-        raise ValueError("n_cols must be a non-negative integer")
-    if base_bytes_per_row is None:
-        width_numerator = n_cols * _BYTES_PER_COL
-        width_denominator = 1
-    else:
-        if (
-            not isinstance(base_bytes_per_row, (int, float))
-            or isinstance(base_bytes_per_row, bool)
-            or not math.isfinite(base_bytes_per_row)
-            or base_bytes_per_row < 0
-        ):
-            raise ValueError("base_bytes_per_row must be a finite non-negative number")
-        width_numerator, width_denominator = float(base_bytes_per_row).as_integer_ratio()
+    """A materialisation boundary's peak before its operator factor: rows x width x 3.0."""
+    _require_row_count(n_rows)
+    width_numerator, width_denominator = _width_ratio(n_cols, base_bytes_per_row)
     overhead_numerator, overhead_denominator = _OVERHEAD_MULTIPLIER.as_integer_ratio()
     # Width probes can produce fractional per-row averages. Admission is a
     # safety boundary, so truncating even one fractional byte is the wrong
@@ -1594,7 +1583,7 @@ class RamEstimate:
     available_bytes: int
     """Available system RAM in bytes (estimation fails if this is unknown)."""
     bytes_per_row: float | None
-    """Estimated bytes per row (at peak phase), or ``None`` if unavailable."""
+    """What each row adds to the peak, or ``None`` if unavailable."""
     was_downsampled: bool
     """Whether a row limit was applied."""
     warning: str | None
@@ -1607,13 +1596,25 @@ class RamEstimate:
     """The first node whose rows could not be bounded (``row_count_unprovable`` only)."""
     unbounded_join_node_ids: tuple[str, ...] = ()
     """The joins without a key contract ``total_rows`` depends on, which make it a worst case."""
+    fixed_bytes: int | None = None
+    """The part of the peak that does not grow with the rows, or ``None`` if unavailable:
+    ``estimated_bytes`` is ``fixed_bytes`` plus ``bytes_per_row`` for each row."""
+    row_width_bytes: float | None = None
+    """The in-memory width each row was sized at, which the family's factor multiplies
+    into ``bytes_per_row``; ``None`` if unavailable."""
 
     def __post_init__(self) -> None:
         reason = self.unavailable_reason
         if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
             raise ValueError("a worst-case row bound has no downsampling verdict or warning")
         if reason is None:
-            if None in (self.total_rows, self.estimated_bytes, self.bytes_per_row):
+            if None in (
+                self.total_rows,
+                self.estimated_bytes,
+                self.bytes_per_row,
+                self.fixed_bytes,
+                self.row_width_bytes,
+            ):
                 raise ValueError(
                     "an available RAM estimate requires a row total and memory figures"
                 )
@@ -1625,6 +1626,8 @@ class RamEstimate:
         if (
             self.estimated_bytes is not None
             or self.bytes_per_row is not None
+            or self.fixed_bytes is not None
+            or self.row_width_bytes is not None
             or self.safe_row_limit is not None
             or self.was_downsampled
             or self.warning is not None
@@ -2026,6 +2029,13 @@ def _edge_join_key_columns_on_path(
     return frozenset(join_keys)
 
 
+def _training_memory_profile(config: Mapping[str, Any]) -> TrainingMemoryProfile:
+    """The training memory profile of the family a Modelling node's config trains."""
+    from haute.modelling._descriptors import algorithm_descriptor
+
+    return algorithm_descriptor(str(config.get("algorithm", "catboost"))).training_memory
+
+
 def _tree_model_training_columns(config: Mapping[str, Any]) -> frozenset[str] | None:
     """Columns a tree model trains on (selected features and roles); ``None`` for a GLM."""
     from haute.modelling._train_config import (
@@ -2143,7 +2153,7 @@ def estimate_safe_training_rows(
     1. Row count from the graph's proven target-cardinality upper bound.
     2. Column count resolved from the lazy plan at the training node
        (captures joins and transforms), minus excluded features.
-    3. Peak memory estimate using the empirical 3× multiplier.
+    3. Peak memory from the node's model family's training memory profile.
 
     Returns a :class:`RamEstimate` with the decision and warning message.
     """
@@ -2199,11 +2209,12 @@ def estimate_safe_training_rows(
     # pipeline projects before sinking, so no other column enters the split
     # or pools. A GLM keeps every column.
     target_node = estimate_index.node_map.get(target_node_id)
-    trained = (
-        _tree_model_training_columns(target_node.data.config)
-        if target_node is not None and target_node.data.nodeType == NodeType.MODELLING
-        else None
-    )
+    if target_node is None or target_node.data.nodeType != NodeType.MODELLING:
+        raise ValueError(
+            f"estimate_safe_training_rows sizes a Modelling node, not {target_node_id!r}"
+        )
+    profile = _training_memory_profile(target_node.data.config)
+    trained = _tree_model_training_columns(target_node.data.config)
     excluded = (
         frozenset()
         if trained is None
@@ -2245,19 +2256,16 @@ def estimate_safe_training_rows(
         target_width_columns=peak_width_column_names,
         sources=source_metadata.sources,
     )
-    peak_bytes = _estimate_peak_bytes(
-        total_rows,
-        n_columns,
-        base_bytes_per_row=base_bytes_per_row,
-    )
+    peak_bytes, per_row = _training_peak_bytes(total_rows, base_bytes_per_row, profile)
     usable_ram = int(available * safety_factor)
-    bytes_per_row = peak_bytes / total_rows if total_rows > 0 else 0
+    bytes_per_row = float(per_row)
 
     logger.info(
         "ram_estimate",
         total_rows=total_rows,
         n_columns=n_columns,
         bytes_per_row=round(bytes_per_row, 1),
+        fixed_mb=round(profile.fixed_bytes / 1024**2, 1),
         peak_mb=round(peak_bytes / 1024**2, 1),
         available_mb=round(available / 1024**2, 1),
         usable_mb=round(usable_ram / 1024**2, 1),
@@ -2275,11 +2283,14 @@ def estimate_safe_training_rows(
             warning=None,
             probe_columns=n_columns,
             unbounded_join_node_ids=unbounded_joins,
+            fixed_bytes=profile.fixed_bytes,
+            row_width_bytes=base_bytes_per_row,
         )
 
-    peak_per_row = peak_bytes / total_rows
-    safe_rows = int(usable_ram / peak_per_row)
-    safe_rows = max(safe_rows, _MIN_SAFE_ROWS)
+    # The rows that fit once the fixed part is paid. per_row is positive: every
+    # column is charged at least a byte a row.
+    row_budget = max(usable_ram - profile.fixed_bytes, 0)
+    safe_rows = max(math.floor(row_budget / per_row), _MIN_SAFE_ROWS)
 
     # A bound resting on an undeclared join is its row product, a worst case:
     # only a proven count says the data will be downsampled.
@@ -2309,6 +2320,8 @@ def estimate_safe_training_rows(
         warning=warning,
         probe_columns=n_columns,
         unbounded_join_node_ids=unbounded_joins,
+        fixed_bytes=profile.fixed_bytes,
+        row_width_bytes=base_bytes_per_row,
     )
 
 
@@ -2709,7 +2722,7 @@ _SOLVE_MEMORY_MARGIN = 1.15
 def solver_input_row_width_bytes(*, constraint_count: int, quote_id_bytes: float) -> float:
     """One decoded solver-input row: the Int32 step, Float32 scenario value,
     objective and constraints, and the quote id as a string view."""
-    return 4 + 4 + 4 * (1 + constraint_count) + _STRING_VIEW_BYTES + quote_id_bytes
+    return 4 + 4 + 4 * (1 + constraint_count) + VIEW_BYTES + quote_id_bytes
 
 
 def forecast_solve_memory_bytes(

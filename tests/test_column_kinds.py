@@ -298,6 +298,23 @@ def test_temporal_text_writes_a_datetime_time_or_duration_or_refuses_it(
 
 
 @pytest.mark.parametrize("dtype", SAMPLES, ids=str)
+def test_memory_figures_count_a_column_of_every_kind_as_it_is_held(dtype: pl.DataType) -> None:
+    """Text and binary by their views, nested by their Arrow buffers, the rest as Polars says."""
+    from haute._frame_bytes import series_bytes
+
+    column = sample_column(dtype)
+    kind = column_kind(dtype)
+    held = series_bytes(column)
+    if kind in ("text", "binary", "nested"):
+        arrow = column.to_frame().to_arrow(compat_level=pl.CompatLevel.newest()).column(0)
+        (chunk,) = arrow.chunks
+        # Arrow pads a validity bitmap to a whole byte; Polars counts its bits.
+        assert abs(held - chunk.get_total_buffer_size()) <= (1 if kind != "nested" else 0)
+    else:
+        assert held == column.estimated_size()
+
+
+@pytest.mark.parametrize("dtype", SAMPLES, ids=str)
 def test_the_profile_reads_a_column_of_every_kind_as_its_kind(
     dtype: pl.DataType, context: Any
 ) -> None:
@@ -661,6 +678,9 @@ _DRIVEN: dict[str, tuple[str, ...]] = {
         "test_the_pivot_sums_and_counts_a_column_as_its_kind_or_refuses_it",
     ),
     "src/haute/_frame_profile.py": ("test_the_profile_reads_a_column_of_every_kind_as_its_kind",),
+    "src/haute/_frame_bytes.py": (
+        "test_memory_figures_count_a_column_of_every_kind_as_it_is_held",
+    ),
     "src/haute/_temporal_text.py": (
         "test_temporal_text_writes_a_datetime_time_or_duration_or_refuses_it",
     ),

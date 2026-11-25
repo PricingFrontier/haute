@@ -1221,6 +1221,8 @@ def test_downsampling_warning_comes_from_the_rows_training_prepared(tmp_path) ->
             estimated_bytes=10**9,
             available_bytes=2 * 1024**3,
             bytes_per_row=100.0,
+            fixed_bytes=0,
+            row_width_bytes=100.0,
             was_downsampled=not unbounded,
             warning=None if unbounded else "Dataset downsampled to 500 of 40,000 rows",
             unbounded_join_node_ids=unbounded,

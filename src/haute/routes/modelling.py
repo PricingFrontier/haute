@@ -343,6 +343,9 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         bytes_per_row=(
             round(ram_est.bytes_per_row, 1) if ram_est.bytes_per_row is not None else None
         ),
+        fixed_mb=(
+            round(ram_est.fixed_bytes / 1024**2, 1) if ram_est.fixed_bytes is not None else None
+        ),
         unavailable=unavailable,
         unbounded_join_node_ids=list(ram_est.unbounded_join_node_ids),
         fit_mode=row_plan.fit_mode,

@@ -1770,12 +1770,13 @@ rows/features) and retry.
 - `tests/performance/test_training_scoring_wide_perf.py` covers wide training/scoring performance.
 - `tests/performance/test_training_family_memory_perf.py` (with
   `tests/performance/_training_family_memory_probe.py`) records, marked `perf` and
-  `perf_evidence`, the peak resident memory of a canonical Haute training job per family
-  (CatBoost, XGBoost, LightGBM, EBM, t-boost, GLM) in fresh processes at three row counts,
-  against what the training RAM estimate predicts for the same source, and XGBoost's
-  iterator-fed and external-memory matrices against its in-memory fit (peak memory, time,
-  predictions and objective history). It asserts none of its figures; the PL2-17 roadmap
-  entry records the results.
+  `perf_evidence`, the peak resident memory and address space of a canonical Haute training
+  job per family (CatBoost, XGBoost, LightGBM, EBM, t-boost, GLM) in fresh processes at
+  three row counts, and of the same job on numeric-only and high-cardinality data, and fails
+  when a peak exceeds what the family's training memory profile predicts ("Training memory
+  profiles"). It also compares XGBoost's iterator-fed and external-memory matrices against its
+  in-memory fit (peak memory, time, predictions and objective history), asserting none of
+  those figures.
 - `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
@@ -2089,6 +2090,56 @@ Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_training_worker_protocol.py`, `tests/test_modelling_train_routes.py`, `tests/test_modelling_artifact_routes.py`, and
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
+
+### Training memory profiles
+
+The pre-training RAM estimate (`estimate_safe_training_rows`) sizes a job by its model
+family's `TrainingMemoryProfile`, which every `AlgorithmDescriptor` declares
+(`training_memory`): the peak is `fixed_bytes` plus `width_factor_basis_points / 100` times
+the rows' estimated width, `rows × row_width_bytes`, where the width is the training node's
+input as the RAM estimator sizes it (a tree family's selected features and roles; every
+column for a GLM). The fixed part is the worker's engine, thread pools and the job's own
+bookkeeping; the factor covers the split, the fit's matrices, evaluation and diagnostics.
+`RamEstimate` reports `fixed_bytes`, `bytes_per_row` (the width times the factor) and
+`row_width_bytes`, and `TrainEstimateResponse` carries `fixed_mb` beside `bytes_per_row`, so
+the panel's peak for the rows training will use is `fixed_mb + rows × bytes_per_row`. When the
+peak exceeds the usable RAM (available × 0.7), the RAM row limit is the rows the usable RAM
+holds after the fixed part, never fewer than 500.
+
+| Family | Fixed part | Factor on the row width | Set by |
+|---|---:|---:|---|
+| CatBoost | 672 MiB | 11.5× | high-cardinality data, where its categorical statistics grow with the levels (10.4× measured) |
+| XGBoost | 416 MiB | 5.0× | numeric-only data (4.4×) |
+| LightGBM | 384 MiB | 5.5× | numeric-only data (5.0×) |
+| EBM | 352 MiB | 5.0× | canonical data on Windows (4.4×) |
+| t-boost | 320 MiB | 6.25× | canonical data on the Linux reference runner (5.5×) |
+| GLM | 352 MiB | 6.5× | canonical data on Windows (5.75×; the fixed part at 80,000 rows) |
+
+`tests/performance/test_training_family_memory_perf.py` measures each family's canonical job
+(30 numeric and 5 string categorical features with 124 levels between them, a Poisson
+frequency target with an exposure weight, a 20% holdout, 8 threads) in a fresh process at
+100,000, 400,000 and 1,600,000 rows in the weekly `1m` lane, and the same job on numeric-only
+data and on high-cardinality data (five categoricals with 1,984 levels between them). Each job
+runs under a growth budget of its profile's prediction, as admission would grant it, and the
+test fails when a measured peak exceeds that prediction. The profiles bound every
+measurement taken on Polars 2.0.0 on 24 and 25 November 2026: the Linux reference runner
+(4 CPUs, the weekly lane's 23 November run), a 22-CPU Windows host (at the `1m` and `ci`
+scales), and a 22-CPU Linux container, canonical at 22 threads as well as 8, with a 10%
+margin on both parts. A factor comes only from two row counts at least 64 MiB of row width
+apart, because nearer ones leave it to measurement noise. Every measurement bounds the fixed
+part. A GLM's in-memory fit
+builds a dense design with a column per categorical level, so its memory follows its levels
+rather than its frame width, and the estimate reads no levels. On the high-cardinality data
+that design has 2,010 columns, about 16 KB a row, and an in-memory fit peaked at 4–6 times
+the profile's prediction. The job therefore checks the design when the fit starts and fits out
+of core when it would not fit (Chunked GLM fitting, **Design check**). No width-based profile
+holds such a GLM even out of core: a design of 2,010 columns keeps about 357 MB of solver state
+that grows with the square of its columns. So the profile test leaves the high-cardinality GLM
+out, and `test_a_glm_whose_design_outgrows_its_budget_fits_out_of_core_within_it` holds it
+instead. At 100,000 rows, under a budget of three quarters of what the design check says the
+in-memory fit takes, the job fits out of core and grows by no more than that budget. A design
+whose out-of-core state does not fit the budget either ends in `GLMMemoryPlanError`, which
+names fewer design columns or more memory as the remedies.
 
 ### Training configuration controls and readiness
 
@@ -2593,14 +2644,43 @@ the estimate states what the run will do.
 - Out of core, `row_limit` is the user's own `row_limit` or `None`, so the RAM row limit
   samples no rows and no downsampling warning is recorded. In memory, `row_limit` is today's
   clamp of the two limits.
-- The estimate is used as it stands. Its per-family calibration is `PL2-17`'s and moves
-  where this engages. Nothing restarts a fit in the other mode: an in-memory fit that
+- The estimate is used as it stands, sized by the family's training memory profile
+  (Training memory profiles). Nothing restarts a fit in the other mode: an in-memory fit that
   overruns at a checkpoint, or a worker that dies, still ends `memory_limited`.
 
-The mode reaches the worker as `TrainingJob(fit_mode=...)` in the job kwargs; the fit
-never chooses it. A scripted `TrainingJob` fits in memory unless its caller passes
-`fit_mode="out_of_core"`, and `fit_mode="out_of_core"` with any algorithm but `glm` or
-`xgboost`, or with `device="gpu"`, raises `HauteValidationError`.
+The mode reaches the worker as `TrainingJob(fit_mode=...)` in the job kwargs. Only the
+design check below changes it, for a GLM, before its fit starts. A scripted `TrainingJob`
+fits in memory unless its caller passes `fit_mode="out_of_core"` or gives it an execution
+context whose budget the design check finds too small. `fit_mode="out_of_core"` with any
+algorithm but `glm` or `xgboost`, or with `device="gpu"`, raises `HauteValidationError`.
+
+**Design check.** The estimate cannot see a GLM's categorical levels: they are not in the
+Parquet metadata it reads. RustyStats builds the in-memory design as a dense float64 matrix
+with a column per level, so a GLM planned in memory is checked again when its fit starts.
+After `TrainingJob._train_model` loads the train partition of an in-memory GLM fit,
+`glm_in_memory_fit_bytes(params, frame, target)` (`modelling/_rustystats.py`) works out:
+- The design's columns, as RustyStats lays them out. This is
+  `rustystats.frozen_design.design_term_widths` over `rustystats.formula.dict_to_parsed_formula`
+  of the design `prepare_glm_design` resolves, and each categorical's labels are the frame's
+  distinct values, null included.
+- What the fit needs: rows × columns × `GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL` (10 bytes), plus
+  columns² × `GLM_IN_MEMORY_BYTES_PER_SQUARED_COLUMN` (48 bytes).
+  - The 10 bytes are 8 for the design's cell, and the rest for the one-hot step and the
+    solver's per-row arrays. A whole in-memory fit on the high-cardinality data grew by 9.3
+    to 9.9 bytes a cell.
+  - The 48 bytes are the solver's p-by-p float64 matrices: the Gram, its factorisation, the
+    covariance and their workspaces. Beyond the cells, fits of 9,000 rows grew by 35 to 43
+    bytes per squared column at 1,001 to 2,846 columns, at one thread and at eight. With few
+    rows and many levels these matrices are most of the fit.
+When that figure exceeds the context's remaining headroom (`remaining_memory_bytes()`), the
+job frees the frame and fits that GLM out of core (`_fit_glm_out_of_core`), which gives the
+same model bit for bit. `fit_evidence.mode` then reports `"out_of_core"`, and the candidate
+run's `fit_mode` with it. A context without a budget fits in memory. The check runs before
+the design exists, so it chooses a mode and restarts nothing. `tests/test_glm_chunked_fit.py`
+holds the column count to RustyStats' own design and to a null level, and the figure to its
+squared-column part. It also holds the switch to the same model out of core, a wide design on
+9,000 rows that ends in `GLMMemoryPlanError` instead of fitting in memory past its budget, and
+the fit staying in memory when the budget holds the design or there is no budget.
 `TrainingJob._new_evaluation_job` passes `fit_mode` and
 `scratch_dir` to every evaluation selection fit, tuning trial and deployable final fit.
 

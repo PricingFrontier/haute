@@ -112,6 +112,6 @@ The first trace runs through the pipeline and caches the result. Every trace aft
 
 ## Memory estimation
 
-Before training a model on a large dataset, Haute reads the file's metadata - row count, column count, file size - without loading any data. It uses this to estimate how much memory the full training run will need, accounting for the overhead of model training, intermediate joins, and data duplication.
+Before training a model on a large dataset, Haute reads the file's metadata - row count, column count, file size - without loading any data. It uses this to estimate how much memory the full training run will need, from what a training job of the same model family was measured to use: a fixed amount for the library and the job, plus an amount for each row.
 
 If the estimate exceeds your machine's available memory, Haute trains on as many rows as fit and tells you it did ("Dataset downsampled to ... rows to fit in available RAM"); a smaller row limit you set yourself still wins. A GLM is the exception: it trains on every row, reading them from disk in chunks, and gives the same model it would have fitted in memory. When the source sizes cannot be read from metadata, Haute reports the estimate as unavailable rather than guessing. This works on Windows, macOS, and Linux, and checks GPU memory as well if you're training on a GPU.

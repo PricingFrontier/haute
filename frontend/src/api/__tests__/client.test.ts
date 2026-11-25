@@ -325,7 +325,7 @@ function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
     estimated_mb: 12.5,
     training_mb: 25,
     available_mb: 512,
-    bytes_per_row: 256,
+    bytes_per_row: 256, fixed_mb: 0,
     was_downsampled: false,
     unbounded_join_node_ids: [],
     fit_mode: "in_memory",

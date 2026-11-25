@@ -703,6 +703,43 @@ def test_resource_api_returns_none_when_resource_cannot_be_imported(
     assert native._resource_api() is None
 
 
+def test_macos_has_no_resource_api_even_when_resource_imports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    complete = SimpleNamespace(
+        RLIMIT_AS=1, RLIM_INFINITY=-1, getrlimit=lambda _x: (0, 0), setrlimit=lambda *_x: None
+    )
+    monkeypatch.setattr(native.importlib, "import_module", lambda _name: complete)
+    monkeypatch.setattr(native.sys, "platform", "darwin")
+
+    assert native._resource_api() is None
+    assert not native.native_memory_caps_supported()
+    with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="unavailable"):
+        native.NativeMemoryLease()._apply_rlimit(1)
+
+
+def test_the_resource_api_alone_decides_whether_rlimit_applies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The RLIMIT tests fake the API and run on every CI host, macOS included: the
+    # platform must not be asked a second time behind the API's back.
+    calls: list[tuple[int, int]] = []
+    api = SimpleNamespace(
+        RLIMIT_AS=1,
+        RLIM_INFINITY=-1,
+        getrlimit=lambda _limit: (-1, -1),
+        setrlimit=lambda _limit, values: calls.append(values),
+    )
+    monkeypatch.setattr(native, "_resource_api", lambda: api)
+    monkeypatch.setattr(native, "_native_baseline_bytes", lambda: 10)
+    monkeypatch.setattr(native, "start_polars_thread_pools", lambda: None)
+    monkeypatch.setattr(native.sys, "platform", "darwin")
+
+    native.NativeMemoryLease()._apply_rlimit(5)
+
+    assert calls == [(15, -1)]
+
+
 def test_native_cgroup_creation_and_adapter_failure_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

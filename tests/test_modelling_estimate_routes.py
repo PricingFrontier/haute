@@ -634,9 +634,11 @@ class TestEstimateEndpoint:
         available = RamEstimate(
             safe_row_limit=None,
             total_rows=1_000,
-            estimated_bytes=3 * 1024**2,
+            estimated_bytes=(300 + 3) * 1024**2,
             available_bytes=8 * 1024**3,
             bytes_per_row=3_145.7,
+            fixed_bytes=300 * 1024**2,
+            row_width_bytes=524.3,
             was_downsampled=False,
             warning=None,
             probe_columns=4,
@@ -649,8 +651,12 @@ class TestEstimateEndpoint:
         data = resp.json()
         assert data["unavailable"] is None
         assert data["node_addresses"] == {}
-        assert (data["total_rows"], data["estimated_mb"], data["training_mb"]) == (1_000, 3.0, 3.0)
-        assert data["bytes_per_row"] == 3_145.7
+        assert (data["total_rows"], data["estimated_mb"], data["training_mb"]) == (
+            1_000,
+            303.0,
+            303.0,
+        )
+        assert (data["bytes_per_row"], data["fixed_mb"]) == (3_145.7, 300.0)
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
@@ -670,6 +676,7 @@ class TestEstimateEndpoint:
                     "estimated_mb": None,
                     "training_mb": None,
                     "bytes_per_row": None,
+                    "fixed_mb": None,
                     "was_downsampled": True,
                     "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
                 },
@@ -680,6 +687,7 @@ class TestEstimateEndpoint:
                     "estimated_mb": None,
                     "training_mb": None,
                     "bytes_per_row": None,
+                    "fixed_mb": None,
                     "gpu_vram_estimated_mb": 12.0,
                     "gpu_vram_rows": 100,
                     "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
@@ -692,6 +700,7 @@ class TestEstimateEndpoint:
                     "estimated_mb": None,
                     "training_mb": None,
                     "bytes_per_row": None,
+                    "fixed_mb": None,
                     "unavailable": {"reason": "row_count_unprovable", "blocking_node_id": "j"},
                 },
                 "only a row_count_unprovable estimate lacks a row total",
@@ -702,6 +711,7 @@ class TestEstimateEndpoint:
                     "estimated_mb": None,
                     "training_mb": None,
                     "bytes_per_row": None,
+                    "fixed_mb": None,
                     "unavailable": {"reason": "row_count_unprovable", "blocking_node_id": None},
                 },
                 "names the blocking node",
@@ -711,6 +721,7 @@ class TestEstimateEndpoint:
                     "estimated_mb": None,
                     "training_mb": None,
                     "bytes_per_row": None,
+                    "fixed_mb": None,
                     "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": "j"},
                 },
                 "names no blocking node",
@@ -720,6 +731,7 @@ class TestEstimateEndpoint:
                     "estimated_mb": None,
                     "training_mb": None,
                     "bytes_per_row": None,
+                    "fixed_mb": None,
                     "unavailable": {"reason": "cardinality", "blocking_node_id": None},
                 },
                 "row_count_unprovable",
@@ -739,6 +751,7 @@ class TestEstimateEndpoint:
             "training_mb": 1.0,
             "available_mb": 8192.0,
             "bytes_per_row": 10.0,
+            "fixed_mb": 0.0,
             "unavailable": None,
             "unbounded_join_node_ids": [],
             "node_addresses": {},
@@ -762,6 +775,8 @@ class TestEstimateEndpoint:
             estimated_bytes=1_000_000_000,
             available_bytes=20_000_000_000,
             bytes_per_row=100.0,
+            fixed_bytes=0,
+            row_width_bytes=100.0,
             was_downsampled=True,
         )
         with patch(
@@ -792,6 +807,8 @@ class TestEstimateEndpoint:
             estimated_bytes=1_000_000_000,
             available_bytes=20_000_000_000,
             bytes_per_row=100.0,
+            fixed_bytes=0,
+            row_width_bytes=100.0,
             was_downsampled=True,
         )
         with patch(

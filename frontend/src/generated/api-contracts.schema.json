@@ -26068,6 +26068,17 @@
           "title": "Fit Mode",
           "type": "string"
         },
+        "fixed_mb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fixed Mb"
+        },
         "gpu_vram_available_mb": {
           "anyOf": [
             {
@@ -26200,6 +26211,7 @@
         "training_mb",
         "available_mb",
         "bytes_per_row",
+        "fixed_mb",
         "was_downsampled",
         "warning",
         "gpu_vram_estimated_mb",

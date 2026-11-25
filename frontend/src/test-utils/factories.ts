@@ -392,6 +392,7 @@ export function makeTrainEstimate(overrides: TrainEstimateFixture = {}): TrainEs
     training_mb: 512,
     available_mb: 16384,
     bytes_per_row: 2048,
+    fixed_mb: 0,
     was_downsampled: false,
     warning: null,
     gpu_vram_estimated_mb: null,

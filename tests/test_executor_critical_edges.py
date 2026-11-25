@@ -92,15 +92,9 @@ def test_preview_cache_size_accounting_rejects_invalid_payloads(
     with pytest.raises(TypeError, match="expected Polars DataFrame"):
         _estimate_preview_cache_entry_bytes({"eager_outputs": {"src": object()}})
 
-    original_estimated_size = pl.DataFrame.estimated_size
-    monkeypatch.setattr(pl.DataFrame, "estimated_size", lambda self: -1)
-    try:
-        with pytest.raises(ValueError, match="estimated_size"):
-            _estimate_preview_cache_entry_bytes(
-                {"eager_outputs": {"src": pl.DataFrame({"x": [1]})}}
-            )
-    finally:
-        monkeypatch.setattr(pl.DataFrame, "estimated_size", original_estimated_size)
+    monkeypatch.setattr(pl.Series, "estimated_size", lambda self: -1)
+    with pytest.raises(ValueError, match="estimated_size"):
+        _estimate_preview_cache_entry_bytes({"eager_outputs": {"src": pl.DataFrame({"x": [1]})}})
 
 
 def test_preview_row_limit_validation_fails_loudly(

@@ -1611,6 +1611,7 @@ def test_training_ram_estimates_use_only_usable_snapshots(
     monkeypatch: pytest.MonkeyPatch,
     cache_state: str,
 ) -> None:
+    from haute.modelling._descriptors import algorithm_descriptor
     from haute.routes._job_store import JobStore
     from haute.routes._training_lifecycle import TrainService
     from haute.routes.modelling import estimate_training
@@ -1669,7 +1670,9 @@ def test_training_ram_estimates_use_only_usable_snapshots(
     assert response.total_rows == rows == expected_rows
     if cache_state == "fresh":
         assert response.unavailable is None
-        assert response.bytes_per_row == 2 * 8 * 3
+        # Two Int64 columns, times the default family's (CatBoost's) width factor.
+        factor = algorithm_descriptor("catboost").training_memory.width_factor_basis_points / 100
+        assert response.bytes_per_row == round(2 * 8 * factor, 1)
         assert columns == 2
     else:
         assert response.unavailable is not None

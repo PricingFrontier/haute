@@ -10,10 +10,11 @@ import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSu
 import type { ExecutionMetrics } from "../../api/types"
 import { EVALUATION_PREVIEW_FAILED } from "./evaluationPreview"
 
-// The backend's bytes_per_row already includes full phase-model overhead
-// (evaluation partitions, pools, CatBoost internals, diagnostics, tuning).
-// No extra multiplier.
-const TRAINING_OVERHEAD = 1.0
+// The backend states a training job's peak as a fixed part and what each row adds,
+// both measured for the model family, so the peak follows the rows training uses.
+function trainingPeakMb(estimate: { fixed_mb: number; bytes_per_row: number }, rows: number): number {
+  return estimate.fixed_mb + rows * estimate.bytes_per_row / (1024 * 1024)
+}
 
 function formatMb(mb: number): string {
   return mb < 1024 ? `${mb.toFixed(0)} MB` : `${(mb / 1024).toFixed(1)} GB`
@@ -99,7 +100,10 @@ export function TrainingActionsAndResults({
   // Recalculate training MB and GPU VRAM reactively as row_limit changes
   const adjusted = useMemo(() => {
     // An unavailable estimate has no memory figure to scale.
-    if (!ramEstimate || ramEstimate.total_rows == null || ramEstimate.bytes_per_row == null) return null
+    if (
+      !ramEstimate || ramEstimate.total_rows == null || ramEstimate.bytes_per_row == null
+      || ramEstimate.fixed_mb == null
+    ) return null
     const sourceRows = ramEstimate.total_rows
     const hasUserLimit = rowLimit != null && rowLimit > 0
 
@@ -108,7 +112,10 @@ export function TrainingActionsAndResults({
     if (hasUserLimit) rows = Math.min(rows, rowLimit)
     if (ramEstimate.safe_row_limit != null) rows = Math.min(rows, ramEstimate.safe_row_limit)
 
-    const trainingMb = rows * ramEstimate.bytes_per_row * TRAINING_OVERHEAD / (1024 * 1024)
+    const trainingMb = trainingPeakMb(
+      { fixed_mb: ramEstimate.fixed_mb, bytes_per_row: ramEstimate.bytes_per_row },
+      rows,
+    )
     const isLimited = rows < sourceRows
 
     // A GLM the RAM limit binds on trains on every row in chunks instead.
@@ -250,7 +257,7 @@ export function TrainingActionsAndResults({
             <span>Rows (upper bound)</span>
             <span style={{ color: "var(--text-primary)" }}>{ramEstimate.total_rows!.toLocaleString()}</span>
             <span>RAM at upper bound</span>
-            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.total_rows! * ramEstimate.bytes_per_row! * TRAINING_OVERHEAD / (1024 * 1024))}</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(trainingPeakMb({ fixed_mb: ramEstimate.fixed_mb!, bytes_per_row: ramEstimate.bytes_per_row! }, ramEstimate.total_rows!))}</span>
             {ramEstimate.safe_row_limit != null && (
               <>
                 <span>Training row limit</span>
