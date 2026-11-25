@@ -279,8 +279,8 @@ unexpected existing sidecar is reported as a conflict rather than silently repla
 
 File Data Output destinations are relative to the project root, independent of the
 pipeline's directory and process working directory. A bare filename goes in the root's
-`outputs/` folder: `output` or `output.parquet` with Parquet selected resolves to
-`outputs/output.parquet`. An explicit relative path such as `exports/output.parquet`
+`files/outputs/` folder: `output` or `output.parquet` with Parquet selected resolves to
+`files/outputs/output.parquet`. An explicit relative path such as `exports/output.parquet`
 is project-relative; an absolute path must remain inside the project, and a save and
 `haute lint` refuse one, naming the path from the project root to write, as they refuse
 every node path another checkout would read otherwise (a Windows drive letter, another
@@ -421,7 +421,7 @@ than treating it as an I/O failure or replacing the destination.
 
 Two Data Output nodes cannot target one destination. A destination's identity
 (`_executable_names.data_output_destination`) is, for a file or lakehouse target, the path the
-writer resolves (`resolve_data_output_path`: a bare file name under `outputs/`, the format's
+writer resolves (`resolve_data_output_path`: a bare file name under `files/outputs/`, the format's
 default extension added, a relative path anchored as the writer anchors it, so a relative and
 an absolute spelling of one file are one destination), compared ignoring case on Windows and
 macOS; for a database target, its connection (or

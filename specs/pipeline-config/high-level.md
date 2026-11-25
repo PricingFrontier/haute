@@ -369,9 +369,10 @@ history ([git-integration](../git-integration/high-level.md)). Its `files/` fold
 files the pipeline reads that are not code: `files/data/` for the tables and data the
 pipeline ships with, `files/models/` for model files with their feature contracts and
 optimiser results, and `files/params/` for parameter files. `haute init` creates all three.
-Outside the pipeline folder, the project
-root's `data/` holds local data and `outputs/` holds what runs write. Neither is versioned,
-and moving to another version deletes `outputs/`. A bare filename given to the Export pane's
+The project root has a `files/` folder of the same name that stays on the analyst's machine:
+`files/data/` holds local data and `files/outputs/` holds what runs write, and `haute init`
+creates both. Neither is versioned, and moving to another version leaves both as they are.
+A bare filename given to the Export pane's
 "Save model to file" or to an optimiser result's Publish lands in `files/models/`. A project
 whose pipeline sits at its root has no pipeline folder, and a bare filename there lands in
 the root's `models/`. A file larger than 100 MiB, GitHub's per-file limit, cannot be

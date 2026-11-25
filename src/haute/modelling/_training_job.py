@@ -31,6 +31,7 @@ from haute._polars_utils import (
     release_freed_memory,
     streaming_collect,
 )
+from haute._project_layout import LOCAL_OUTPUTS_FOLDER
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithm_base import FitMode
 from haute.modelling._algorithms import (
@@ -589,7 +590,8 @@ class TrainingJob:
     mlflow_destination : str
         MLflow tracking destination key ("databricks" | "server"; "" = the local folder).
     output_dir : str
-        Directory to save the model file.
+        Directory to save the model file, from the working directory: the project root's
+        ``files/outputs`` by default.
     fit_mode : str
         ``"in_memory"`` (default) or ``"out_of_core"``: a GLM, or XGBoost on the CPU,
         fitted out of core reads its training rows from disk and never holds them
@@ -617,7 +619,7 @@ class TrainingJob:
         metrics: list[str] | None = None,
         mlflow_experiment: str | None = None,
         mlflow_destination: str = "",
-        output_dir: str = "outputs",
+        output_dir: str = LOCAL_OUTPUTS_FOLDER,
         loss_function: str | None = None,
         variance_power: float | None = None,
         offset: str | None = None,

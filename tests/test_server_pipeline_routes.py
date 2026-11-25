@@ -852,11 +852,11 @@ class TestExecuteSinkEndpoint:
 
         assert response.status_code == 200
         assert response.json() == {
-            "path": "outputs/report.parquet",
+            "path": "files/outputs/report.parquet",
             "format": "parquet",
             "suffix_mismatch": False,
         }
-        assert not (pipeline_dir / "outputs").exists()
+        assert not (pipeline_dir / "files").exists()
 
         graph["nodes"][0]["data"]["config"]["path"] = "report.csv"
         mismatch = client.post(
@@ -865,7 +865,7 @@ class TestExecuteSinkEndpoint:
         )
         assert mismatch.status_code == 200
         assert mismatch.json() == {
-            "path": "outputs/report.csv",
+            "path": "files/outputs/report.csv",
             "format": "parquet",
             "suffix_mismatch": True,
         }
@@ -935,8 +935,8 @@ class TestExecuteSinkEndpoint:
         )
 
         assert response.status_code == 200
-        assert response.json()["path"] == "outputs/report.parquet"
-        assert not (unrelated_cwd / "outputs").exists()
+        assert response.json()["path"] == "files/outputs/report.parquet"
+        assert not (unrelated_cwd / "files").exists()
 
     def test_sink_writes_output(self, client: TestClient, pipeline_dir: Path):
         out_path = pipeline_dir / "output" / "result.parquet"

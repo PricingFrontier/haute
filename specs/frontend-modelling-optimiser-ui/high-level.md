@@ -367,7 +367,7 @@ CatBoost. Pane ownership:
   no registry field: haute logs candidate runs, and registering or promoting a model happens
   outside haute.
   **Model file** writes a copy of the trained model and its feature contract into the project
-  and behaves like a file Data Output with a `models/` folder in place of `outputs/`. A
+  and behaves like a file Data Output with a `models/` folder in place of `files/outputs/`. A
   required "Filename or path" picker (typed or browsed, persisted as `model_export_path`, no
   default) retains the folder browser and selected-path display without instructional prose.
   The resolved destination is shown when it differs from the selected path, so a selected

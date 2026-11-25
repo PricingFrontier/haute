@@ -2087,16 +2087,16 @@ class TestResolveDataOutputPath:
 
         result = write_data_output(graph, "dout", project_root=haute_scratch)
 
-        assert result.path == "outputs/output.parquet"
+        assert result.path == "files/outputs/output.parquet"
         assert_frame_equal(pl.read_parquet(haute_scratch / result.path), struct_frame)
-        assert not (haute_scratch / "rating" / "outputs").exists()
+        assert not (haute_scratch / "rating" / "files").exists()
         assert not (haute_scratch / "output.parquet").exists()
 
     @pytest.mark.parametrize(
         ("path", "expected"),
         [
-            ("output", "outputs/output.parquet"),
-            ("output.parquet", "outputs/output.parquet"),
+            ("output", "files/outputs/output.parquet"),
+            ("output.parquet", "files/outputs/output.parquet"),
             ("exports/output", "exports/output.parquet"),
             ("exports\\output.parquet", "exports/output.parquet"),
         ],
@@ -2117,7 +2117,7 @@ class TestResolveDataOutputPath:
 
         assert resolved == haute_scratch / expected
         assert display.replace("\\", "/") == expected
-        assert not (haute_scratch / "outputs").exists()
+        assert not (haute_scratch / "files").exists()
 
     def test_bare_filename_lands_under_outputs_with_format_extension(self) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
@@ -2125,7 +2125,7 @@ class TestResolveDataOutputPath:
             graph,
             {"output_type": "file", "format": "ndjson", "path": "result"},
         )
-        assert display == "outputs/result.jsonl"
+        assert display == "files/outputs/result.jsonl"
         assert resolved is not None and resolved.name == "result.jsonl"
 
     def test_explicit_extension_is_never_rewritten(self) -> None:
@@ -3035,9 +3035,9 @@ def test_the_write_route_removes_the_staged_copies_an_earlier_write_left(
     import haute.routes.pipeline as pipeline_route
 
     use_project(haute_scratch)
-    # A bare file name is written under outputs/.
-    (haute_scratch / "outputs").mkdir()
-    left = haute_scratch / "outputs" / f".sink_failure.haute-stage-{'a' * 32}.parquet"
+    # A bare file name is written under files/outputs/.
+    (haute_scratch / "files" / "outputs").mkdir(parents=True)
+    left = haute_scratch / "files" / "outputs" / f".sink_failure.haute-stage-{'a' * 32}.parquet"
     left.write_bytes(b"a cut-short Write's copy")
 
     def _stop(*_args: object, **_kwargs: object) -> None:

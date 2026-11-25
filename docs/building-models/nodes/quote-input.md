@@ -107,7 +107,7 @@ A preview file might look like this:
 ]
 ```
 
-1. Add a Quote Input node and choose `data/quotes.json` in **PREVIEW DATA**.
+1. Add a Quote Input node and choose `files/data/quotes.json` in **PREVIEW DATA**.
 2. Click **Infer Tables**. The editor proposes one table, `quote_info`, at path `$[:]`, with the columns `quote_id` (`str`), `driver_age` (`int`), `area` (`str`) and `vehicle_value` (`int`).
 3. Check the columns and click **Confirm all**, and make sure the table is ticked **emit**.
 4. Connect the node's `quote_info` output to the next node. The preview shows:
@@ -129,7 +129,7 @@ A preview file might look like this:
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **PREVIEW DATA** | `path`: the preview file, relative to your project folder (e.g. `data/quotes.json`) |
+    | **PREVIEW DATA** | `path`: the preview file, relative to your project folder (e.g. `files/data/quotes.json`) |
     | The tables | `tables`: a list with one object per table |
     | A table's label | `tables[].label` |
     | A table's path | `tables[].path`, a JSONPath naming the array the table iterates (`$[:]`, `$[:].drivers[:]`) |

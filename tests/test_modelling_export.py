@@ -468,7 +468,7 @@ class TestEmptyOptionalParamsExcluded:
 class TestOutputDir:
     def test_default_output_dir(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        assert "output_dir='outputs'" in script
+        assert "output_dir='files/outputs'" in script
 
     def test_custom_output_dir(self):
         config = {**MINIMAL_CONFIG, "output_dir": "results/v2"}

@@ -40,8 +40,8 @@ DEFAULT_PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production
 
 _ARCHIVE_PREFIX = "archive"
 
-# Reconstructable caches only. Not ``outputs``: the analyst's local results, which
-# git cannot bring back. Not ``output``: optimiser results were published there by
+# Reconstructable caches only. Not ``files``: the analyst's local data and results,
+# which git cannot bring back. Not ``output``: optimiser results were published there by
 # default, and Apply Optimisation prices from them.
 _VOLATILE_ARTEFACTS = (
     "__pycache__",
@@ -1150,7 +1150,7 @@ def _refuse_too_large_for_history(paths: list[str], root: Path, retry: str) -> N
         raise GitDomainError(
             f"{', '.join(too_large)} {'is' if one else 'are'} too large for version history, "
             f"which takes files up to {_mib(VERSIONED_FILE_LIMIT_BYTES)}. Move "
-            f"{'it' if one else 'them'} to the project's data/ folder, which stays on this "
+            f"{'it' if one else 'them'} to the project's files/data/ folder, which stays on this "
             f"machine, and {retry}."
         )
 

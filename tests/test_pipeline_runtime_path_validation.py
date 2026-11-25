@@ -904,7 +904,7 @@ def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_proj
     with pytest.raises(RuntimePathOutsideProjectError):
         resolve_data_output_path(PipelineGraph(), config, project_root=tmp_path)
 
-    # Nothing named ``C:`` or ``outputs`` appeared in the project (on Windows ``C:`` joined
+    # Nothing named ``C:`` or ``files`` appeared in the project (on Windows ``C:`` joined
     # to a folder names a drive, so the project's listing is the one test of every system).
     assert sorted(tmp_path.rglob("*")) == before
 
@@ -912,13 +912,16 @@ def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_proj
 @pytest.mark.parametrize(
     ("config", "remedy"),
     [
-        ({"format": "parquet", "path": "<absolute>"}, "root: outputs/priced.parquet."),
+        ({"format": "parquet", "path": "<absolute>"}, "root: files/outputs/priced.parquet."),
         ({"format": "csv", "path": "data/Quotes"}, "Write data/quotes.csv."),
-        ({"format": "parquet", "path": "Priced"}, "Write outputs/priced.parquet."),
-        ({"format": "parquet", "path": "Outputs/new.parquet"}, "Write outputs/new.parquet."),
+        ({"format": "parquet", "path": "Priced"}, "Write files/outputs/priced.parquet."),
+        (
+            {"format": "parquet", "path": "Files/outputs/new.parquet"},
+            "Write files/outputs/new.parquet.",
+        ),
         ({"format": "csv", "path": "C:priced.csv"}, "was written on Windows"),
         ({"format": "csv", "path": "NUL.csv"}, "reserved device name 'NUL.csv'"),
-        ({"format": "parquet", "path": "outputs/priced.parquet"}, None),
+        ({"format": "parquet", "path": "files/outputs/priced.parquet"}, None),
         ({"format": "parquet", "path": "exports/new.parquet"}, None),
         ({"format": "database", "uri": "sqlite:///out.db"}, None),
     ],
@@ -938,15 +941,15 @@ def test_a_save_holds_the_file_a_data_output_writes_to_one_spelling(
     tmp_path: Path, config: dict[str, object], remedy: str | None
 ) -> None:
     """A file Data Output is checked on the file its writer writes: a bare name in
-    ``outputs/`` and the format's extension added. A folder or file on disk in another
+    ``files/outputs/`` and the format's extension added. A folder or file on disk in another
     letter case is refused, since Windows and macOS write into it and Linux makes another;
     a folder not there yet is the writer's to make. A database destination names no file."""
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "quotes.csv").write_text("x\n1\n", encoding="utf-8")
-    (tmp_path / "outputs").mkdir()
-    (tmp_path / "outputs" / "priced.parquet").write_bytes(b"")
+    (tmp_path / "files" / "outputs").mkdir(parents=True)
+    (tmp_path / "files" / "outputs" / "priced.parquet").write_bytes(b"")
     if config.get("path") == "<absolute>":
-        config = {**config, "path": str(tmp_path / "outputs" / "priced.parquet")}
+        config = {**config, "path": str(tmp_path / "files" / "outputs" / "priced.parquet")}
     sink = GraphNode(
         id="priced",
         data=NodeData(

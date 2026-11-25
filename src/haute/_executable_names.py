@@ -396,7 +396,7 @@ def data_output_destination(
 
     A file or lakehouse target is the path the writer resolves
     (``executor.resolve_data_output_path``: a bare file name under
-    ``outputs/``, the format's default extension added, relative paths
+    ``files/outputs/``, the format's default extension added, relative paths
     anchored as the writer anchors them), compared ignoring case on Windows
     and macOS, whose file systems do. A database target is its connection (or
     URI) and its table. A Databricks target is its table, spelled canonically,

@@ -245,7 +245,7 @@ serving_scale_to_zero = true
 [safety]
 # `haute impact` compares staging with production on these quotes. Without a
 # sample it compares the test quotes; commit a Parquet sample of your book (not
-# under data/, which is gitignored) and name it here to compare that instead:
+# under files/, which is gitignored) and name it here to compare that instead:
 # impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
@@ -271,7 +271,7 @@ endpoint_suffix = "-staging"
 | `serving_workload_size` | How much compute to allocate - `Small`, `Medium`, or `Large` | `"Small"` |
 | `serving_scale_to_zero` | Whether the endpoint shuts down when idle (saves money) | `true` |
 | `dir` (`[test_quotes]`) | Where the [test quotes](../index.md#test-quotes) are, when not in `tests/quotes`. `haute init` leaves it out | `"tests/quotes"` |
-| `impact_dataset` | The Parquet portfolio sample the impact step scores. Left unset, as `haute init` leaves it, the impact step compares your test quotes instead. CI can read only files in the repository, and `haute init` gitignores `data/`, so commit a sample you are allowed to share somewhere else (for example `tests/impact/portfolio_sample.parquet`) and point this at it | `"tests/impact/portfolio_sample.parquet"` |
+| `impact_dataset` | The Parquet portfolio sample the impact step scores. Left unset, as `haute init` leaves it, the impact step compares your test quotes instead. CI can read only files in the repository, and `haute init` gitignores the project root's `files/`, so commit a sample you are allowed to share somewhere else (for example `tests/impact/portfolio_sample.parquet`) and point this at it | `"tests/impact/portfolio_sample.parquet"` |
 | `min_approvers` | A record of how many approvals your team expects; your CI provider's settings enforce it | `2` |
 | `provider` | The CI provider `haute init` generated workflows for | `"github"` |
 | `endpoint_suffix` | Added to the endpoint, model and experiment names for staging deploys. The generated workflows hold it, so after changing it run `haute ci update` and commit the workflows | `"-staging"` |

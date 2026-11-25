@@ -16,7 +16,7 @@ environment's name is::
 
     [local]
     provider = "sqlite"
-    database = "data/quotes.sqlite"   # the file's path from the project root
+    database = "files/data/quotes.sqlite"   # the file's path from the project root
 
     [warehouse]                       # an Import's source alone
     provider = "databricks"

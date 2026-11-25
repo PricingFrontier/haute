@@ -31,7 +31,7 @@ When a CI runner invokes `haute deploy`, Haute:
 
 1. **Parses your pipeline** - reads your Python file and builds a graph of all the steps
 2. **Prunes to the scoring path** - removes training steps, data exports, and anything not needed for live scoring
-3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) and data files your pipeline's scoring path references and bundles them, together with your pipeline's `utility/` package. The data the quote output reads must be in the pipeline folder (`rating/files/data/`): a [Data Input](../building-models/nodes/data-input.md) on the scoring path that reads from `data/`, or anywhere else outside `rating/`, stops the deploy and names the node. Each path names the file the editor reads, the one under the project root first: a path that names one file under the project root and a different one under `rating/` stops the deploy and names both, so the deployed model never prices from a copy you didn't check. Anything the quote output doesn't depend on is dropped in step 2, so it can read data from anywhere: model training, optimisation, data exports, or the batch input of a [Source Switch](../building-models/nodes/source-switch.md). A data file that is not parquet is copied into a fresh snapshot first, so the deployment carries the file as it is now. A lakehouse table ships as last imported: Haute can't detect its changes, so click **Import** on its Data Input before deploying. Results cached by running the pipeline in the editor are never deployed: the deployed model works out every step from the data and models it carries
+3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) and data files your pipeline's scoring path references and bundles them, together with your pipeline's `utility/` package. The data the quote output reads must be in the pipeline folder (`rating/files/data/`): a [Data Input](../building-models/nodes/data-input.md) on the scoring path that reads from `files/data/`, or anywhere else outside `rating/`, stops the deploy and names the node. Each path names the file the editor reads, the one under the project root first: a path that names one file under the project root and a different one under `rating/` stops the deploy and names both, so the deployed model never prices from a copy you didn't check. Anything the quote output doesn't depend on is dropped in step 2, so it can read data from anywhere: model training, optimisation, data exports, or the batch input of a [Source Switch](../building-models/nodes/source-switch.md). A data file that is not parquet is copied into a fresh snapshot first, so the deployment carries the file as it is now. A lakehouse table ships as last imported: Haute can't detect its changes, so click **Import** on its Data Input before deploying. Results cached by running the pipeline in the editor are never deployed: the deployed model works out every step from the data and models it carries
 4. **Validates** - runs your test quotes through the pruned pipeline to make sure it works. Your preamble can import from `utility/`; an import of any other file in your project is refused, because the deployed pipeline would not have it, so keep shared helpers in `utility/`
 5. **Packages and uploads** - wraps everything into the format the selected target expects and uploads it where supported. The package pins the exact Haute and Polars versions the deploy ran, because a Polars release can change a pipeline's results, and a Databricks model refuses to load under another Polars
 6. **Dispatches by target** - Databricks creates or updates Model Serving; `container` returns the image for a separate hosting step; the Azure, ECS, and GCP targets build and push the image and finish there, because their service-update integrations are not implemented
@@ -92,7 +92,9 @@ my-project/
   .github/workflows/deploy-staging.yml
   .gitignore
   .python-version
-  data/
+  files/
+  files/data/
+  files/outputs/
   haute.toml
   pyproject.toml
   rating/
@@ -150,7 +152,7 @@ serving_scale_to_zero = true
 [safety]
 # `haute impact` compares staging with production on these quotes. Without a
 # sample it compares the test quotes; commit a Parquet sample of your book (not
-# under data/, which is gitignored) and name it here to compare that instead:
+# under files/, which is gitignored) and name it here to compare that instead:
 # impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
@@ -270,7 +272,7 @@ Haute validates a deployment graph and scores configured test quotes before a no
 | **Dry-run validation** | Parses the pipeline, checks all model files exist, scores test quotes |
 | **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
 | **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint. For HTTP endpoints it reads the address from `[ci.staging] endpoint_url` in `haute.toml` and does not accept `--endpoint-suffix` (see [Docker](targets/docker.md#step-3-give-smoke-and-impact-their-endpoints)) |
-| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`. The report is advisory: the changes it shows never fail the run, but an endpoint that cannot be reached, or answers with a different number of rows than quotes it was sent, does |
+| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores the project root's `files/`. The report is advisory: the changes it shows never fail the run, but an endpoint that cannot be reached, or answers with a different number of rows than quotes it was sent, does |
 | **Approval gate** | Name an environment for the production deploy and give it reviewers in your CI provider ([Who can start production](#who-can-start-production)); `min_approvers` is configuration metadata, not an enforced gate |
 | **Rollback** | Use your target platform's model/image revision and rollback procedure |
 

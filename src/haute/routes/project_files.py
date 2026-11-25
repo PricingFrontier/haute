@@ -1,10 +1,10 @@
 """The Files panels' routes: list, write, download and delete project files.
 
-Two places (``haute._project_layout``). The pipeline folder's ``files/`` is
-versioned: a write or delete there is captured on the save ledger at once, a
+Two places (``haute._project_layout``), each a ``files/`` folder. The pipeline folder's
+is versioned: a write or delete there is captured on the save ledger at once, a
 file larger than version history takes is refused, and so is one ``.gitignore``
-would ignore. The project root's ``data/`` takes and deletes files and
-``outputs/`` only downloads; neither is versioned, and a hosted app refuses
+would ignore. The project root's is local: its ``data/`` takes and deletes files and
+its ``outputs/`` only downloads; neither is versioned, and a hosted app refuses
 files there because its disk does not survive a restart. See specs/server-api.
 """
 
@@ -31,7 +31,8 @@ from haute._git_state import read_working_branch
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._project_layout import (
-    LOCAL_FOLDERS,
+    FILES_FOLDER,
+    LOCAL_FILES_SUBFOLDERS,
     PIPELINE_FILES_SUBFOLDERS,
     VERSIONED_FILE_LIMIT_BYTES,
     pipeline_files_folder,
@@ -96,7 +97,7 @@ def _file_refusal(exc: OSError, display: str) -> RequestRefusedError:
 class _Place:
     name: ProjectFilePlace
     root: str
-    """The place's folder relative to the project root, POSIX; ``""`` for local."""
+    """The place's ``files/`` folder relative to the project root, POSIX."""
     known: tuple[str, ...]
     """The folders its root always lists, even before they exist."""
 
@@ -142,7 +143,7 @@ def _place(project_root: Path, name: ProjectFilePlace) -> _Place:
                 "This project has no git repository: run git init in it to version Pipeline files.",
             )
         return _Place("pipeline", folder, PIPELINE_FILES_SUBFOLDERS)
-    return _Place("local", "", LOCAL_FOLDERS)
+    return _Place("local", FILES_FOLDER, LOCAL_FILES_SUBFOLDERS)
 
 
 def _target(
@@ -162,16 +163,14 @@ def _target(
     ):
         raise _refusal(400, "invalid_path", f"{path!r} isn't a path the Files panels can use.")
     relative = "/".join(parts)
-    if place.name == "local" and parts and parts[0] not in LOCAL_FOLDERS:
+    if place.name == "local" and parts and parts[0] not in LOCAL_FILES_SUBFOLDERS:
         raise _refusal(
-            404, "folder_missing", f"Local files holds only {' and '.join(LOCAL_FOLDERS)}."
+            404,
+            "folder_missing",
+            f"Local files holds only {' and '.join(LOCAL_FILES_SUBFOLDERS)}.",
         )
-    project_relative = str(PurePosixPath(place.root, relative)) if place.root else relative
-    resolved, problem = (
-        ordinary_path_problem(project_root, project_relative, any_name=any_name)
-        if project_relative
-        else (project_root, None)
-    )
+    project_relative = str(PurePosixPath(place.root, relative))
+    resolved, problem = ordinary_path_problem(project_root, project_relative, any_name=any_name)
     if problem is not None:
         raise _refusal(400, "invalid_path", f"{project_relative} {_PROBLEMS[problem]}.")
     return _Target(place, relative, project_relative, resolved)
@@ -208,7 +207,7 @@ def _list_folder(place_name: ProjectFilePlace, path: str) -> ProjectFolderRespon
         return ProjectFolderResponse(
             place="local",
             path="",
-            root="",
+            root=place.root,
             writable=False,
             entries=[_folder_entry(project_root, place, name) for name in place.known],
         )
@@ -274,7 +273,7 @@ def _list_folder(place_name: ProjectFilePlace, path: str) -> ProjectFolderRespon
 
 
 def _folder_entry(project_root: Path, place: _Place, name: str) -> ProjectFileEntry:
-    path = project_root / place.root / name if place.root else project_root / name
+    path = project_root / place.root / name
     modified = path.stat().st_mtime if path.is_dir() else None
     return ProjectFileEntry(name=name, path=name, kind="folder", modified=modified)
 
@@ -342,7 +341,7 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
                 f"{display} is {length / (1024 * 1024):.1f} MiB. Pipeline files are "
                 "versioned, and version history takes files up to "
                 f"{VERSIONED_FILE_LIMIT_BYTES // (1024 * 1024)} MiB. Add it to Local files' "
-                "data/ instead.",
+                "files/data/ instead.",
             )
         rule = _git.ignore_rule(display, cwd=project_root)
         if rule is not None:
@@ -351,7 +350,7 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
                 "ignored",
                 f"{display} would be ignored by .gitignore ({rule}), so it couldn't be "
                 "versioned. Change that rule to apply only at the project root, for "
-                "example '/data/' instead of 'data/'.",
+                "example '/files/' instead of 'files/'.",
             )
     # The destination's folders are made only when the file is published, under the
     # project write lock, so a refused upload leaves none behind.

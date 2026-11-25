@@ -95,7 +95,7 @@ Out of scope (owned elsewhere, linked where relevant):
   project root (`contained_path`, the runtime path resolution below); that
   containment protects haute's persistence from confused paths, not the machine
   from the author. The Files panels reach only the pipeline folder's `files/` and
-  the root's `data/` and `outputs/`, never a dot-name such as `.env` or `.git`, and
+  the root's `files/data/` and `files/outputs/`, never a dot-name such as `.env` or `.git`, and
   never through a link ([server-api](../server-api/high-level.md)).
 - **Environment exposure.** The process environment, including any credentials
   the deployment supplies to haute itself, is visible to project code.

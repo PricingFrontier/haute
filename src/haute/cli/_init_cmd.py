@@ -888,7 +888,11 @@ def handle_init(config: InitConfig) -> None:
     ``rating/`` or ``tests/`` but a workbench's form folder where it has none.
     """
     from haute._connections import CONNECTIONS_FILE, ConnectionsError, read_connections
-    from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
+    from haute._project_layout import (
+        FILES_FOLDER,
+        LOCAL_FILES_SUBFOLDERS,
+        PIPELINE_FILES_SUBFOLDERS,
+    )
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
         app_env_example,
@@ -1004,7 +1008,9 @@ def handle_init(config: InitConfig) -> None:
     report.add(".python-version", "written" if wrote_python_version else "unchanged")
 
     # -- Directories -----------------------------------------------------------
-    (project_dir / "data").mkdir(exist_ok=True)
+    # files/ - local data and what runs write, named as the pipeline folder's files/ is.
+    for sub in LOCAL_FILES_SUBFOLDERS:
+        (project_dir / FILES_FOLDER / sub).mkdir(parents=True, exist_ok=True)
 
     # -- Remove the root placeholder ``uv init`` writes, and only that ----------
     root_main = project_dir / "main.py"
@@ -1044,9 +1050,7 @@ def handle_init(config: InitConfig) -> None:
         # rating/config/ and rating/files/ - node settings, versioned data and models.
         (project_dir / "rating" / "config").mkdir(exist_ok=True)
         for sub in PIPELINE_FILES_SUBFOLDERS:
-            (project_dir / "rating" / PIPELINE_FILES_FOLDER / sub).mkdir(
-                parents=True, exist_ok=True
-            )
+            (project_dir / "rating" / FILES_FOLDER / sub).mkdir(parents=True, exist_ok=True)
 
     # -- haute.toml - project, deploy or app image, safety, CI and workbench config --
     # Written afresh from the answers; a re-run's previous file is left to git.
@@ -1166,7 +1170,7 @@ def handle_init(config: InitConfig) -> None:
             click.echo(f"  .env.example         - {credentials} credentials template")
         click.echo("  rating/main.py       - starter pipeline")
         click.echo("  rating/utility/      - project-level utility functions")
-        click.echo("  data/                - put your data files here")
+        click.echo("  files/               - local data and run outputs, not versioned")
         click.echo("  tests/               - starter test + example quote payloads")
         click.echo("  .githooks/pre-commit - auto-format on commit (ruff)")
         for f in generated_ci:
