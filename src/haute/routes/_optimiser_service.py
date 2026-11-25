@@ -3587,7 +3587,11 @@ class OptimiserSolveService:
                     logger.info("solve_start_skipped", job_id=job_id, expected_status="running")
                     return
                 if mode == "ratebook":
-                    with execution_context.stage("optimiser_solver_solve", node_id=node_id):
+                    # The finalize ends the stage before the grant is released.
+                    with contextlib.ExitStack() as solve_stage:
+                        solve_stage.enter_context(
+                            execution_context.stage("optimiser_solver_solve", node_id=node_id)
+                        )
                         solve_ctx = dataclasses.replace(
                             ctx,
                             store=self._store,
@@ -3596,6 +3600,7 @@ class OptimiserSolveService:
                                 job_id,
                                 execution_context=execution_context,
                             ),
+                            end_stage=solve_stage.close,
                         )
                         adopted = _solve_ratebook(
                             solve_ctx,
@@ -3606,7 +3611,10 @@ class OptimiserSolveService:
                             quote_analysis_handle=quote_analysis_handle,
                         )
                 else:
-                    with execution_context.stage("optimiser_solver_solve", node_id=node_id):
+                    with contextlib.ExitStack() as solve_stage:
+                        solve_stage.enter_context(
+                            execution_context.stage("optimiser_solver_solve", node_id=node_id)
+                        )
                         solve_ctx = dataclasses.replace(
                             ctx,
                             store=self._store,
@@ -3615,6 +3623,7 @@ class OptimiserSolveService:
                                 job_id,
                                 execution_context=execution_context,
                             ),
+                            end_stage=solve_stage.close,
                         )
                         adopted = _solve_online(
                             solve_ctx,
@@ -3641,8 +3650,8 @@ class OptimiserSolveService:
                 if error_job is None:
                     logger.info("solve_error_update_skipped", job_id=job_id)
             finally:
-                # The outcome was recorded with the grant already released (by the
-                # completion or the failure above); the metrics are recorded data.
+                # The outcome was recorded with the stage ended and the grant released
+                # (by the completion or the failure above); the metrics are recorded data.
                 current = self._store.get_job(job_id)
                 if current is not None:
                     self._store.update_job(

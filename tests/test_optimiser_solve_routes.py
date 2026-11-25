@@ -2461,6 +2461,27 @@ class TestAnOutcomeFollowsItsRelease:
         assert held == ()
         assert _work_ended(job_id)
 
+    def test_the_thread_solve_ends_its_stage_under_its_grant(
+        self, client, scored_data, monkeypatch
+    ):
+        """The solve's stage is measured and checked before the grant is released."""
+        from haute._execution_context import _TimedStage
+
+        released_at_exit: list[bool] = []
+        real_exit = _TimedStage.__exit__
+
+        def recording_exit(self: _TimedStage, *exc_info: object) -> None:
+            if self._stage.name == "optimiser_solver_solve":
+                released_at_exit.append(self._context.lease.released)
+            return real_exit(self, *exc_info)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(_TimedStage, "__exit__", recording_exit)
+        job_id = self._solve(client, scored_data)
+
+        assert _poll_until_done(client, job_id)["status"] == "completed"
+        assert _work_ended(job_id)
+        assert released_at_exit == [False]
+
     def test_a_failed_solve_holds_no_reservation(self, client, scored_data, monkeypatch):
         def failing_solve(*_args: object, **_kwargs: object) -> bool:
             raise RuntimeError("solver blew up")

@@ -1126,6 +1126,7 @@ def _finalize_solve_result(
     apply_artifact_dir: str | None = None,
     frontier_history_dir: str | None = None,
     releasing: ExecutionContext | None = None,
+    end_stage: Callable[[], None] | None = None,
 ) -> bool:
     """Build the result dict and update the job with the solve outcome.
 
@@ -1162,6 +1163,9 @@ def _finalize_solve_result(
         The solve's admitted context, released after the artifacts are
         persisted and before the completion is published, so a client that sees
         the completion finds none of the solve's memory reserved.
+    end_stage:
+        Ends the stage the solve runs in, after the artifacts are persisted and
+        before *releasing* is released.
     """
     diagnostics_errors: list[dict[str, str]] = []
     # Read through JobStore so concurrent eviction cannot race this snapshot.
@@ -1395,6 +1399,8 @@ def _finalize_solve_result(
         current = store.get_job(job_id)
         if current is None or current.get("status") == "running":
             completion_fields = persist_completion_fields()
+            if end_stage is not None:
+                end_stage()
             updated_job = JobLifecycle(store).publish_completion(
                 job_id,
                 publish=lambda: completion_fields,
@@ -1532,6 +1538,7 @@ def _solve_online(
         apply_artifact_dir=ctx.apply_artifact_dir,
         frontier_history_dir=ctx.frontier_history_dir,
         releasing=ctx.execution_context,
+        end_stage=ctx.end_stage,
     )
 
 
@@ -1556,6 +1563,10 @@ class SolveContext:
     apply_artifact_dir: str | None = None
     # Likewise for the frontier points' convergence traces, when the solve sweeps.
     frontier_history_dir: str | None = None
+    # Ends the execution stage the solve runs in (the solve thread's): called once the
+    # completion's artifacts are written, so the stage is measured and checked under
+    # the grant that ``execution_context`` holds, before that grant is released.
+    end_stage: Callable[[], None] | None = None
 
 
 @require_solver_worker_context
@@ -1704,4 +1715,5 @@ def _solve_ratebook(
         apply_artifact_dir=ctx.apply_artifact_dir,
         frontier_history_dir=ctx.frontier_history_dir,
         releasing=ctx.execution_context,
+        end_stage=ctx.end_stage,
     )

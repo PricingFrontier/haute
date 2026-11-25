@@ -679,10 +679,16 @@ is only warranted for a concrete thread callable that can honour such a signal.
   refuting a wrong model (first-write-wins and last-write-wins lifecycles, a
   release that frees any owner, a superseded job that may publish).
 - `tests/conftest.py::_outcomes_follow_their_release` (autouse) — a completed or failed
-  terminal write the store accepts while the job still holds an in-flight reservation
-  (`_execution_admission` records each reservation's `job_id`) fails the test that drove
-  it, naming the job, the outcome and the reservation, so any job path that records its
-  outcome before releasing fails in whichever test exercises it; a stop is exempt.
+  outcome the store records for a running job while that job still holds an in-flight
+  reservation (`_execution_admission` records each reservation's `job_id`) fails the test
+  that drove it, naming the job, the outcome and the reservation, so any job path that
+  records its outcome before releasing fails in whichever test exercises it. A stop is
+  exempt, and so is the completed-to-error correction, which is not the work's outcome
+  (later work under the job's id, a frontier point apply, may hold its own grant then).
+  `_clear_execution_admission_reservations` requests it, so work that ends while that
+  fixture waits for it is checked too: `tests/test_job_lifecycle.py` runs a pytester suite
+  whose job records its outcome during that wait and fails, and corrects a completed job
+  while later work holds a grant under its id without failing.
 - `tests/test_job_lifecycle.py` — `releasing` is released before the store write, for a
   transition and a completion publication, and a cleanup that fails during that release is
   kept on the outcome as `cleanup_error` without changing it. Transition metadata correctness; store-boundary

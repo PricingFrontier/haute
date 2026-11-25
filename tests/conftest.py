@@ -477,8 +477,11 @@ def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
 
     A client that sees the outcome may start new work at once, which a reservation the
     finished job still held would count against (background-jobs, "An outcome follows
-    its release"). Any terminal write the store accepts while the job still holds one
-    fails the test that drove it, whichever job type wrote it. A stop is exempt.
+    its release"). Any outcome the store records for a running job while the job still
+    holds one fails the test that drove it, whichever job type wrote it. A stop is exempt,
+    and so is a correction of a completed record, which is not the work's outcome (later
+    work under the job's id, a point apply, may hold its own grant then). The reservation
+    fixture requests this one, so the check also covers work that ends while it waits.
     """
     from haute.routes._job_store import JobStore
     from tests._process_state import execution_admission_reservations_of
@@ -487,9 +490,17 @@ def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
     real_transition = JobStore.transition_terminal
     real_publish = JobStore.compare_and_publish_completion
 
-    def transition_terminal(self: JobStore, job_id: str, *, to: str, **kwargs: Any) -> Any:
-        held = () if to in _STOP_REASONS else execution_admission_reservations_of(job_id)
-        written = real_transition(self, job_id, to=to, **kwargs)
+    def transition_terminal(
+        self: JobStore,
+        job_id: str,
+        *,
+        to: str,
+        expected_status: str = "running",
+        **kwargs: Any,
+    ) -> Any:
+        outcome = to not in _STOP_REASONS and expected_status == "running"
+        held = execution_admission_reservations_of(job_id) if outcome else ()
+        written = real_transition(self, job_id, to=to, expected_status=expected_status, **kwargs)
         if written is not None and held:
             early.append(f"{to!r} for job {job_id} while it held {', '.join(held)}")
         return written
@@ -514,12 +525,13 @@ def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def _clear_execution_admission_reservations():
+def _clear_execution_admission_reservations(_outcomes_follow_their_release: None):
     """Each test starts with no in-flight memory reservation and must end with none.
 
     A reservation a test leaves holds the process's memory budget into the tests after
     it, which are then refused as memory-limited; clearing it silently would hide that,
-    so the test that left it fails, naming it.
+    so the test that left it fails, naming it. It waits for the test's work with the
+    outcome check still in place, which it requests for that reason.
     """
     from tests._process_state import (
         clear_execution_admission_reservations,

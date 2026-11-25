@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import itertools
 import threading
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -27,6 +28,8 @@ from haute.routes._job_lifecycle import (
 )
 from haute.routes._job_store import JobStore
 from tests._process_state import execution_admission_reservations_of
+
+pytest_plugins = ["pytester"]
 
 _ORDERED_REASONS: tuple[TerminalReason, ...] = (
     "error",
@@ -415,6 +418,78 @@ def test_a_cleanup_that_fails_on_release_is_kept_on_the_outcome(outcome: str) ->
     assert written["cleanup_error_class"] == "OSError"
     # The lease still returned the reservation.
     assert execution_admission_reservations_of(job_id) == ()
+
+
+_LATE_OUTCOME_TEST = """
+import threading
+import time
+
+from haute import _execution_admission as admission
+from haute._execution_context import ExecutionProfile
+from haute.routes._job_lifecycle import JobLifecycle
+from haute.routes._job_store import JobStore
+
+
+def test_a_job_that_finishes_as_the_test_ends():
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    with admission._IN_FLIGHT_LOCK:
+        admission._IN_FLIGHT_RESERVATIONS[-1] = admission._InFlightReservation(
+            ExecutionProfile.EXPLORE_ANALYSIS, 1, "late_work", job_id
+        )
+
+    def finish():
+        # Records its outcome, then releases: while the suite waits for the work.
+        time.sleep(0.5)
+        JobLifecycle(store).transition(job_id, to="completed")
+        with admission._IN_FLIGHT_LOCK:
+            admission._IN_FLIGHT_RESERVATIONS.pop(-1)
+            admission._IN_FLIGHT_RELEASED.notify_all()
+
+    threading.Thread(target=finish, daemon=True).start()
+"""
+
+
+def test_the_guard_sees_an_outcome_recorded_while_the_test_waits_for_its_work(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, _haute_write_sandbox: Any
+) -> None:
+    """Work that ends after its test body is still checked: the guard outlasts the wait."""
+    if _haute_write_sandbox is not None:
+        _haute_write_sandbox.allow(pytester.path)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    pytester.makeini("[pytest]\nasyncio_default_fixture_loop_scope = function\n")
+    pytester.makeconftest(
+        "from tests.conftest import (  # noqa: F401\n"
+        "    _clear_execution_admission_reservations,\n"
+        "    _outcomes_follow_their_release,\n"
+        ")\n"
+    )
+    pytester.makepyfile(test_late_outcome=_LATE_OUTCOME_TEST)
+
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-p", "no:randomly")
+
+    result.assert_outcomes(passed=1, errors=1)
+    result.stdout.fnmatch_lines(["*recorded its outcome before releasing its memory*late_work*"])
+
+
+def test_a_correction_of_a_completed_job_is_not_its_outcome() -> None:
+    """A completed job may be corrected while later work holds a grant under its id."""
+    from haute import _execution_admission as admission
+
+    store = JobStore()
+    lifecycle = JobLifecycle(store)
+    job_id = store.create_job({"status": "running"})
+    assert lifecycle.publish_completion(job_id, publish=lambda: {"result": {"value": 1}})
+    later_work = _admitted_for(job_id)
+    try:
+        corrected = lifecycle.transition(
+            job_id, to="error", message="result rejected", expected_status="completed"
+        )
+        assert corrected is not None
+        assert corrected["status"] == "error"
+        assert admission._IN_FLIGHT_RESERVATIONS  # the later work still holds its grant
+    finally:
+        later_work.release_admission()
 
 
 def test_publish_completion_is_paired_and_suppresses_lost_claim_callback() -> None:

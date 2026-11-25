@@ -477,9 +477,11 @@ Both call the shared `_finalize_solve_result`, which builds the API-facing
 frontier failure is recorded but does not fail the solve), persists the online apply-result
 artifact (online mode only: `_persist_apply_result_artifact` requires a per-quote Polars
 frame and raises `TypeError` otherwise; it frees the in-memory result dataframe as a side
-effect — see Artifact lifecycle below) before it claims the completion, and then atomically
-transitions the job to `completed`, releasing the solve's admission
-(`SolveContext.execution_context`) first (background-jobs, "An outcome follows its release").
+effect — see Artifact lifecycle below) before it claims the completion, ends the stage the
+solve runs in (`SolveContext.end_stage`: the solve thread's `optimiser_solver_solve`, so it is
+measured and checked under the grant), and then atomically transitions the job to `completed`,
+releasing the solve's admission (`SolveContext.execution_context`) first (background-jobs, "An
+outcome follows its release").
 A claim lost to a stop removes the artifacts it persisted. The solve thread's `finally` then
 records the context's execution metrics on the job.
 
@@ -1440,7 +1442,8 @@ whose message already names every problem and the remedy.
   work just after it records its outcome and polls the status route: a completed thread solve,
   a completed session solve, a failed thread solve and a completed auto-range each find no
   in-flight reservation the job holds when the client first sees the outcome, with no grace.
-  Against the order this replaced (outcome, then release) each fails every time.
+  Against the order this replaced (outcome, then release) each fails every time. The thread
+  solve's `optimiser_solver_solve` stage ends before its grant is released.
 - `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
   preparation (thread and process mode): a non-solver `region` column configured as an analysis
   column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
