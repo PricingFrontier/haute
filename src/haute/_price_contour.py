@@ -45,7 +45,7 @@ NATIVE_MODULE = "price_contour._price_contour"
 
 # Must equal the ``price-contour`` specifier in pyproject.toml exactly
 # (``tests/test_dependency_contracts.py`` pins the equality).
-REQUIRED_SPECIFIER = ">=0.8.0,<0.9"
+REQUIRED_SPECIFIER = ">=0.11.0,<0.12"
 
 # Prereleases (``0.4.2rc1``, ``0.4.2.dev0``) are rejected even inside the
 # specifier: haute is only verified against released builds.
@@ -84,6 +84,9 @@ REQUIRED_SYMBOLS: tuple[str, ...] = (
     "FrontierResult.point_history",
     "RatebookFrontierResult.point_history",
     "PerFactorRecord",
+    # How a solve ran and why it did not converge: a one-constraint solve bisects (0.11.0).
+    "SolveResult.solver_path",
+    "SolveResult.non_convergence_reason",
     # Cooperative cancellation of a frontier point's apply or evaluation (OPT-PC02).
     "CancelToken",
     "CancelToken.cancel",

@@ -20,8 +20,27 @@ from haute._price_contour import price_contour
 from haute.schemas import OptimiserOnlineFrontierPoint, OptimiserRatebookFrontierPoint
 
 NON_CONVERGED_WARNING = (
-    "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
+    "Solver did not converge within its iteration limits. Raising them or relaxing the "
+    "tolerance may let it settle."
 )
+BEYOND_GRID_WARNING = (
+    "A bound is beyond what the scenario grid allows, so the result is as close to it as the "
+    "grid reaches. Widen the scenario range or relax the bound."
+)
+
+#: price-contour's reasons a bisection did not converge: the bound lies past the grid.
+_BEYOND_GRID_REASONS = frozenset({"above_envelope", "bracket_exhausted"})
+
+
+def non_converged_warning(reason: str | None) -> str:
+    """What a result that did not converge says, from price-contour's ``non_convergence_reason``.
+
+    A bisection (one constraint) stops short only of a bound the grid cannot reach, which
+    more iterations never change; anything else used up its iterations. A ratebook result
+    carries no reason.
+    """
+    return BEYOND_GRID_WARNING if reason in _BEYOND_GRID_REASONS else NON_CONVERGED_WARNING
+
 
 ConstraintKind = Literal["min", "max"]
 
@@ -205,12 +224,19 @@ def frontier_point_summary(
         "cd_iterations": None,
         "clamp_rate": point["clamp_rate"] if point["mode"] == "ratebook" else None,
         "history": None,
+        "bisection_history": None,
         "ratebook_cd_trace": None,
         # A point's adjustment report is loaded on request (frontier select with
         # ``include_adjustments``); applying the summary removes the solve's.
         "adjustments": None,
         "factor_tables": None,
-        "warning": None if converged else NON_CONVERGED_WARNING,
+        "warning": (
+            None
+            if converged
+            else non_converged_warning(
+                point["non_convergence_reason"] if point["mode"] == "online" else None
+            )
+        ),
         "frontier_error": None,
         # A point's figures come from its own row: the solve's degraded
         # diagnostics do not describe it.

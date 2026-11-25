@@ -2419,6 +2419,7 @@ export interface OptimiserFrontierResponse {
  */
 export interface OptimiserFrontierPointSummary {
   adjustments: null;
+  bisection_history: null;
   cd_iterations: number | null;
   clamp_rate: number | null;
   constraints: {
@@ -2580,6 +2581,10 @@ export interface OptimiserSolveResult {
     [k: string]: number;
   };
   baseline_objective: number;
+  /**
+   * @minItems 1
+   */
+  bisection_history: OptimiserBisectionProbe[] | null;
   cd_iterations: number | null;
   clamp_rate: number | null;
   combined_factor_bounds: OptimiserCombinedFactorBounds | null;
@@ -2681,6 +2686,25 @@ export interface OptimiserAdjustmentQuantiles {
   p50: number;
   p75: number;
   p95: number;
+}
+/**
+ * One fixed-λ apply a bisection ran, a one-constraint solve's or a 1-D frontier
+ * point's (price-contour's ``history`` or ``point_history``), in the order it ran.
+ */
+export interface OptimiserBisectionProbe {
+  accepted: boolean;
+  all_constraints_satisfied: boolean;
+  bracket_hi: number | null;
+  bracket_lo: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  phase: 'bracket' | 'bisect';
+  step: number;
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
 }
 /**
  * The scenario range a ratebook solve scored: the deployed factor's collar.
@@ -2860,25 +2884,6 @@ export interface OptimiserBisectionPointHistory {
    * @minItems 1
    */
   probes: OptimiserBisectionProbe[];
-}
-/**
- * One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's
- * ``point_history``), in the order it ran.
- */
-export interface OptimiserBisectionProbe {
-  accepted: boolean;
-  all_constraints_satisfied: boolean;
-  bracket_hi: number | null;
-  bracket_lo: number | null;
-  lambdas: {
-    [k: string]: number;
-  };
-  phase: 'bracket' | 'bisect';
-  step: number;
-  total_constraints: {
-    [k: string]: number;
-  };
-  total_objective: number;
 }
 /**
  * A multi-constraint frontier point's subgradient iterations, as a solve records them.

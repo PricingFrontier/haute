@@ -191,12 +191,13 @@ its native extension `price_contour._price_contour` and collects **every** probl
 - the module's `__version__` differs from the distribution metadata (a stale or shadowing
   build, such as `0.0.0+local`);
 - the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
-  `price-contour` specifier exactly (`>=0.8.0,<0.9`, pinned by
+  `price-contour` specifier exactly (`>=0.11.0,<0.12`, pinned by
   `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
 - a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls,
   including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`, and 0.8.0's
   `frontier_point_history_schema`, `FrontierResult.point_history`,
-  `RatebookFrontierResult.point_history` and `PerFactorRecord`);
+  `RatebookFrontierResult.point_history` and `PerFactorRecord`, and 0.11.0's
+  `SolveResult.solver_path` and `SolveResult.non_convergence_reason`);
 - a keyword haute passes by name that a Python wrapper no longer accepts
   (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
   `apply_from_grid` and `RatebookOptimiser.evaluate`, and `record_history` on both
@@ -439,8 +440,14 @@ an execution-context stage — calls:
 
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
   constraints, max_iter, tolerance, record_history=True)` and solves directly against the passed
-  `QuoteGrid`. Every online solve records its per-iteration `history` (bounded by `max_iter`);
-  there is no configuration flag for it.
+  `QuoteGrid`. Since price-contour 0.11.0 a solve with exactly one constraint bisects that
+  constraint's λ, the method a 1-D frontier point uses, so the solve and the frontier point at
+  its bound are one answer; it converges unless the bound is beyond what the grid allows
+  (`non_convergence_reason` `above_envelope` or `bracket_exhausted`), and `max_iter` does not
+  bound it. More constraints run the subgradient method. Every online solve records its steps:
+  a bisection's probes as `bisection_history` (at most 90), a subgradient solve's iterations as
+  `history` (bounded by `max_iter`), split by the library's `solver_path`
+  (`solve_history_fields`); there is no configuration flag for it.
 - **Ratebook** (`_solve_ratebook`): requires a persisted ratebook factors handle
   (raises `RuntimeError` otherwise — "Ratebook mode requires a banding source"); validates
   the configured factor columns and configured quote-id column against the artifact's own
@@ -499,10 +506,22 @@ names must all agree, see Constraint bounds) the result carries:
   "Adjustment reports (OPT-V10)"). A failed inline frontier keeps
   `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
   entry. Every entry is also logged (`optimiser_diagnostic_skipped`).
-- `history: [OptimiserHistoryEntry]` (online): every online solve's per-iteration record
-  (`iteration`, `total_objective`, `max_lambda_change`, `all_constraints_satisfied`, `lambdas`,
-  `total_constraints`), always recorded and bounded by `max_iter`; `null` for ratebook results
-  and frontier points.
+- `history: [OptimiserHistoryEntry]` (online, more than one constraint or none): every
+  subgradient solve's per-iteration record (`iteration`, `total_objective`, `max_lambda_change`,
+  `all_constraints_satisfied`, `lambdas`, `total_constraints`), always recorded and bounded by
+  `max_iter`; `null` for a one-constraint solve, ratebook results and frontier points.
+- `bisection_history: [OptimiserBisectionProbe]` (online, one constraint): the solve's
+  bisection on λ, probe by probe, in the shape a bisection frontier point's trace has; its λ and
+  totals are the last accepted probe's. `null` otherwise. A result never holds both it and
+  `history`.
+- `warning`: present only on a result that did not converge, saying why from
+  price-contour's `non_convergence_reason` (`non_converged_warning`): a bound beyond what the
+  scenario grid allows ("A bound is beyond what the scenario grid allows, so the result is as
+  close to it as the grid reaches. Widen the scenario range or relax the bound."), or
+  otherwise iterations used up (`NON_CONVERGED_WARNING`, "Solver did not converge within its
+  iteration limits. Raising them or relaxing the tolerance may let it settle."). A frontier
+  point's summary says the same from its own row's reason; a ratebook result, whose library
+  result has no reason, uses the second.
 - `ratebook_cd_trace: {records, truncated}` (`OptimiserRatebookCdTrace`, strict; ratebook): one
   record per inner grouped solve of the coordinate descent, in (CD pass, factor) order, each
   `{cd_iteration (1-based), factor, factor_index, total_objective, total_constraints, lambdas}`
@@ -1391,6 +1410,12 @@ whose message already names every problem and the remedy.
   in `diagnostics_errors`, the artifact reading the result's input summary, and the status route's
   non-finite walk (a NaN or Infinity corrects the job to `error`; a clean walk is cached per
   generation and selection).
+- OPM-02: `TestOneConstraintSolve` in `tests/test_optimiser_routes_real_library.py` solves a
+  5,000-quote book with one binding minimum and the node's defaults: it converges, meets its
+  bound, records its `bisection_history`, and its totals and objective equal point 0 of a
+  frontier whose range starts at that bound; a bound past the grid ends with the grid
+  warning. `tests/test_frontier_point_summary.py` and `tests/test_optimiser_solver_service.py`
+  hold each `non_convergence_reason`'s warning.
 - OPT-PC04's traces: `TestFrontierPointHistoryContract` in
   `tests/test_optimiser_routes_real_library.py` runs the real library and answers
   `/frontier/select` with `include_history` for a one-constraint point (a bisection ending on the

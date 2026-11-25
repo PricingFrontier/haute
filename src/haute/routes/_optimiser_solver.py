@@ -62,9 +62,9 @@ from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
 )
 from haute.routes._frontier_point_summary import (
-    NON_CONVERGED_WARNING,
     constraint_kinds,
     effective_bounds,
+    non_converged_warning,
 )
 from haute.routes._job_lifecycle import (
     JobLifecycle,
@@ -1185,7 +1185,12 @@ def _finalize_solve_result(
     if extra_fields:
         result_dict.update(extra_fields)
     if not solve_result.converged:
-        result_dict["warning"] = NON_CONVERGED_WARNING
+        # An online result says why (price-contour 0.11.0); a ratebook result has no reason.
+        result_dict["warning"] = non_converged_warning(
+            cast(OnlineSolveResultLike, solve_result).non_convergence_reason
+            if mode == "online"
+            else None
+        )
 
     # ── Compute efficient frontier when explicitly requested (non-fatal) ────
     frontier_data = None
@@ -1394,6 +1399,50 @@ def _finalize_solve_result(
     return True
 
 
+_HISTORY_ENTRY_KEYS = (
+    "iteration",
+    "total_objective",
+    "max_lambda_change",
+    "all_constraints_satisfied",
+    "lambdas",
+    "total_constraints",
+)
+_BISECTION_PROBE_KEYS = (
+    "phase",
+    "bracket_lo",
+    "bracket_hi",
+    "lambdas",
+    "total_objective",
+    "total_constraints",
+    "all_constraints_satisfied",
+    "accepted",
+)
+
+
+def solve_history_fields(solver_path: str, history: list[dict[str, Any]]) -> dict[str, Any]:
+    """An online solve's recorded steps as the result's fields, by how price-contour solved it.
+
+    A one-constraint solve bisected its λ: ``bisection_history`` holds its probes in the shape
+    a bisection frontier point's trace has. Any other solve ran the subgradient method:
+    ``history`` holds its iterations. Each record carries both paths' keys (price-contour
+    0.11.0, DESIGN_DECISIONS §20.2); each field keeps its own.
+    """
+    if solver_path == "bisection":
+        return {
+            "history": None,
+            "bisection_history": [
+                {"step": record["iteration"], **{key: record[key] for key in _BISECTION_PROBE_KEYS}}
+                for record in history
+            ],
+        }
+    if solver_path == "subgradient":
+        return {
+            "history": [{key: record[key] for key in _HISTORY_ENTRY_KEYS} for record in history],
+            "bisection_history": None,
+        }
+    raise RuntimeError(f"price_contour returned an online solve with solver_path {solver_path!r}")
+
+
 @require_solver_worker_context
 def _solve_online(
     ctx: SolveContext,
@@ -1461,7 +1510,7 @@ def _solve_online(
             "iterations": solve_result.iterations,
             "n_quotes": solve_result.n_quotes,
             "n_steps": solve_result.n_steps,
-            "history": solve_result.history,
+            **solve_history_fields(solve_result.solver_path, solve_result.history),
             "ratebook_cd_trace": None,
         },
         check_cancelled=check_cancelled,

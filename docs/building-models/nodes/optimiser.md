@@ -69,7 +69,7 @@ The pane opens with **SOLVER SETTINGS**:
 
 | Field | What it does |
 |---|---|
-| **Max iterations** | Maximum solver iterations. Defaults to 50. |
+| **Max iterations** | Maximum solver iterations with more than one constraint. Defaults to 50. With one constraint the solver searches that constraint's λ directly, as a frontier point does, and needs no iteration limit. |
 | **Tolerance** | How close to optimal the solution needs to be before stopping. Smaller values give more precise results but take longer. Defaults to `1e-6`. |
 | **CD iterations** | Ratebook mode: maximum coordinate descent iterations. Defaults to 10. |
 | **CD tolerance** | Ratebook mode: coordinate descent convergence tolerance. Defaults to `1e-3`. |
@@ -82,7 +82,7 @@ Below the settings:
 - Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios / quote** and **Total rows**, and **Estimated solve memory** against the memory a solve started now would be given. The memory figure is an estimate from the input's size; a warning icon marks it when it is more than the machine can give, and **Optimise** still runs: the solve stops only if it really runs out. It warns when each quote has one scenario (**Each quote has one scenario, so the optimiser has nothing to choose between. Check the Scenario Index mapping.**) or when quotes have different numbers of scenarios.
 - **Optimise** runs the solve (Ctrl+Enter from anywhere in the node's panel does the same). If anything blocks the solve, the button is disabled and a **Complete before optimising** list names each problem with a **Go to …** link to the pane that fixes it.
 - While the solve runs, the pane shows its progress and a **Stop** button.
-- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with advice, usually to increase the maximum iterations or relax the tolerance. A solve can converge and still end short of a bound, a ratebook solve above all: it then adds **1 bound breached** (or **2 bounds breached**, and so on) to that line, with a warning naming each constraint, what the solve achieved and how far it is from the bound, for example **volume 1,835.1 is 1.78% under its minimum of 1,868.27.** A failed solve shows **Optimisation failed** and the reason.
+- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with the reason: a bound beyond what the scenario grid allows, where only a wider scenario range or a looser bound helps, or, with more than one constraint, its iterations used up, where more iterations or a looser tolerance may help. A solve can converge and still end short of a bound, a ratebook solve above all: it then adds **1 bound breached** (or **2 bounds breached**, and so on) to that line, with a warning naming each constraint, what the solve achieved and how far it is from the bound, for example **volume 1,835.1 is 1.78% under its minimum of 1,868.27.** A failed solve shows **Optimisation failed** and the reason.
 
 ## The EXPORT pane
 
@@ -118,7 +118,7 @@ A finished solve opens in a results panel under the canvas. Its header shows whe
 - **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, against 1.0, the base price with no adjustment.
 - **Segments**: the mean chosen scenario value for each level of a validation or rating factor, with the shares adjusted up, down and at the edge of the range.
 - **Quotes**: the scenario value chosen for each quote, with its expected objective and constraint values.
-- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes). With a frontier point selected, it shows that point's own solve; a point found by bisection shows each λ probed within its bracket.
+- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes). A solve with one constraint, and a frontier point found by bisection, shows each λ probed within its bracket. With a frontier point selected, it shows that point's own solve.
 - **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes. On these views the header describes the sampled input instead of the solve.
 
 When the node's settings have changed since the solve, the results panel says so and offers **Re-run**.

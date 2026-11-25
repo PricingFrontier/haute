@@ -8,7 +8,9 @@ problem shapes: **online** optimisation, which picks one winning scenario per qu
 scored candidate grid, and **ratebook** optimisation, which solves banded rating factors
 (e.g. age-band, region multipliers) against portfolio-level constraints instead of per-quote
 choices. Both shapes are solved by the external `price-contour` library using a Lagrangian
-(lambda-based) constrained-optimisation approach; this component is the orchestration layer
+(lambda-based) constrained-optimisation approach (an online solve with one constraint bisects its
+lambda, as the frontier's point at that bound does, so the two are one answer; more constraints
+run the subgradient method); this component is the orchestration layer
 around that library — running it as a background job, exposing efficient-frontier exploration,
 letting a user apply/preview/save/log the result, and later re-loading a saved result so a
 pipeline can price new data with it.

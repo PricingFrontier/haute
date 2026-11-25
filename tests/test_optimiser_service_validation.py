@@ -615,8 +615,9 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     assert result["constraints"] == {"volume": pytest.approx(3.0)}
     assert result["baseline_constraints"] == {"volume": pytest.approx(3.0)}
     assert set(result["lambdas"]) == {"volume"}
-    # Every online solve records its history (Q5), one entry per iteration.
-    assert len(result["history"]) == result["iterations"]
+    # Every online solve records its steps (Q5): one constraint, its bisection's probes.
+    assert result["history"] is None
+    assert len(result["bisection_history"]) == result["iterations"]
     assert result["ratebook_cd_trace"] is None
 
     report = result["adjustments"]

@@ -505,6 +505,7 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     cd_iterations: null,
     factor_tables: {},
     history: null,
+    bisection_history: null,
     ratebook_cd_trace: null,
     warning: null,
     adjustments: null,
