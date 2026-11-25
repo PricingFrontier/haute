@@ -197,7 +197,7 @@ test.describe("the underwriter app's quotes", () => {
       await page.goto(`${again.url}/quotes/${REFERENCE}/1`)
       const refused = page.getByTestId("quote-load-error")
       await expect(refused).toContainText("The dev database doesn't match the form:")
-      await expect(refused).toContainText("Missing fields: Excess (policy.excess)")
+      await expect(refused).toContainText("Missing fields: policy.excess")
       await page.screenshot({ path: testInfo.outputPath("app-quote-refused.png") })
       const { columns } = readStore({ columns: { sql: "SELECT name FROM pragma_table_info('policy')" } })
       expect(columns.map((column) => column.name)).not.toContain("excess")

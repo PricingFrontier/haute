@@ -218,7 +218,7 @@ export async function editQuote(quote: Pick<WorkbenchAppQuote, "reference" | "op
     },
     failed: (error) => {
       const editor = beingEditedBy(error)
-      const said = editor !== null ? `${editor} is editing ${quote.label}` : appErrorMessage(error, useAppStore.getState().form, { oneLine: true })
+      const said = editor !== null ? `${editor} is editing ${quote.label}` : appErrorMessage(error, { oneLine: true })
       useToastStore.getState().addToast("error", said)
     },
     stale: (settled) => {
@@ -317,7 +317,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
     } else if (releaseMoved(error)) {
       useAppStore.getState().noteReleaseChanged()
     } else {
-      set({ error: appErrorMessage(error, useAppStore.getState().form) })
+      set({ error: appErrorMessage(error) })
     }
   }
 
@@ -636,7 +636,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
           failed: (error) =>
             set({
               status: "error",
-              loadError: appErrorMessage(error, useAppStore.getState().form),
+              loadError: appErrorMessage(error),
               refusedOpen: storeRefused(error) ? { reference, option } : null,
             }),
         })
@@ -796,7 +796,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       ] as const
       await answer(belongsTo, fetchAppQuoteActivity(quote.reference, quote.option), {
         ok: (activity) => set({ activity }),
-        failed: (error) => set({ error: `The quote's history could not be read: ${appErrorMessage(error, useAppStore.getState().form)}` }),
+        failed: (error) => set({ error: `The quote's history could not be read: ${appErrorMessage(error)}` }),
       })
     },
 

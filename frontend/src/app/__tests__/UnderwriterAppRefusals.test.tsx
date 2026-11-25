@@ -83,7 +83,7 @@ describe("UnderwriterApp's quote store refusals", () => {
 
       const listed = await screen.findByTestId("quotes-error")
       expect(listed).toHaveTextContent("The quotes could not be read: The dev database doesn't match the form:")
-      expect(listed).toHaveTextContent("Missing fields: State (policy.state)")
+      expect(listed).toHaveTextContent("Missing fields: policy.state")
       expect(screen.queryByTestId("notice-quotes-closed")).toBeNull()
 
       await act(async () => {
@@ -93,7 +93,7 @@ describe("UnderwriterApp's quote store refusals", () => {
       expect(opened.textContent).toBe(
         [
           "The quote could not be opened: The dev database doesn't match the form:",
-          "  Missing fields: State (policy.state)",
+          "  Missing fields: policy.state",
         ].join("\n"),
       )
       expect(screen.getByTestId("app-release")).toBeInTheDocument()
@@ -156,7 +156,7 @@ describe("UnderwriterApp's quote store refusals", () => {
 
     const said = await screen.findByTestId("notice-error")
     expect(said).toHaveTextContent("The dev database doesn't match the form:")
-    expect(said).toHaveTextContent("Missing fields: State (policy.state)")
+    expect(said).toHaveTextContent("Missing fields: policy.state")
     expect(screen.getByTestId("quote-line")).toBeInTheDocument()
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toHaveValue("Excavator")
     expect(window.localStorage.getItem(KEPT)).toContain("Excavator")
@@ -173,7 +173,7 @@ describe("UnderwriterApp's quote store refusals", () => {
     act(() => useWorkbenchPreviewStore.getState().setCell("equipment", 0, "item", "Excavator"))
 
     expect(await screen.findByTestId("app-pricing-error")).toHaveTextContent(
-      "Pricing failed: The dev database doesn't match the form: Missing fields: State (policy.state).",
+      "Pricing failed: The dev database doesn't match the form: Missing fields: policy.state.",
     )
     expect(screen.getByTestId("quote-line")).toBeInTheDocument()
   })

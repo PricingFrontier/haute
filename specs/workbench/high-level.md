@@ -2325,9 +2325,9 @@ Out of scope:
   whose database it is. `GET /api/app/release` says whether the whole store fits (`quotes`),
   every table and privilege, as a rollout checks it; the page does not close on it. The page
   shows a refusal where it was met, each thing wrong said once with everything it is wrong
-  of after it, a column by its label on the sheets and its table and name ("Missing fields:
-  Renewal (policy_details.is_renewal), Excess (policy.excess)", "Missing tables: drivers",
-  any other by its own words, as "Holds string, not integer: Year built (policy.year)"), and
+  of after it, a column by its table's and its name in the database ("Missing fields:
+  policy_details.is_renewal, policy.excess", "Missing tables: drivers",
+  any other by its own words, as "Holds string, not integer: policy.year"), and
   nothing more, as whoever
   reads it knows who looks after the database: the Quotes page says why where its list would
   be, and asks for it again every 10

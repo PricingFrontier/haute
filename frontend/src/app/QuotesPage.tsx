@@ -180,12 +180,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             // The list shown when Undo is pressed, which may be another than the one archived from.
             void answer([under(page)], changeAppQuote(archived.reference, archived.option, "restore", archived.version, {}), {
               ok: () => useQuoteListStore.getState().reload(),
-              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
+              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, { oneLine: true })}`),
             })
           },
         })
       },
-      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
+      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${appErrorMessage(reason, { oneLine: true })}`),
     })
   }
 
@@ -195,7 +195,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
         void useQuoteListStore.getState().reload()
         addToast("success", `Restored ${quote.label}`)
       },
-      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
+      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, { oneLine: true })}`),
     })
   }
 

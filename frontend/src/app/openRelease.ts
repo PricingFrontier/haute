@@ -46,7 +46,7 @@ export function openRelease(form: FormSpec, revision: string, release: string): 
       ({ tables, request }) => ({ tables, sample: request }),
       (error: unknown) => {
         // Tables that do not fit are named in the bar's own words, on one line.
-        if (storeMisfits(error) !== null) throw new Error(appErrorMessage(error, form, { oneLine: true }))
+        if (storeMisfits(error) !== null) throw new Error(appErrorMessage(error, { oneLine: true }))
         throw error
       },
     )
