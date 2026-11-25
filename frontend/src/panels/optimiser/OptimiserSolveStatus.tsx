@@ -10,6 +10,7 @@ import type { OptimiserPane } from "../../stores/useUIStore"
 import { withAlpha } from "../../utils/color"
 import { formatBytes } from "../../utils/formatBytes"
 import { formatDuration } from "../../utils/formatValue"
+import { breachedConstraints, breachReport } from "./constraintAttainment"
 import type { IterationSummary } from "./iterationSummary"
 
 /** One reason the solve cannot start, and the pane (with its tab label) that resolves it. */
@@ -108,6 +109,9 @@ export default function OptimiserSolveStatus({
   result,
   iterationSummary,
 }: OptimiserSolveStatusProps) {
+  // A converged solve can still end short of a bound: said where it says it converged.
+  const breach = result ? breachReport(breachedConstraints(result)) : null
+  const settled = result?.converged === true && breach === null
   return (
     <>
       {/* Staleness indicator */}
@@ -351,14 +355,40 @@ export default function OptimiserSolveStatus({
             </div>
           )}
 
+          {breach && (
+            <div
+              className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs"
+              style={{
+                background: "var(--warning-soft-strong)",
+                border: "1px solid var(--warning-border-strong)",
+              }}
+            >
+              <AlertTriangle
+                size={14}
+                className="shrink-0 mt-0.5"
+                style={{ color: "var(--warning-strong)" }}
+              />
+              <div>
+                <div className="font-semibold" style={{ color: "var(--warning-strong)" }}>
+                  {breach.status}
+                </div>
+                {breach.sentences.map((sentence) => (
+                  <div key={sentence} style={{ color: "var(--warning)", lineHeight: "1.5" }}>
+                    {sentence}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div
             className="px-3 py-2 rounded-lg text-xs space-y-1"
             style={{
-              background: result.converged
+              background: settled
                 ? "var(--banner-success-bg)"
                 : "var(--warning-soft-subtle)",
               border: `1px solid ${
-                result.converged
+                settled
                   ? "var(--banner-success-border)"
                   : "var(--warning-soft-selected)"
               }`,
@@ -366,13 +396,14 @@ export default function OptimiserSolveStatus({
           >
             <div
               style={{
-                color: result.converged
+                color: settled
                   ? "var(--banner-success-text)"
                   : "var(--warning-strong)",
               }}
             >
               {result.converged ? "Converged" : "Did not converge"}
               {iterationSummary ? ` in ${iterationSummary.long}` : ""}
+              {breach ? `, ${breach.status}` : ""}
               {result.n_quotes != null && result.n_steps != null && (
                 <>
                   {" "}({result.n_quotes.toLocaleString()} quotes, {result.n_steps} steps)

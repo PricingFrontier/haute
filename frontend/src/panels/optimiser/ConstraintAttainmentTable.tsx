@@ -8,13 +8,8 @@
 import { CheckCircle2, XCircle } from "lucide-react"
 import type { OptimiserEffectiveBound } from "../../api/types"
 import Tooltip from "../../components/Tooltip"
-import { constraintAttainmentRows, type AttainmentStatus } from "./constraintAttainment"
+import { constraintAttainmentRows, formatAttainmentValue, type AttainmentStatus } from "./constraintAttainment"
 import { LAMBDA_HELP, LAMBDA_LABEL } from "./lambdaCopy"
-
-/** Full precision to four decimals, grouped: a compact "1.01M" could hide a breach. */
-function formatAttainmentValue(value: number): string {
-  return value.toLocaleString(undefined, { maximumFractionDigits: 4 })
-}
 
 function formatSigned(text: string, value: number): string {
   return value > 0 ? `+${text}` : text

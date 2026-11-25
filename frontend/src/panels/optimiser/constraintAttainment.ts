@@ -9,7 +9,8 @@
  * in this discrete solve a positive multiplier can sit beside positive slack.
  */
 
-import type { OptimiserEffectiveBound } from "../../api/types"
+import type { OptimiserEffectiveBound, OptimiserSolveResult } from "../../api/types"
+import { effectiveConstraintBounds } from "../../utils/optimiserSolveResults"
 
 export type ConstraintKind = OptimiserEffectiveBound["kind"]
 
@@ -26,7 +27,7 @@ export interface ConstraintAttainment {
   status: AttainmentStatus
 }
 
-interface ConstraintAttainmentRow extends ConstraintAttainment {
+export interface ConstraintAttainmentRow extends ConstraintAttainment {
   name: string
   lambda: number
 }
@@ -101,4 +102,41 @@ export function constraintAttainmentRows({
       lambda: requireFinite(lambdas[name], `λ for ${name}`),
     }
   })
+}
+
+/** Full precision to four decimals, grouped: a compact "1.01M" could hide a breach. */
+export function formatAttainmentValue(value: number): string {
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 })
+}
+
+/** The bounds *result* breaches, judged as its Summary table judges them, in its order. */
+export function breachedConstraints(result: OptimiserSolveResult): ConstraintAttainmentRow[] {
+  return constraintAttainmentRows({
+    bounds: effectiveConstraintBounds(result),
+    achieved: result.constraints,
+    lambdas: result.lambdas,
+  }).filter((row) => row.status === "breached")
+}
+
+export interface BreachReport {
+  /** Said beside "Converged": "1 bound breached", "2 bounds breached". */
+  status: string
+  /** One sentence per breached bound, naming it, what was achieved and by how much. */
+  sentences: string[]
+}
+
+/** How a result says it breached *rows*' bounds; `null` when none of them is breached. */
+export function breachReport(rows: readonly ConstraintAttainmentRow[]): BreachReport | null {
+  const breached = rows.filter((row) => row.status === "breached")
+  if (breached.length === 0) return null
+  return {
+    status: `${breached.length} ${breached.length === 1 ? "bound" : "bounds"} breached`,
+    sentences: breached.map((row) => {
+      const side = row.kind === "min" ? "under its minimum" : "over its maximum"
+      const by = row.slackPct === null
+        ? ""
+        : ` ${Math.abs(row.slackPct).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+      return `${row.name} ${formatAttainmentValue(row.achieved)} is${by} ${side} of ${formatAttainmentValue(row.bound)}.`
+    }),
+  }
 }

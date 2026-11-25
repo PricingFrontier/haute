@@ -34,6 +34,7 @@ import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart, { type FrontierPointHistory, type PointHistories } from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
+import { breachedConstraints, breachReport } from "./optimiser/constraintAttainment"
 import { constraintBoundKind, isPercentBound } from "./optimiser/constraintBounds"
 import {
   assessFrontierPoint,
@@ -462,8 +463,11 @@ export default function OptimiserPreview({
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
 
   const tabs = availableTabs.map((key) => ({ key, label: OPTIMISER_VIEW_LABELS[key] }))
+  // A converged result can still end short of a bound: said where it says it converged.
+  const breach = breachReport(breachedConstraints(result))
   const statusSummary = [
     result.converged ? "Converged" : "Not converged",
+    breach?.status,
     iterationSummary?.compact,
     result.n_quotes != null ? `${result.n_quotes.toLocaleString()} quotes` : null,
   ].filter(Boolean).join(" | ")
@@ -480,7 +484,11 @@ export default function OptimiserPreview({
       nodeType={NODE_TYPES.OPTIMISER}
       onRefresh={onRefresh}
       subtitle={activeTab === "curves" || activeTab === "statistics" ? scenario.metadata : statusSummary}
-      collapsedMeta={`${result.converged ? "Converged" : "Not converged"} | Objective: ${formatNumber(result.total_objective)}`}
+      collapsedMeta={[
+        result.converged ? "Converged" : "Not converged",
+        breach?.status,
+        `Objective: ${formatNumber(result.total_objective)}`,
+      ].filter(Boolean).join(" | ")}
       data-testid="optimiser-preview-frame"
       height={height}
       onHeightChange={rememberHeight}
@@ -529,6 +537,17 @@ export default function OptimiserPreview({
             >
               <AlertCircle size={14} className="mt-0.5 shrink-0" />
               <span>{result.warning}</span>
+            </div>
+          )}
+          {breach && (
+            <div
+              role="status"
+              aria-label="Bound breached"
+              className="flex shrink-0 items-start gap-2 px-4 py-1.5 text-xs"
+              style={{ background: "var(--warning-soft)", borderBottom: "1px solid var(--warning-border)", color: "var(--warning-strong)" }}
+            >
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{breach.sentences.join(" ")}</span>
             </div>
           )}
           {result.frontier_error && (

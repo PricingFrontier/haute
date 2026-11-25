@@ -20,7 +20,6 @@ the node's default settings.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | OPM-02 | Planned | P2 | A solve with one binding constraint converges and meets its bound, as point 0 of its own frontier does. |
-| OPM-03 | Decision | P2 | A ratebook solve that ends short of a bound says so in its status and warning, not only in the Summary table. |
 
 ## Planned improvements
 
@@ -75,35 +74,3 @@ bound. A test holds the two equal.
 
 **Evidence:** `src/haute/routes/_optimiser_solver.py::_solve_online`;
 `specs/optimiser/low-level.md`; `docs/building-models/nodes/optimiser.md`.
-
-### OPM-03 — A ratebook solve that stops short of a bound says so
-**Why:** Reproduced on 11 November 2026 through the routes, on 3,000 quotes
-of 9 steps each with the factors region (four levels) and age (five), and
-one constraint: volume at least 1,868.27. The lowest step for every quote
-gives 1,997.4, so the bound can be met. With the node's defaults the solve
-ends converged after 4 passes, with no warning and a volume of 1,835.1,
-1.8% under its bound. The multiplier rises at every pass, from 47.7 to
-177.6, while the tables stop moving, and the passes end there. The sweep
-saw the same in 14 of its 23 small ratebook solves, short by 1% to 41%.
-
-The specification knows the case: feasibility is "judged by haute in both
-modes because a converged ratebook point can still breach a bound", and the
-Summary pane's table says "Breached" for the constraint. What the analyst
-gets first is a solve marked converged, with no warning and no advice,
-where an online solve that misses its bound carries both.
-
-**Plan:** Decide what a ratebook solve owes a bound it could meet. At the
-least, a solve that ends with a bound breached says so where it says
-converged, naming the constraint and the shortfall as the Summary does.
-Whether the passes should go on while the multiplier is still moving is the
-library's question.
-
-**Acceptance:** A ratebook solve that ends 1.8% under a minimum it could
-meet shows the breach in its status and its warning, not only in the
-Summary table.
-
-**Dependencies:** None in Haute. The stopping rule is price-contour's.
-
-**Evidence:** `src/haute/routes/_optimiser_solver.py::_solve_ratebook`;
-`specs/frontend-modelling-optimiser-ui/high-level.md`;
-`docs/building-models/nodes/optimiser.md`.
