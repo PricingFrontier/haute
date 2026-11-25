@@ -198,6 +198,8 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
   max: null,
   options: [],
   options_source: null,
+  validation: false,
+  validation_message: "",
   index: null,
   help: "",
   placeholder: "",
@@ -427,6 +429,23 @@ describe("problems", () => {
     const single = setSchemaTableRows(spec, "breakdown", "one")
     expect(tableIndex(single.schema.tables[0])).toBeNull()
     expect(single.schema.tables[0].outputs.map((c) => c.name)).toEqual(["quote_reference", "quote_option", "peril", "share"])
+  })
+
+  it("drops a validation and its message from a column retyped or moved to the inputs", () => {
+    // A validation is a True/false output: retyped, it is one no more and holds no message.
+    const checked = asOutputs(withTable(column("ok", { type: "bool", validation: true, validation_message: "Too low" })))
+    expect(changeSchemaColumnType(checked, "t", "ok", "str").schema.tables[0].outputs[0]).toMatchObject({ type: "str", validation: false, validation_message: "" })
+    // Moved to the inputs, it is one no more either.
+    expect(moveSchemaColumn(checked, "t", "ok", "inputs", 0).schema.tables[0].inputs.find((c) => c.name === "ok")).toMatchObject({ name: "ok", validation: false, validation_message: "" })
+  })
+
+  it("names a validation that is not a True/false output, one required too, and a message on a column that is none", () => {
+    const ok = column("ok", { type: "bool", validation: true, validation_message: "Too low" })
+    expect(messages(asOutputs(withTable(ok)))).toEqual([])
+    expect(messages(withTable(ok))).toEqual(['Column "ok" in Table "t" is a validation, which only a True/false output can be'])
+    expect(messages(asOutputs(withTable({ ...ok, type: "str" })))).toEqual(['Column "ok" in Table "t" is a validation, which only a True/false output can be'])
+    expect(messages(asOutputs(withTable({ ...ok, required: true })))).toEqual(['Column "ok" in Table "t" is a validation, which takes no required: it must hold true'])
+    expect(messages(asOutputs(withTable({ ...ok, validation: false })))).toEqual([`Column "ok" in Table "t" holds a validation's message and is no validation`])
   })
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {

@@ -14,7 +14,8 @@ const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, 
 
 /**
  * A column's label, group and help; whether it needs a value before a quote is marked final,
- * in an input or an output table; in an input table, what a new quote starts with in it (in a
+ * in an input or an output table, or, a True/false output, whether it is a validation, with
+ * the message an underwriter reads while it fails; in an input table, what a new quote starts with in it (in a
  * one-row table), what an empty cell shows and the other rules its value must meet; for a
  * number, how the sheets show it. The index's kind is chosen here too. Always filled, it takes no Required, range or
  * default: a typed one among the inputs takes what an empty cell shows, an index of values
@@ -37,8 +38,11 @@ export function ColumnDetails({
 }) {
   // The index takes no rules, nor does a column the app sets.
   const input = !isOutputColumn(table, column) && column.index === null && !managed
+  // A True/false output may be a validation, which the pipeline fills and marking a quote
+  // final needs true: it takes Validation in Required's place.
+  const validatable = isOutputColumn(table, column) && column.type === "bool" && column.index === null && !managed
   // Required, which marking a quote final checks, an output takes too.
-  const requirable = column.index === null && !managed
+  const requirable = column.index === null && !managed && !(validatable && column.validation)
   const takesText = column.type !== "bool" && column.type !== "date"
   // What an empty cell shows: an input's, a typed index's among them.
   const placeholder = takesText && (input || (column.index === "typed" && !isOutputColumn(table, column)))
@@ -154,6 +158,29 @@ export function ColumnDetails({
         <>
           <span style={{ color: "var(--text-muted)" }}>Required</span>
           <ConfigCheckbox label={`${column.name} is required`} checked={column.required} onChange={(required) => set({ required })} />
+        </>
+      )}
+      {validatable && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Validation</span>
+          <ConfigCheckbox
+            label={`${column.name} is a validation`}
+            checked={column.validation}
+            // A validation is required already; one no longer a validation holds no message.
+            onChange={(validation) => set(validation ? { validation, required: false } : { validation, validation_message: "" })}
+          />
+        </>
+      )}
+      {validatable && column.validation && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Message</span>
+          <CommittedTextField
+            aria-label={`Validation message of ${column.name}`}
+            value={column.validation_message}
+            onCommit={(message) => set({ validation_message: message })}
+            className={`${COMPACT_FIELD_CLASS} w-full`}
+            style={INPUT_STYLE}
+          />
         </>
       )}
       {input && isNumeric(column.type) && (

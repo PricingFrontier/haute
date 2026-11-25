@@ -252,7 +252,7 @@ def test_a_quote_not_ready_to_be_final_is_a_note_and_a_failed_finalising_fails_t
     spec = _sheets(project, _export([_cell("pricing", "premium", "B2")]))
 
     def not_ready(*_args: Any, **_kwargs: Any) -> Any:
-        raise QuoteNotReadyError("Fill in State first.", missing=["policy.state"])
+        raise QuoteNotReadyError("Fill in State first.", failing=["policy.state needs a value"])
 
     monkeypatch.setattr(QuoteBook, "finalise", not_ready)
     noted = _run(project, spec, [("Fleet", _request(spec))])

@@ -245,7 +245,7 @@ async def _answered(
             current = quote_model(await run_in_threadpool(now.get, *identity)).model_dump()
         raise _refusal(409, exc, quote=current) from None
     except QuoteNotReadyError as exc:
-        raise _refusal(409, exc, missing=exc.missing) from None
+        raise _refusal(409, exc, failing=exc.failing) from None
     except WriteSupersededError as exc:
         raise _refusal(
             409,

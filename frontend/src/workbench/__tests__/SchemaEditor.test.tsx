@@ -51,6 +51,8 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
   max: null,
   options: [],
   options_source: null,
+  validation: false,
+  validation_message: "",
   index: null,
   help: "",
   placeholder: "",
@@ -768,6 +770,32 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of on" }))
     expect(screen.getByRole("textbox", { name: "Help of on" })).toBeInTheDocument()
     expect(screen.queryByRole("textbox", { name: "Placeholder of on" })).not.toBeInTheDocument()
+  })
+
+  it("offers Validation on a True/false output in Required's place, with its message, and on no other column", () => {
+    load(form(POLICY, table("pricing", { outputs: [column("premium", { type: "float" }), column("premium_ok", { type: "bool", required: true })] })))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of premium_ok" }))
+    expect(screen.queryByRole("textbox", { name: "Validation message of premium_ok" })).toBeNull()
+    fireEvent.click(screen.getByRole("checkbox", { name: "premium_ok is a validation" }))
+    // A validation is required already: Required goes, unticked.
+    expect(current().schema.tables[1].outputs[1]).toMatchObject({ validation: true, required: false })
+    expect(screen.queryByRole("checkbox", { name: "premium_ok is required" })).toBeNull()
+    expect(screen.getByTestId("schema-column-premium_ok-summary")).toHaveTextContent(/^validation$/)
+    commit(screen.getByRole("textbox", { name: "Validation message of premium_ok" }), "The premium is below the minimum")
+    expect(current().schema.tables[1].outputs[1].validation_message).toBe("The premium is below the minimum")
+
+    // Unticked, it holds no message and takes Required again.
+    fireEvent.click(screen.getByRole("checkbox", { name: "premium_ok is a validation" }))
+    expect(current().schema.tables[1].outputs[1]).toMatchObject({ validation: false, validation_message: "" })
+    expect(screen.getByRole("checkbox", { name: "premium_ok is required" })).toBeInTheDocument()
+
+    // An output of another type, and an input, is no validation.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of premium" }))
+    expect(screen.queryByRole("checkbox", { name: "premium is a validation" })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    expect(screen.queryByRole("checkbox", { name: "state is a validation" })).toBeNull()
   })
 
   it("offers Required on an output as on an input, and keeps it as an input is moved to the outputs", () => {

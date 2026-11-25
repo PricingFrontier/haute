@@ -293,8 +293,8 @@ export interface Refusal {
 
 /**
  * The places a refusal names as stopping it: a save's values not of their columns' types
- * (`quote_values_invalid`), or the required fields without a value that kept a quote from
- * being marked final (`quote_not_ready`); null for any other, and for one naming none.
+ * (`quote_values_invalid`), or the checks failed that kept a quote from being marked
+ * final, each as the server says it (`quote_not_ready`); null for any other, and for one naming none.
  */
 export function refusalOf(error: unknown): Refusal | null {
   const detail = apiErrorRawDetail(error)
@@ -308,7 +308,7 @@ export function refusalOf(error: unknown): Refusal | null {
     return places.length === 0 ? null : { of: "save", places }
   }
   if (code === "quote_not_ready") {
-    const places = listed("missing").filter((field): field is string => typeof field === "string")
+    const places = listed("failing").filter((field): field is string => typeof field === "string")
     return places.length === 0 ? null : { of: "final", places }
   }
   return null

@@ -77,12 +77,14 @@ from haute._quote_store._store import (
     store_mismatch,
     writing,
 )
+from haute._workbench_checks import check_text, quote_checks
 from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
     QUOTE_DETAILS_NAME,
     FormSpec,
 )
+from haute._workbench_visibility import visibility
 
 #: A quote's stage: draft, which takes saves, or final.
 Stage = Literal["draft", "final"]
@@ -372,10 +374,6 @@ def _check_name(details: Mapping[str, Any]) -> None:
 def _server_key() -> str:
     """An operation key for a write the page names none for."""
     return f"server-{uuid.uuid4().hex}"
-
-
-def _blank(value: Any) -> bool:
-    return value is None or (isinstance(value, str) and not value.strip())
 
 
 class QuoteBook:
@@ -1252,7 +1250,7 @@ class QuoteBook:
         self, reference: str, option: int, *, version: int, actor: str, release: str
     ) -> AppQuote:
         """Mark the quote final: it must be a draft priced on *release*, the release running,
-        with a value in every required input and output column."""
+        passing every check of its form (``haute._workbench_checks.quote_checks``)."""
         with self._engine.begin() as connection:
             quote = self._get(connection, reference, option)
             # A quote moved on, archived or final is refused by the swap below, saying which.
@@ -1265,13 +1263,11 @@ class QuoteBook:
                         else f"{quote.label} was saved on release {quote.priced_release}, not "
                         f"this one, {release}: save it again before marking it final."
                     )
-                missing = self._missing(self._rows(connection, reference, option))
-                if missing:
+                failing = self._failing(self._rows(connection, reference, option))
+                if failing:
                     raise QuoteNotReadyError(
-                        f"{quote.label} needs a value in "
-                        + ", ".join(missing)
-                        + " before it is marked final.",
-                        missing=missing,
+                        f"{quote.label} cannot be marked final yet: " + "; ".join(failing) + ".",
+                        failing=failing,
                     )
         return self._change(
             reference,
@@ -1284,25 +1280,16 @@ class QuoteBook:
             stage="draft",
         )
 
-    def _missing(self, rows: Mapping[str, Rows]) -> list[str]:
-        """Each required column without a value, as ``table.column`` (``table row N.column`` in
-        a many-row table): every row's, a table without rows passing; text of spaces alone is
-        empty, and zero and false are values."""
-        missing: list[str] = []
-        for table in self._form.data_schema.tables:
-            required = [column for column in table.columns if column.required]
-            if not required:
-                continue
-            for row in rows.get(table.name, []):
-                for column in required:
-                    if _blank(row.get(column.name)):
-                        where = (
-                            f"{table.name} row {row[table.index.name]}"
-                            if table.index is not None
-                            else table.name
-                        )
-                        missing.append(f"{where}.{column.label or column.name}")
-        return missing
+    def _failing(self, rows: Mapping[str, Rows]) -> list[str]:
+        """What each check the quote's stored *rows* fail asks for, in the checks' order; the
+        rules of an input the sheets hide for the quote's values are not checked."""
+        values, _ = cells(self._form, rows, self._schema.kept)
+        hidden = visibility(self._form, values).hidden
+        return [
+            check_text(self._form, check)
+            for check in quote_checks(self._form, rows, hidden)
+            if not check.passed
+        ]
 
     def record_export(self, reference: str, option: int, *, version: int, actor: str) -> None:
         """Record in the quote's activity that *actor* exported it at *version*, which moves

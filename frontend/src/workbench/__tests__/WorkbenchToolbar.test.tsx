@@ -50,7 +50,7 @@ const form: FormSpec = {
         name: "policy",
         rows: "one",
         outputs: [],
-        inputs: [{ name: "limit", type: "str", label: "", required: false, min: null, max: null, options: [], options_source: null, index: null, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
+        inputs: [{ name: "limit", type: "str", label: "", required: false, min: null, max: null, options: [], options_source: null, validation: false, validation_message: "", index: null, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
       },
     ],
   },
@@ -196,11 +196,32 @@ describe("WorkbenchToolbar", () => {
     expect(useWorkbenchTestQuotesStore.getState().open).toBe(false)
   })
 
+  it("has Validation, plain and disabled while building, saying in Preview whether the sample would be marked final", () => {
+    const required: FormSpec = structuredClone(form)
+    required.schema.tables[0].inputs[0].required = true
+    useWorkbenchFormStore.setState({ form: required })
+    renderToolbar()
+    const building = screen.getByRole("button", { name: "Validation" })
+    expect(building).toBeDisabled()
+    expect(building.style.outline).toBe("")
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    const failing = screen.getByRole("button", { name: "Validation (1)" })
+    expect(failing).toHaveAttribute("data-state", "failing")
+    fireEvent.click(failing)
+    expect(screen.getByTestId("validation-failing")).toHaveTextContent("policy · Limit Needs a value")
+
+    cleanup()
+    useWorkbenchFormStore.setState({ form: { ...required, sample: { policy: [{ limit: "5m" }] } } })
+    renderToolbar()
+    expect(screen.getByRole("button", { name: "Validation" })).toHaveAttribute("data-state", "passing")
+  })
+
   it("keeps the same controls in both modes, in the same places", () => {
     const controls = () => within(screen.getByTestId("workbench-toolbar-actions")).getAllByRole("button").map((button) => button.textContent)
     renderToolbar()
     const building = controls()
-    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display", "Reset", "Test quotes"])
+    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display", "Reset", "Test quotes", "Validation"])
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     expect(controls()).toEqual(building)

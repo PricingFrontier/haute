@@ -872,6 +872,13 @@ class SchemaColumn(_Strict):
     #: in when picked or refreshed, and read again when the underwriter app is built. None
     #: while they are typed.
     options_source: OptionsSource | None = None
+    #: Whether it is a validation: a True/false output the pipeline fills, true where the
+    #: quote passes, which a quote must hold true to be marked final
+    #: (``haute._workbench_checks``). It takes no ``required``, which it is already.
+    validation: bool = False
+    #: What an underwriter is told while the validation fails; empty for none. Only a
+    #: validation holds one.
+    validation_message: str = ""
     #: How the table's index gets its values, which marks the column as its index; None for
     #: any other column. The index is the key of a many-row table's rows after the quote's
     #: identity, an Integer or Text. An index of ``values`` gives the table a row for each of
@@ -986,6 +993,24 @@ class SchemaTable(_Strict):
                     "outputs alone, whose index is among its outputs"
                 )
             _check_index(f"{self.name}.{column.name}", column)
+        return self
+
+    @model_validator(mode="after")
+    def _check_validations(self) -> SchemaTable:
+        """A validation is a True/false output, never required as well, and only a
+        validation holds a validation's message."""
+        for column in self.columns:
+            where = f"{self.name}.{column.name}"
+            if not column.validation:
+                if column.validation_message:
+                    raise ValueError(f"{where} holds a validation's message and is no validation")
+                continue
+            if column.type != "bool" or not self.is_output(column.name):
+                raise ValueError(f"{where} is a validation, which only a True/false output can be")
+            if column.required:
+                raise ValueError(
+                    f"{where} is a validation, which takes no required: it must hold true"
+                )
         return self
 
 

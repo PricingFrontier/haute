@@ -1,7 +1,7 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
  * to Quotes, its reference and option, name and stage, Save and Mark final or Amend,
- * History, the zoom, and why it has no price), a line of who saved it,
+ * Validation, History, the zoom, and why it has no price), a line of who saved it,
  * where it came from and who it is with, and the notices of
  * anything that stands in the way. The quote is priced as it is typed. Values not saved are
  * kept in the browser and leaving with them asks first.
@@ -21,6 +21,7 @@ import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibi
 import { QUOTE_DETAILS } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
+import ValidationButton from "../workbench/ValidationButton"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { EDIT_RENEW_MS, fullTime, QUOTES_RECHECK_MS, valuesKey } from "./quoteValues"
@@ -260,7 +261,8 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         : "This quote does not take changes as it is"
   const saveTitle = closed ? closedWhy : !typed ? "Type the quote first" : (unkeyed ?? "Save the quote (Ctrl+S)")
 
-  // Whether each required field holds a value is the server's to say as the quote is marked final.
+  // Whether the quote passes its checks is the server's to say as it is marked final;
+  // Validation says what it would say, of what the sheets hold.
   const finalBlock = !editor
     ? "Changing quotes needs the app's edit role"
     : quote === null
@@ -365,6 +367,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           </ToolbarButton>
         </ToolbarColumn>
       )}
+      <ToolbarColumn role="group" aria-label="Validation">
+        <ValidationButton form={form} values={values} tables={priced && price !== null ? price.tables : null} disabled={!ready} />
+      </ToolbarColumn>
       <ToolbarColumn role="group" aria-label="History">
         <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
           History
@@ -521,7 +526,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {refusal !== null && (
         <Notice tone="danger" testId={refusal.of === "save" ? "notice-invalid" : "notice-not-ready"} onDismiss={() => dismiss("refusal")}>
-          {refusal.of === "save" ? "Not saved, as these values are not of their columns' types: " : "Not marked final, as these have no value: "}
+          {refusal.of === "save" ? "Not saved, as these values are not of their columns' types: " : "Not marked final: "}
           <Places places={refusal.places} />
         </Notice>
       )}

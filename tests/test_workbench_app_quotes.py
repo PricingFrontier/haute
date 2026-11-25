@@ -661,7 +661,7 @@ def test_a_new_quote_leaving_a_required_detail_empty_is_made_and_saved(
         assert page.save(quote, values=blank).status_code == 200
         not_ready = page.change({**quote, "version": 2}, "final")
         assert not_ready.status_code == 409
-        assert not_ready.json()["detail"]["missing"] == ["quote_details.insured"]
+        assert not_ready.json()["detail"]["failing"] == ["quote_details.insured needs a value"]
 
 
 def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: Page) -> None:

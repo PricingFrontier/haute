@@ -518,6 +518,9 @@ const INPUT_ONLY_RULES: Pick<SchemaColumn, "min" | "max" | "options" | "options_
   default_value: "",
 }
 
+/** What only a True/false output takes, each as a column without it holds it. */
+const NO_VALIDATION: Pick<SchemaColumn, "validation" | "validation_message"> = { validation: false, validation_message: "" }
+
 /**
  * Move the table at `from` in the schema to `to`; Haute's quote_details table, first, stays
  * first: it is not moved, and nothing is moved above it. A move to where it is changes nothing.
@@ -707,7 +710,8 @@ const fixedHead = (table: SchemaTable, block: Block): number => {
  * and the index after it stay where they are, nothing goes above them, and the index is
  * never moved by this, only with the blocks (`withIndexAsNeeded`). A column reaching the
  * outputs loses what only an input takes (`INPUT_ONLY_RULES`: its rules but Required and
- * its default) and its values in the sample, which only what is typed takes. Then the table
+ * its default) and its values in the sample, which only what is typed takes; one reaching
+ * the inputs loses its validation and its message (`NO_VALIDATION`). Then the table
  * holds its index as the server holds it (`withIndexAsNeeded`), and the identity heads its first block
  * (`withIdentityPlaced`), so a table whose last typed input moves to its outputs has no
  * inputs left, the identity and then its index heading its outputs: Control flow 18.
@@ -726,6 +730,7 @@ export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: stri
       Object.assign(column, INPUT_ONLY_RULES)
       for (const row of draft.sample[tableId] ?? []) delete row[columnId]
     }
+    if (own !== block && block === "inputs") Object.assign(column, NO_VALIDATION)
     held[block].splice(at, 0, column)
     settleBlocks(draft, tableId)
   })
@@ -781,7 +786,8 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
  * Change a column's type, dropping the rules the new type cannot have: the range and the
  * number format of a column no longer a number, and the allowed values of one now a tick
  * box or a date, with the params file they came from, which would
- * otherwise still rule its cells; and the default of one that
+ * otherwise still rule its cells; the validation, with its message, of one no longer a
+ * tick box; and the default of one that
  * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
  * becomes a date while its default is not a day, which a date's box cannot show. The quote's
  * identity keeps its types, and the index is an Integer or Text alone (`INDEX_TYPES`), an
@@ -800,6 +806,7 @@ export const changeSchemaColumnType = (
         const { default_value: value } = column
         if ((type === "bool") !== (column.type === "bool")) column.default_value = ""
         else if (type === "date" && typeof value === "string" && !isDay(value.trim())) column.default_value = ""
+        if (type !== "bool") Object.assign(column, NO_VALIDATION)
         column.type = type
         if (type !== "int" && type !== "float") {
           column.min = null
@@ -3324,6 +3331,14 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       }
       columnNames.add(column.name)
       for (const problem of storeColumnProblems(table, column, folded)) problems.push({ tableId: table.name, message: `${columnName} ${problem}` })
+      // As the server's `_check_validations` holds a validation.
+      if (column.validation && (column.type !== "bool" || !isOutputColumn(table, column))) {
+        problems.push({ tableId: table.name, message: `${columnName} is a validation, which only a True/false output can be` })
+      } else if (column.validation && column.required) {
+        problems.push({ tableId: table.name, message: `${columnName} is a validation, which takes no required: it must hold true` })
+      } else if (!column.validation && column.validation_message !== "") {
+        problems.push({ tableId: table.name, message: `${columnName} holds a validation's message and is no validation` })
+      }
       if (isOutputColumn(table, column) || column.index) continue
       if (!takesOptions(column.type) && column.options.length > 0) {
         const kind = column.type === "bool" ? "a tick box" : "a date"

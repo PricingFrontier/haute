@@ -127,10 +127,13 @@ small mark beside the label on the sheets; for an Integer or a Decimal, its **fo
 the Explore pivot offers them; and, for an input, its **default**, its
 **placeholder**, what an empty cell shows (any type but True/false and Date), and the
 rules an underwriter's value must meet: required, a range for a number, the allowed
-values. A number shows in its format wherever the sheets show it, and in its default, a
+values. An output can be required too. A True/false output has **Validation** in
+Required's place: tick it to make the column a check the pipeline answers, and type the
+**message** an underwriter reads while it fails (see [Validation](#validation)). A number
+shows in its format wherever the sheets show it, and in its default, a
 percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
 or the default it shows as typed, and what is typed is what is saved and priced. To the
-right of each column's name, a line sums up what is set: required, its range and default,
+right of each column's name, a line sums up what is set: required or validation, its range and default,
 shown in its format, its allowed values, and a number's format and decimal places.
 
 **Where it's used**, the eye beside a column, lists the sheets that use it, each with the
@@ -740,7 +743,7 @@ when a section above them opens or closes the sheet scrolls to keep their place.
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
 priced, as if they had never been typed, for the sample priced in Preview (and what the
 Workbench Input's previews run on) and for a quote in the underwriter app, and a hidden required
-cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
+cell is never marked, nor do a hidden cell's rules stop a quote being marked final. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
 holds, and a value only a hidden component or a hidden field takes is left out even when a
 Chart that shows plots it. A Heading takes nothing either; it just hides and shows. A
@@ -811,6 +814,35 @@ no Workbench Output on the pipeline, a value that does not fit its column — th
 says why, as it does when the pipeline returns output rows that do not fit their table's
 rows (an index value missing, repeated or on no row). A table's outputs with nothing connected, or an
 output the pipeline doesn't fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
+
+### Validation
+
+A quote can be saved whatever its cells hold. It can be marked final only once it passes
+every check the schema sets:
+
+- each column marked **Required**, input or output, holds a value;
+- each number with a **range** is within it;
+- each column with **allowed values** holds one of them;
+- each **validation** is true.
+
+A validation is a True/false output column that the pipeline fills: true where the quote
+passes, false where it does not. Use one for any condition of your own, such as a premium
+at or above its minimum or a schedule's total within the line. Add the column to an output
+table, tick **Validation** in its details and type its message, then fill it in the
+pipeline as you fill any output, for example with a step that compares the premium with
+the minimum. A validation the pipeline leaves empty fails, so a column nothing fills stops
+every quote. In a table with many rows, every row must pass, and a table with no rows
+passes.
+
+A required cell, a range and allowed values are not checked on a cell the sheets hide for
+the quote, as nobody could fill it in. A validation is always checked, whether or not a
+sheet shows it.
+
+**Validation** in the toolbar is outlined green while the sample passes every check and
+red while it fails any, with the number failing. Press it to list the checks, those
+failing first, each by its table and column with what it asks for, the rows failing in a
+table with many rows, and a failing validation's message. An output's checks fail until
+the sample is priced. The underwriter app's quote has the same button.
 
 ### Test quotes
 
@@ -1259,10 +1291,14 @@ after: a `quote_name` cell on the sheets is read only), its stage, and:
   value is not of its column's type, naming each one; a required value left empty, or a
   value outside its range, saves.
 - **Mark final** makes the quote the final quotation, once it is saved with a price of the
-  running release and every column the analyst made required, input or output, holds a
-  value; otherwise the app names each one that does not. A final quote cannot be saved until
+  running release and passes every check the analyst set: required columns, ranges,
+  allowed values and validations (see [Validation](#validation)). Otherwise the app names
+  each check it fails. A final quote cannot be saved until
   someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
   replaces the final quotation.
+- **Validation** is outlined green while the quote on the sheets passes every check and
+  red while it fails any, with the number failing; press it to list what passes and what
+  fails. It reads what is on the sheets now, saved or not.
 - **History**: the handover note, the quotes it came from or that were made from it, and
   what was done to the quote, by whom and when, with the reasons given for amending it.
 

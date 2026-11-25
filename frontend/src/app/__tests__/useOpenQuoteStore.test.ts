@@ -633,20 +633,20 @@ describe("useOpenQuoteStore", () => {
     expect([store().quote?.stage, store().base, store().baseline]).toEqual(["draft", 3, valuesKey(VALUES)])
   })
 
-  it("names each required field Mark final was refused for, the quote left as it was", async () => {
+  it("says each check Mark final was refused for, the quote left as it was", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(changeAppQuote).mockRejectedValue(
       new ApiError("HTTP 409", 409, "not ready", {}, {
-        message: "Q-000001/1 needs a value in policy.Drivers, equipment row 3.Value before it is marked final.",
+        message: "Q-000001/1 cannot be marked final yet: policy.Drivers needs a value; equipment row 3.Value must be at least 1.",
         error_code: "quote_not_ready",
-        missing: ["policy.Drivers", "equipment row 3.Value"],
+        failing: ["policy.Drivers needs a value", "equipment row 3.Value must be at least 1"],
       }),
     )
     await store().openQuote("Q-000001", 1, "edit")
 
     expect(await store().change("final", {})).toBeNull()
 
-    expect(store()).toMatchObject({ refusal: { of: "final", places: ["policy.Drivers", "equipment row 3.Value"] }, error: null, base: 1 })
+    expect(store()).toMatchObject({ refusal: { of: "final", places: ["policy.Drivers needs a value", "equipment row 3.Value must be at least 1"] }, error: null, base: 1 })
     expect(store().quote?.stage).toBe("draft")
     store().dismiss("refusal")
     expect(store().refusal).toBeNull()

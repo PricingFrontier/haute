@@ -484,7 +484,14 @@ def test_mark_final_needs_a_price_of_the_running_release_and_every_required_valu
         book.finalise("A-1", 1, version=priced.version, actor=ANA, release="release-2")
     with pytest.raises(QuoteNotReadyError) as not_ready:
         book.finalise("A-1", 1, version=priced.version, actor=ANA, release=RELEASE)
-    assert not_ready.value.missing == ["policy.Drivers", "premium.Total premium"]
+    assert not_ready.value.failing == [
+        "policy.Drivers needs a value",
+        "premium.Total premium needs a value",
+    ]
+    assert str(not_ready.value) == (
+        "A-1/1 cannot be marked final yet: policy.Drivers needs a value; "
+        "premium.Total premium needs a value."
+    )
 
     ready = save(book, priced)
     final = book.finalise("A-1", 1, version=ready.version, actor=JO, release=RELEASE)
@@ -498,14 +505,14 @@ def test_mark_final_needs_a_price_of_the_running_release_and_every_required_valu
         (
             [{"reg": "A", "value": "1"}, {"reg": "B", "value": "2"}, {"reg": "C"}],
             False,
-            ["vehicles row 3.Value"],
+            ["vehicles row 3.Value needs a value"],
         ),
         # A table without rows passes.
         ([], False, []),
         # Zero is a value.
         ([{"reg": "A", "value": "0"}], False, []),
         # A required True/false output holding null refuses it; false passes.
-        ([{"reg": "A", "value": "1"}], None, ["premium.Referred"]),
+        ([{"reg": "A", "value": "1"}], None, ["premium.Referred needs a value"]),
     ],
     ids=["a row empty", "no rows", "zero", "a null tick"],
 )
@@ -519,7 +526,7 @@ def test_a_required_column_holds_a_value_in_every_row(
     if missing:
         with pytest.raises(QuoteNotReadyError) as not_ready:
             book.finalise("A-1", 1, version=quote.version, actor=ANA, release=RELEASE)
-        assert not_ready.value.missing == missing
+        assert not_ready.value.failing == missing
     else:
         assert (
             book.finalise("A-1", 1, version=quote.version, actor=ANA, release=RELEASE).stage
@@ -533,7 +540,164 @@ def test_text_of_spaces_alone_is_no_value(book: QuoteBook) -> None:
 
     with pytest.raises(QuoteNotReadyError) as not_ready:
         book.finalise("A-1", 1, version=quote.version, actor=ANA, release=RELEASE)
-    assert not_ready.value.missing == ["policy.Region"]
+    assert not_ready.value.failing == ["policy.Region needs a value"]
+
+
+#: A form whose columns hold every kind of rule: a range, allowed values, a required input
+#: the sheets show for the north alone, and a validation the pipeline fills.
+RULED = with_quote_details(
+    FormSpec.model_validate(
+        {
+            "name": PROJECT,
+            "schema": {
+                "tables": [
+                    {
+                        "name": "policy",
+                        "rows": "one",
+                        "inputs": [
+                            column("region", label="Region", options=["north", "south"]),
+                            column("age", "int", label="Age", min=17, max=99),
+                            column("trade", label="Trade", required=True),
+                        ],
+                        "outputs": [
+                            column("premium", "float"),
+                            column(
+                                "premium_ok",
+                                "bool",
+                                label="Premium check",
+                                validation=True,
+                                validation_message="The premium is below the minimum",
+                            ),
+                        ],
+                    }
+                ]
+            },
+            "pages": [
+                {
+                    "id": "p",
+                    "title": "Sheet 1",
+                    "width": 1280,
+                    "sections": [
+                        {
+                            "id": "s",
+                            "title": "s",
+                            "height": 400,
+                            "widgets": [
+                                {
+                                    "id": "w_policy",
+                                    "name": "w_policy",
+                                    "type": "collection",
+                                    "x": 0,
+                                    "y": 0,
+                                    "w": 720,
+                                    "h": 120,
+                                    "fields": [
+                                        {"table": "policy", "column": "region"},
+                                        {"table": "policy", "column": "age"},
+                                    ],
+                                },
+                                {
+                                    "id": "w_trade",
+                                    "name": "w_trade",
+                                    "type": "collection",
+                                    "x": 0,
+                                    "y": 140,
+                                    "w": 720,
+                                    "h": 120,
+                                    "fields": [{"table": "policy", "column": "trade"}],
+                                    "show_when": {
+                                        "conditions": [
+                                            {
+                                                "table": "policy",
+                                                "column": "region",
+                                                "op": "equals",
+                                                "values": ["north"],
+                                            }
+                                        ]
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+)
+
+
+@pytest.fixture
+def ruled(store: Target) -> Iterator[QuoteBook]:
+    store.make(RULED)
+    with open_book(
+        store.url,
+        RULED,
+        environment=store.environment,
+        haute_version=HAUTE,
+        clock=Clock(),
+        sign_in=store.sign_in,
+    ) as opened:
+        yield opened
+
+
+def ruled_values(**policy: Any) -> dict[str, Any]:
+    return {"quote_details": [{"quote_name": "Fleet"}], "policy": [policy]}
+
+
+def ruled_document(premium_ok: Any) -> dict[str, Any]:
+    return {"policy": {"premium": 100.0, "premium_ok": premium_ok}}
+
+
+def ruled_quote(book: QuoteBook, premium_ok: Any, **policy: Any) -> Any:
+    """A quote of the ruled form saved with *policy* typed and the validation as priced."""
+    typed = ruled_values(**policy)
+    return save(book, make(book, values=typed), values=typed, document=ruled_document(premium_ok))
+
+
+def test_mark_final_is_refused_naming_each_range_allowed_value_and_validation_failed(
+    ruled: QuoteBook,
+) -> None:
+    # East typed over the sheet's choices, as an import or an older form leaves a value.
+    quote = ruled_quote(ruled, False, region="east", age="16")
+
+    with pytest.raises(QuoteNotReadyError) as not_ready:
+        ruled.finalise("A-1", 1, version=quote.version, actor=ANA, release=RELEASE)
+
+    assert not_ready.value.failing == [
+        "policy.Region must be one of its allowed values",
+        "policy.Age must be from 17 to 99",
+        "policy.Premium check: The premium is below the minimum",
+    ]
+    assert ruled.get("A-1", 1).stage == "draft"
+
+
+def test_a_validation_the_pipeline_leaves_unfilled_refuses_mark_final(ruled: QuoteBook) -> None:
+    quote = ruled_quote(ruled, None, region="south", age="40")
+
+    with pytest.raises(QuoteNotReadyError) as not_ready:
+        ruled.finalise("A-1", 1, version=quote.version, actor=ANA, release=RELEASE)
+
+    assert not_ready.value.failing == ["policy.Premium check: The premium is below the minimum"]
+
+
+def test_a_required_input_the_sheets_hide_for_the_quote_does_not_stop_mark_final(
+    ruled: QuoteBook,
+) -> None:
+    # Trade shows for the north alone: required there, and nobody's to fill in the south.
+    north = ruled_quote(ruled, True, region="north", age="40")
+    with pytest.raises(QuoteNotReadyError) as not_ready:
+        ruled.finalise("A-1", 1, version=north.version, actor=ANA, release=RELEASE)
+    assert not_ready.value.failing == ["policy.Trade needs a value"]
+
+    south = save(
+        ruled,
+        north,
+        values=ruled_values(region="south", age="40"),
+        document=ruled_document(True),
+    )
+
+    final = ruled.finalise("A-1", 1, version=south.version, actor=ANA, release=RELEASE)
+    assert final.stage == "final"
 
 
 def test_a_final_quote_takes_no_save_until_it_is_amended_with_a_reason(

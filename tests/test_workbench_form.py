@@ -56,6 +56,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "max": None,
         "options": [],
         "options_source": None,
+        "validation": False,
+        "validation_message": "",
         "index": None,
         "help": "",
         "placeholder": "",
@@ -1546,6 +1548,26 @@ KEY_REFUSALS = [
         },
         "t.site is an index without a row for each value, so it takes no allowed values",
         id="allowed values on a typed index",
+    ),
+    pytest.param(
+        {"inputs": [column("ok", "bool", validation=True)]},
+        "t.ok is a validation, which only a True/false output can be",
+        id="a validation among the inputs",
+    ),
+    pytest.param(
+        {"inputs": [column("v")], "outputs": [column("ok", "float", validation=True)]},
+        "t.ok is a validation, which only a True/false output can be",
+        id="a validation that is not True/false",
+    ),
+    pytest.param(
+        {"outputs": [column("ok", "bool", validation=True, required=True)]},
+        "t.ok is a validation, which takes no required: it must hold true",
+        id="a validation required too",
+    ),
+    pytest.param(
+        {"outputs": [column("ok", "bool", validation_message="Too low")]},
+        "t.ok holds a validation's message and is no validation",
+        id="a message on a column that is no validation",
     ),
     pytest.param(
         {"rows": "many", "inputs": [column("peril", index="values"), column("v")]},

@@ -383,7 +383,12 @@ Out of scope:
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
   automatic) and `use_grouping`. An output holds no rule but `required`, no
   `default_value` and is the index only in a table of outputs alone, whose index of values
-  holds its allowed values and their source.
+  holds its allowed values and their source. A True/false output may be a validation
+  (`validation`, with `validation_message`, what an underwriter is told while it fails,
+  `""` for none): the pipeline fills it, true where the quote passes, and a quote is
+  marked final only while it holds true (the store, below). A validation takes no
+  `required`, which it is already; an input, and an output of any other type, is no
+  validation, and only a validation holds a message.
 
   Every many-row table has exactly one index, `table_index` until renamed, an Integer or
   Text column straight after the quote's identity: among the outputs of a table of outputs
@@ -601,7 +606,8 @@ Out of scope:
     the outputs of a table of outputs alone, though the pipeline's frame of its outputs holds
     it too, with how it gets its values (`"index": "numbered"`, `"typed"` or `"values"`). An
     output holds no rule but `required` (no `min`, `max`, `options` or `options_source`) and
-    no `default_value`, but an output-only table's index of values its `options_source`;
+    no `default_value`, but an output-only table's index of values its `options_source`,
+    and a True/false output its `validation` and `validation_message`;
     nothing is written as a `key`.
   - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
     (below): its `title`, `width`, `show_when` and `sections`, each section its `title`,
@@ -764,8 +770,11 @@ Out of scope:
     Assistant, Help, the branch, Save and Commit) and shows the view's own, the same in
     both modes, so the toolbar keeps its layout as the mode changes: the form's Undo and
     Redo and Zoom In over Zoom Out, where the pipeline toolbar has its own Undo and Redo and
-    zoom, then Build over Preview, Schema over Display and Reset over Test quotes, then, in
-    Preview, why pricing the sample last failed; there is no Price and no Clear. Reset
+    zoom, then Build over Preview, Schema over Display, Reset over Test quotes and
+    Validation, then, in
+    Preview, why pricing the sample last failed; there is no Price and no Clear. Validation
+    says whether the sample would be marked final and lists what it passes and fails
+    (Validation, under the underwriter app's quote, below). Reset
     starts the sample again as a new quote (the sample, below), and Test quotes opens and
     closes the test quotes' panel (Test quotes, below), pressed while it is open. Schema opens and closes the
     schema's pane in either mode, pressed while it is open. A control the mode has no use
@@ -776,6 +785,7 @@ Out of scope:
     | Display | In Preview |
     | Reset | While building, and while the sample holds a new quote's values and nothing else |
     | Test quotes | While building, and until the form is read |
+    | Validation | While building, and until the form is read |
 
   - **The schema's pane.** Schema opens the schema editor in a pane that slides in from
     the left over the sheet, under the sheet tabs, covering the sheet's left part without
@@ -1098,7 +1108,9 @@ Out of scope:
   format, as a cell's are, and the default as typed while it is typed in), its
   placeholder for any type but
   True/false and Date and its rules: required, which an output takes too, as marking a
-  quote final needs a value in it, a range for an Integer or a Decimal, and the
+  quote final needs a value in it; for a True/false output, Validation in Required's
+  place, and, once ticked, the message an underwriter reads while it fails; a range for
+  an Integer or a Decimal; and the
   allowed values for any type but True/false and Date, never typed in but read from a
   CSV in the pipeline folder's `files/params/`: its file chosen, then its column from the
   file's header, and the column's distinct values, as written, trimmed, blanks left out
@@ -1108,11 +1120,13 @@ Out of scope:
   included, which the choice shows as typed in. A read answers only while the column's
   source is still the one it began from, so one an undo overtakes changes nothing. What
   stops a file or a column giving them shows under them. Changing a
-  column's type drops the rules and the format the new type cannot have, and its default
+  column's type drops the rules and the format the new type cannot have, a validation
+  and its message when it stops being True/false among them, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
+  Ticking Validation unticks Required.
   To the right of a column's name and its buttons, a line sums it up whenever there is
   something to say, cut short as the pane narrows and whole on hover: for any
-  column, required; for an input, its range in its own format, its default (in its format, or
+  column, required, or validation for one; for an input, its range in its own format, its default (in its format, or
   "ticked" for True/false), its allowed values counted with the file they came from and
   "a row each" for an index of values; and, for any column, the format of
   a number column other than a numbered index unless it shows numbers as typed (General with
@@ -1127,7 +1141,8 @@ Out of scope:
   block, a table likewise by the grip beside its name or Alt+Up and Alt+Down in it, and a
   new table's or column's name takes the focus. A column moved to the outputs loses what
   only an input takes, its rules but Required and its default, and its values in the
-  sample, which only what is typed takes. A table left with no inputs, its last moved to
+  sample, which only what is typed takes; one moved to the inputs loses its validation
+  and its message. A table left with no inputs, its last moved to
   the outputs or removed, loses its rows in the sample, which holds input tables' alone and
   whose save refuses any other's.
   Each change is one edit. A many-row table's index (above) is first after the quote's
@@ -2356,7 +2371,7 @@ Out of scope:
   is always the release's own. Each change but a note names the quote's version and is
   refused (409) with the quote as it is now when the quote has moved on, or (409) naming what
   would let it when the quote does not take it as it stands; Mark final is refused (409)
-  naming each required field without a value, or the release that priced the quote; a quote
+  naming each check the quote fails (`failing`), or the release that priced the quote; a quote
   the app does not keep is 404. A write whose browser says it came from another site, or,
   from a browser that does not say, whose origin is not the app's host, is refused (403). The
   app's pages, `/`, `/quotes/new` and `/quotes/{reference}/{option}`, are its one page, which
@@ -2415,7 +2430,21 @@ Out of scope:
   `quote_details.quote_name`, given in the New quote window as the quote is made and
   never changed after), its stage, Draft or Final, and, when archived, Archived (restored from the Quotes page's menu alone, as its notice says), who it is with (reassigned
   from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
-  Amend, which asks why, History, and why the quote has no price. Beneath are who saved it
+  Amend, which asks why, Validation, History, and why the quote has no price. Validation
+  is outlined green while the quote on the sheets passes every check marking it final
+  makes (the store, below), red while it fails any, and says how many fail; pressed, it
+  opens a box under it listing the checks, those failing first, then those passing: each
+  required column (needs a value), each column with a range (the range) or allowed values,
+  and each validation, by its table's name and its column's label, a failing one of a
+  many-row table naming its rows, a failing validation showing its message. The checks are
+  made in the browser on what the sheets hold, the values typed and the price as last made,
+  a price of other values counting as none, by the rules the server marks a quote final by
+  (`frontend/src/utils/quoteChecks.ts` and `src/haute/_workbench_checks.py`, both held to
+  `frontend/src/utils/__tests__/fixtures/quoteChecks.json`), so the button says what Mark
+  final would for the quote once saved as it stands; the server's answer is the one that
+  counts. A form with nothing to check is green, its box saying so. Pressing outside the
+  box, or Escape, closes it. Preview's toolbar has the same button over the sample.
+  Beneath are who saved it
   and when and the quote it came from. The quote is priced as it is
   typed, and as it opens while it may change and has no price of this release, unpriced or
   priced on an earlier one. Save waits for that pricing to settle, a value entered while it
@@ -2430,7 +2459,7 @@ Out of scope:
   store keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
   the quote stays open, and a quote opened again starts those cells as Defaults says.
   Mark final is off while the quote has unsaved values or no price of this release, and is
-  refused naming each required field without a value. Whether a saved quote is priced is
+  refused naming each check the quote fails. Whether a saved quote is priced is
   for Mark final alone: neither the page nor its history says priced or unpriced, as an
   underwriter cares whether a quote is final, and a pipeline run is not a quotation
   (decided 2026-11-05). Mark final's reasons and refusals ask for the quote to be saved, or
@@ -3073,11 +3102,21 @@ Out of scope:
   is at most 200 characters, a longer one refused naming the limit.
 
   A quote is `draft` or `final`. Mark final makes a draft final once it is priced on the
-  running release and every input and output column marked Required holds a value, and is
-  refused naming each that does not: a required column holds a value when, in a one-row
-  table, its cell does, and in a many-row table, every row's does, a table without rows
-  passing; text of spaces alone is empty, zero and false are values and null is not (an
-  unticked box in a filled row is false; a True/false output left unfilled is null). A
+  running release and passes every check of its form (`quote_checks`), and is refused
+  naming each it fails. The checks are one for each rule a column holds, in the schema's
+  order: Required, on an input or an output, that it holds a value; a range, that a value
+  held is within it; allowed values, that a value held is one of them, compared as the
+  column's type reads them; and a validation, that it holds true, false and null both
+  failing, so a validation the pipeline leaves unfilled stops the quote. A check holds
+  when, in a one-row table, the table's one row passes it, and in a many-row table, every
+  row does, a table without rows passing, a failing check naming its rows by their index;
+  text of spaces alone is empty, zero and false are values and null is not (an
+  unticked box in a filled row is false; a True/false output left unfilled is null); an
+  empty value passes a range and allowed values, which are Required's to ask for. An
+  input the sheets hide for the quote's values (`visibility`) is left out of the quote,
+  so its checks are not made: a required field nobody can reach stops nothing. An
+  output's are always made, whatever the sheets place or show, as the pipeline fills it
+  either way. A
   final quote takes no save; Amend takes it back to draft, giving a reason, and its next
   save overwrites what was offered. Assigning, archiving and restoring work in both stages
   and change the quote's details alone, its values and prices kept; an archived quote takes
@@ -3459,7 +3498,7 @@ Out of scope:
   priced once entered, so what the sheets show is always the pipeline's answer for
   what is entered on them and nothing needs pressing, and an underwriter's Save keeps the price the
   values settle on. A column's rules mark the cells that break them but never stop a
-  pricing or a save: refusing a quote is for validations, to come. The one exception is the
+  pricing or a save: they, and the validations, stop Mark final alone. The one exception is the
   new quote's window, whose required columns of `quote_details` are an entry requirement
   of the quote's making alone: every save after keeps a quote its rules mark. Clear is gone: it emptied a quote
   at one press, after asking, and could not be undone. Preview's quote is the saved
@@ -3758,11 +3797,32 @@ Out of scope:
   a quote reads differs, and a refusal names each table and column that does not fit by its
   label and name. Nothing is keyed or priced that could not be saved still: a quote the store
   cannot take is neither made, opened nor priced.
-- **Required gates final, never a save.** An underwriter saves whenever they like, a draft
-  with any field empty; only a value the store cannot hold as its column's type refuses a
-  save, since writing it would lose it. Required is what a quote needs before it is offered,
-  so Mark final checks it, inputs and outputs alike, and what later work gates behind final,
-  exports first, never sees a quote missing one.
+- **The rules gate final, never a save.** An underwriter saves whenever they like, a draft
+  with any field empty or out of its range; only a value the store cannot hold as its
+  column's type refuses a save, since writing it would lose it. The rules are what a quote
+  needs before it is offered, so Mark final checks them, Required on inputs and outputs
+  alike, a range and allowed values with it, and what later work gates behind final,
+  exports first, never sees a quote breaking one. A rule on an input the sheets hide for
+  the quote is not checked: the quote leaves the value out, so nobody could put it right
+  (decided 2026-11-25).
+- **A validation is a column the pipeline fills.** A project's own conditions on a quote
+  (a premium above its minimum, a schedule within the line) are True/false outputs marked
+  Validation, not conditions written on the form. The pipeline is where an analyst
+  already writes a quote's logic, with every step it has, so a validation can test
+  anything a price can depend on; there is one evaluator, the pipeline, where conditions
+  on the form would need a second kept alike in Python and the browser; and the answer is
+  stored with the quote as any output is, so a final quote records what it passed, a test
+  quote covers it and an export can show it. The cost is a column and a step for even a
+  simple rule. Null fails with false, so a pipeline that does not fill a validation stops
+  the quote instead of letting it through. There is no warning an underwriter may pass
+  over yet: every check stops Mark final (decided 2026-11-25; warnings are `WB-78`).
+- **Validation is shown before it is asked.** Mark final's refusal alone would tell an
+  underwriter what a quote lacks only once they asked, one press at a time. The toolbar's
+  button says it as the quote is typed, red or green, and lists what passes too, so a
+  form's checks can be read. It is worked out in the browser, since Preview prices the
+  sample through the editor's preview and the app through its own route, and neither
+  answer holds the values typed as the server would store them; the server's check at
+  Mark final is the one that counts, and one set of cases holds the two alike.
 - **What the pipeline sees never moves under a price.** The details the app changes over a
   quote's life (its stage, who it is with, whether archived, who changed it last and on which
   Haute) never reach the pipeline, so assigning or archiving a quote leaves its stored price
@@ -3942,7 +4002,9 @@ Out of scope:
   message naming the place; an identity column is written, a table's file names two
   columns alike, in one block or one in each, `schema/quote_details.json`
   sets something Haute's, an output holds a rule but `required` (or allowed values, the
-  index of values of a table of outputs alone) or a default, a column
+  index of values of a table of outputs alone) or a default, a column that is not a
+  True/false output is a validation, a validation is required, a column that is no
+  validation holds a validation's message, a column
   holds a `key` or a `row_per_value`, which a form no longer holds; a many-row table has no
   index or more than one, or its index is in the other block (among the inputs of a table
   of outputs alone, or among the outputs of any other table); a one-row table has one; an

@@ -41,6 +41,8 @@ const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   max: null,
   options: [],
   options_source: null,
+  validation: false,
+  validation_message: "",
 })
 const policy: SchemaTable = { name: "policy_details", rows: "one", inputs: [column("exposure", "float")], outputs: [] }
 const pricing: SchemaTable = { name: "pricing_output", rows: "one", inputs: [], outputs: [column("model_premium", "float")] }

@@ -309,6 +309,8 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "max": None,
         "options": [],
         "options_source": None,
+        "validation": False,
+        "validation_message": "",
         "index": None,
         "help": "",
         "placeholder": "",

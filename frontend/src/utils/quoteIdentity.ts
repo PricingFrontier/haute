@@ -102,6 +102,8 @@ export const blankColumn = (name: string, type: SchemaColumn["type"]): SchemaCol
   max: null,
   options: [],
   options_source: null,
+  validation: false,
+  validation_message: "",
   index: null,
   help: "",
   placeholder: "",

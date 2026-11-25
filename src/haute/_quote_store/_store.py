@@ -93,14 +93,15 @@ class QuoteLockedError(QuoteStoreError):
 
 
 class QuoteNotReadyError(QuoteStoreError):
-    """A quote cannot be marked final yet: each required field without a value is named in
-    *missing*, or the message names the release its price is not."""
+    """A quote cannot be marked final yet: each check it fails is said in *failing*
+    (``haute._workbench_checks.check_text``), or the message names the release its price is
+    not."""
 
     error_code = "quote_not_ready"
 
-    def __init__(self, message: str, *, missing: Sequence[str] = ()) -> None:
+    def __init__(self, message: str, *, failing: Sequence[str] = ()) -> None:
         super().__init__(message)
-        self.missing = list(missing)
+        self.failing = list(failing)
 
 
 class WriteSupersededError(QuoteStoreError):

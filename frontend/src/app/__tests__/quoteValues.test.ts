@@ -201,10 +201,10 @@ describe("the quote store's refusals", () => {
     expect(refusalOf(refused({ error_code: "quote_values_invalid", message: "No", cells }))).toEqual({ of: "save", places: ["policy, Year", "vehicles row 3, Value"] })
   })
 
-  it("name each required field a quote marked final has no value in, and nothing for a price of another release", () => {
-    expect(refusalOf(refused({ error_code: "quote_not_ready", message: "No", missing: ["policy.Drivers", "vehicles row 3.Value"] }))).toEqual({
+  it("name each check a quote marked final fails, and nothing for a price of another release", () => {
+    expect(refusalOf(refused({ error_code: "quote_not_ready", message: "No", failing: ["policy.Drivers needs a value", "vehicles row 3.Value must be at least 1"] }))).toEqual({
       of: "final",
-      places: ["policy.Drivers", "vehicles row 3.Value"],
+      places: ["policy.Drivers needs a value", "vehicles row 3.Value must be at least 1"],
     })
     expect(refusalOf(refused({ error_code: "quote_not_ready", message: "Priced on release rel-0" }))).toBeNull()
     expect(refusalOf(refused({ error_code: "quote_locked", message: "Final" }))).toBeNull()

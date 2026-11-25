@@ -92,11 +92,11 @@ function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
 
 /**
  * A column in a few words, shown under its name, "" when there is nothing to say: an input's
- * rules, or whether an output is required, an index of values' values among a table of
+ * rules, or whether an output is required or a validation, an index of values' values among a table of
  * outputs alone's outputs too, then, for any column, a number column's format.
  */
 export function columnSummary(table: SchemaTable, column: SchemaColumn): string {
-  const parts = isOutputColumn(table, column) && column.index === null ? (column.required ? ["required"] : []) : rulesParts(table, column)
+  const parts = isOutputColumn(table, column) && column.index === null ? (column.validation ? ["validation"] : column.required ? ["required"] : []) : rulesParts(table, column)
   const format = formatSummary(column)
   if (format !== "") parts.push(format)
   return parts.join(" · ")
