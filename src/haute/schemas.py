@@ -4680,6 +4680,10 @@ class TrainEstimateResponse(BaseModel):
     training_mb: float | None
     available_mb: float
     bytes_per_row: float | None
+    """What each training row adds to the peak."""
+    fixed_mb: float | None
+    """The part of the peak no row count changes: ``training_mb`` is this plus
+    ``bytes_per_row`` for each row."""
     was_downsampled: bool = False
     warning: str | None = None
     # GPU VRAM estimation
@@ -4701,7 +4705,7 @@ class TrainEstimateResponse(BaseModel):
 
     @model_validator(mode="after")
     def _figures_match_availability(self) -> TrainEstimateResponse:
-        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row, self.fixed_mb)
         if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
             raise ValueError("a worst-case row bound has no downsampling verdict or warning")
         if self.fit_mode == "out_of_core" and (

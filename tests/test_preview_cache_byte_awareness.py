@@ -210,9 +210,8 @@ class TestPreviewCacheSizing:
             "available_columns": {},
         }
 
-        assert _estimate_preview_cache_entry_bytes(entry) == (
-            df_a.estimated_size() + df_b.estimated_size()
-        )
+        # Three 8-byte integers, and two inlined labels in their 16-byte views.
+        assert _estimate_preview_cache_entry_bytes(entry) == 3 * 8 + 2 * 16
 
     def test_preview_entry_size_rejects_unexpected_payloads(self) -> None:
         with pytest.raises(TypeError, match="expected Polars DataFrame"):

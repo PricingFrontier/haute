@@ -38,6 +38,7 @@
 | `src/haute/chunking.py` | The chunk-local classifiers only: the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists, admitting only chunk-proven operations; lazy execution's input-sliced write recipe (`_execute_lazy.py`) and trace edge alignment (`_trace_correlation.py`) use it. `classify_row_local_expression()` runs the same walk and argument guards over one expression in a row-semantics mode, admitting every operation the operation registry classes as row-local (and a `when` chained on a conditional) rather than only the chunk-proven ones; trace formula evaluation (`_expression_parser.py`) uses it. There is no chunk planner or runner. |
 | `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (psutil's available memory, clamped to Linux cgroup v2/v1 headroom resolved at the process's own cgroup with ancestor-min semantics — a real measurement, or no value with the reason logged, never fabricated capacity), `available_vram_bytes()` (the training GPU's free VRAM via nvidia-smi — the first visible CUDA device entry when set, else the first listed GPU; the CatBoost and XGBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason), and `nvidia_gpu_name()` (the first GPU `nvidia-smi` lists, for `haute gpu-setup`). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. Its per-estimate graph index canonicalises the submitted graph with the executor's own runtime path resolver (`canonical_dataframe_execution_graph()`) before indexing nodes, so every estimate describes the files execution actually opens rather than a copy a differently anchored relative locator would name. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. Its per-type rules are `node_type_table`s: `_ROW_CARDINALITY` proves each node type's output and peak rows (a source from its own metadata; every other type after its incoming edges, so an unproven parent blocks it, and the Quote Response and Workbench Output are listed as unsupported row semantics), and `_SOURCE_METADATA_READERS` reads a sized source's metadata (the request inputs and the Data Input). |
+| `src/haute/_frame_bytes.py` | What a Polars frame or series holds in memory, string and binary views included (`series_bytes`, `frame_bytes`, `series_bytes_per_row`): the one source of every memory figure taken from a frame, since Polars 2's own size estimate omits views. |
 | `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
 | `src/haute/_step_progress.py` | A preview's step progress: `StepProgress(done, total, label)`, the `ProgressCell` a warm worker writes (shared memory under its own lock; the parent only ever tries the lock without blocking), and the job binding (`bind_job_progress`, `current_job_progress_reporter`). |
@@ -198,7 +199,21 @@
   for each fixed-width Arrow or Polars type, read from the type's own name before its
   parameters); any other type (text, binary, a dictionary, every nested type) is variable
   width and measured, from the column's uncompressed Parquet size and a bounded head probe
-  of the rows, never assumed to be one 8-byte value. A node's columns are its own output's:
+  of the rows, never assumed to be one 8-byte value. The probe, like every memory figure
+  Haute takes from a frame or series (an injected frame's column sizes, the preview cache
+  budget, a training job's freed bytes, the optimiser's buffered pieces,
+  `decoded_frame_row_width_bytes`), comes from `haute._frame_bytes`: Polars 2's
+  `estimated_size` counts every String and Binary payload byte but none of the 16-byte views
+  that hold them, so a column of 7-character codes reads at 7 bytes a row where it holds 16
+  (measured at 17.9 bytes a row resident on Polars 2.0). `series_bytes` counts a String or
+  Binary column exactly (its views, the payloads longer than the 12 bytes a view inlines, its
+  validity). It counts a nested column (list, array or struct) as the union of the address
+  ranges of the Arrow buffers the column holds. Chunks and children can share one
+  allocation, whole or as a slice, and each byte counts once whatever the chunk order. A
+  null over a nested row keeps that row's children underneath,
+  and neither `estimated_size` nor an `explode` sees them. `tests/test_frame_bytes.py` holds
+  both counts to Arrow's buffers, masked nested rows included, and refuses `estimated_size`
+  anywhere else in `src/haute`. A node's columns are its own output's:
   a Polars node with code resolves them from its column lineage over its inputs' resolved
   columns (`_resolve_code_node_columns`). A column it carries unchanged under an input
   column's name is sized as that column. A column the code computes
@@ -1196,7 +1211,10 @@ counts) and must resolve inside that mount; a cgroup that cannot be found leaves
 cgroup backend unavailable rather than guessed at `/sys/fs/cgroup`; Windows assigns the child to a Job Object with a finite aggregate
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
-hard ceiling is installed. The `RLIMIT_AS` fallback first runs
+hard ceiling is installed. Whether `RLIMIT_AS` exists is answered in one place,
+`_resource_api()`: it is `None` where `resource` lacks the API and on macOS, whose kernel
+accepts the limit but does not enforce it, and the caps-support check and the fallback
+both ask it rather than the platform. The `RLIMIT_AS` fallback first runs
 `start_polars_thread_pools()` once per process — one small query on each Polars engine,
 so every pool thread and its allocator arena exist — and only then reads the address-space
 baseline; its ceiling is that baseline plus the growth budget plus the lease's
@@ -1227,6 +1245,23 @@ under a 650 MiB budget, failed with the old 768 MiB (`pthread_create has failed`
 from 1,536 MiB. The formula clears every uncapped peak by at least 350 MiB; it is generous on
 large hosts, where the slope falls to about 72 MiB per CPU (a thread's stack and allocator
 arena), and that excess only loosens an address-space cap the parent RSS watchdog backs.
+
+**Bounded malloc arenas.** glibc gives a thread that allocates its own malloc arena, a
+64 MiB address-space reservation, up to eight per CPU, and keeps every one for the life of
+the process; `RLIMIT_AS` counts each in full. On Polars 2.0 the IO runtime's blocking pool
+starts threads on demand, after the cap: on a 22-CPU Linux host (24 November 2026) a warm
+worker held 5.1 GB of address space, and a streaming scan of eight Parquet files started 83
+threads that reserved 5.6 GB more, which a later scan repeated once they had idled out.
+`start_process_with_environment` therefore gives every Linux child
+`MALLOC_ARENA_MAX=2` (`spawned_malloc_arena_environment`), unless the server already runs
+under an operator's own value, which the child keeps. With two arenas the same worker held
+0.6 GB and the scan added 0.4 GB (thread stacks). Two cost no measurable time: canonical
+400,000-row CatBoost, XGBoost and EBM jobs ran within 4% of their default-arena times and
+peaks. They also shrink what a fit reserves: at 22 CPUs CatBoost's reservation above its
+baseline fell from 14.4 GB to 5.1 GB and XGBoost's from 9.4 GB to 2.9 GB, both inside the
+6.6 GiB `model_thread_address_space_allowance()` gives that host, which is left as measured
+above. Polars' `polars-ooc-cleaner` thread starts when Polars is imported, so it is in every
+baseline whatever the spilling settings.
 
 Known gaps, left for follow-ups: an allowance that is still too small does not fail
 cleanly. CatBoost, under a cap it cannot fit, stalls until the worker's timeout rather than

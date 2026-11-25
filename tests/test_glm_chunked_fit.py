@@ -361,3 +361,165 @@ def test_only_a_glm_fits_out_of_core(tmp_path: Path) -> None:
             output_dir=str(tmp_path),
             fit_mode="out_of_core",
         )
+
+
+# ── Design check: an in-memory GLM whose dense design outgrows its budget ──
+
+
+@pytest.mark.parametrize(
+    ("terms", "interactions"),
+    [
+        (_TERMS, _INTERACTIONS),
+        ({"x": {"type": "linear"}, "region": {"type": "categorical", "reference": "west"}}, []),
+        (
+            {"region": {"type": "categorical"}, "band": {"type": "categorical"}},
+            [{"factors": ["region", "band"], "include_main": True}],
+        ),
+    ],
+    ids=["spline-and-interaction", "reference-level", "categorical-interaction"],
+)
+def test_the_design_count_is_the_design_rustystats_builds(
+    terms: dict[str, Any], interactions: list[dict[str, Any]]
+) -> None:
+    from haute.modelling._rustystats import (
+        _build_glm_builder_kwargs,
+        glm_design_columns,
+        prepare_glm_design,
+    )
+
+    frame = _frame("poisson").with_columns(band=pl.Series([f"b{i % 7}" for i in range(_ROWS)]))
+    params = {"family": "poisson", "terms": terms, "interactions": interactions}
+    resolved, rs_interactions = prepare_glm_design(params, frame)
+    builder = rs.glm_dict(
+        **_build_glm_builder_kwargs(
+            target="y",
+            terms=resolved,
+            data=frame,
+            params=params,
+            interactions=rs_interactions,
+            seed=0,
+        )
+    )
+
+    assert glm_design_columns(params, frame, "y") == builder.X.shape[1]
+
+
+def test_a_null_level_is_counted_so_the_design_is_never_short() -> None:
+    from haute.modelling._rustystats import glm_design_columns
+
+    frame = _frame("poisson")
+    with_null = frame.with_columns(
+        region=pl.when(pl.int_range(pl.len()) == 0).then(None).otherwise(pl.col("region"))
+    )
+    params = {"family": "poisson", "terms": {"region": {"type": "categorical"}}}
+
+    assert glm_design_columns(params, with_null, "y") >= glm_design_columns(params, frame, "y")
+
+
+def test_a_design_the_headroom_cannot_hold_is_fitted_out_of_core_as_the_same_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    params = {"family": "poisson", "terms": _TERMS, "interactions": _INTERACTIONS}
+    frame = _frame("poisson")
+    memory = _run(tmp_path / "unbudgeted", frame, params, fit_mode="in_memory", offset="exposure")
+    # Every cell now outweighs the 400 MiB the context has left.
+    monkeypatch.setattr("haute.modelling._rustystats.GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL", 10**6)
+
+    switched = _run(
+        tmp_path / "budgeted",
+        frame,
+        params,
+        fit_mode="in_memory",
+        offset="exposure",
+        execution_context=_context(400 * 1024**2),
+    )
+
+    assert switched.fit_evidence["mode"] == "out_of_core"
+    assert memory.fit_evidence["mode"] == "in_memory"
+    for field in _COMPARED:
+        assert getattr(switched, field) == getattr(memory, field), field
+    assert not list((tmp_path / "budgeted" / "scratch").iterdir())
+
+
+def test_a_design_the_headroom_holds_is_fitted_in_memory(tmp_path: Path) -> None:
+    params = {"family": "poisson", "terms": _TERMS, "interactions": _INTERACTIONS}
+
+    result = _run(
+        tmp_path,
+        _frame("poisson"),
+        params,
+        fit_mode="in_memory",
+        offset="exposure",
+        execution_context=_context(400 * 1024**2),
+    )
+
+    assert result.fit_evidence["mode"] == "in_memory"
+
+
+def test_without_a_budget_the_design_check_leaves_the_fit_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("haute.modelling._rustystats.GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL", 10**6)
+    params = {"family": "poisson", "terms": _TERMS, "interactions": _INTERACTIONS}
+
+    result = _run(tmp_path, _frame("poisson"), params, fit_mode="in_memory", offset="exposure")
+
+    assert result.fit_evidence["mode"] == "in_memory"
+
+
+def _wide_frame(levels: int) -> pl.DataFrame:
+    """Few rows, many levels: the solver's square matrices outweigh the design."""
+    rng = np.random.default_rng(5)
+    return _frame("poisson").with_columns(
+        code=pl.Series([f"k{v:05d}" for v in rng.integers(0, levels, size=_ROWS)])
+    )
+
+
+def test_the_fit_figure_charges_the_solvers_squared_columns() -> None:
+    from haute.modelling._rustystats import (
+        GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL,
+        GLM_IN_MEMORY_BYTES_PER_SQUARED_COLUMN,
+        glm_design_columns,
+        glm_in_memory_fit_bytes,
+    )
+
+    frame = _wide_frame(3_000)
+    params = {
+        "family": "poisson",
+        "terms": {"x": {"type": "linear"}, "code": {"type": "categorical"}},
+    }
+    columns = glm_design_columns(params, frame, "y")
+
+    assert glm_in_memory_fit_bytes(params, frame, "y") == (
+        _ROWS * columns * GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL
+        + columns**2 * GLM_IN_MEMORY_BYTES_PER_SQUARED_COLUMN
+    )
+    # At these rows the matrices are most of it.
+    assert columns**2 * GLM_IN_MEMORY_BYTES_PER_SQUARED_COLUMN > (
+        _ROWS * columns * GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL
+    )
+
+
+def test_a_wide_design_on_few_rows_is_not_fitted_in_memory_past_its_budget(
+    tmp_path: Path,
+) -> None:
+    """9,000 rows and 3,000 levels: the cells alone fit 400 MiB; the matrices do not.
+
+    Out of core its state does not fit half the headroom either, so the job refuses with
+    the curated memory error before allocating, instead of overrunning in memory.
+    """
+    params = {
+        "family": "poisson",
+        "terms": {"x": {"type": "linear"}, "code": {"type": "categorical"}},
+    }
+
+    with pytest.raises(GLMMemoryPlanError, match="memory budget"):
+        _run(
+            tmp_path,
+            _wide_frame(3_000),
+            params,
+            fit_mode="in_memory",
+            offset="exposure",
+            execution_context=_context(400 * 1024**2),
+        )
+    assert not list((tmp_path / "scratch").iterdir())

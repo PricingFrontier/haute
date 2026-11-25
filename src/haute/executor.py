@@ -568,12 +568,9 @@ def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
                 "preview cache size accounting expected Polars DataFrame "
                 f"for node {node_id!r}, got {type(value).__name__}"
             )
-        size = value.estimated_size()
-        if type(size) is not int or size < 0:
-            raise ValueError(
-                f"Polars estimated_size for node {node_id!r} returned invalid value {size!r}"
-            )
-        return size
+        from haute._frame_bytes import frame_bytes
+
+        return frame_bytes(value)
 
     total = 0
     for node_id, value in outputs.items():

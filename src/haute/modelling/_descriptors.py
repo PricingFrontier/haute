@@ -48,6 +48,25 @@ class NativeLoss:
 
 
 @dataclass(frozen=True)
+class TrainingMemoryProfile:
+    """A training job's peak resident memory, as a fixed part plus a part per row.
+
+    The peak is ``fixed_bytes`` plus ``width_factor_basis_points / 100`` times the
+    rows' estimated in-memory width (rows x bytes per row, as the RAM estimator
+    sizes the training node's input). Both are measured for each family by
+    ``tests/performance/test_training_family_memory_perf.py``
+    (specs/modelling/low-level.md, "Training memory profiles").
+    """
+
+    fixed_bytes: int
+    width_factor_basis_points: int
+
+    def __post_init__(self) -> None:
+        if self.fixed_bytes <= 0 or self.width_factor_basis_points <= 0:
+            raise ValueError("a training memory profile needs a positive fixed part and factor")
+
+
+@dataclass(frozen=True)
 class AlgorithmDescriptor:
     """What one modelling family supports; the single source for validation."""
 
@@ -74,6 +93,8 @@ class AlgorithmDescriptor:
     engine_module: str
     #: What the family's own ``feature_importance`` measures, as the model card names it.
     importance_method: str
+    #: The peak memory of one of its training jobs, for the pre-training RAM estimate.
+    training_memory: TrainingMemoryProfile
     #: Losses whose native objective refuses, or silently breaks, monotone
     #: constraints.
     monotone_unsupported_losses: frozenset[str] = frozenset()
@@ -273,6 +294,9 @@ CATBOOST = AlgorithmDescriptor(
     suffix=".cbm",
     engine_module="catboost",
     importance_method="PredictionValuesChange",
+    training_memory=TrainingMemoryProfile(
+        fixed_bytes=672 * 1024 * 1024, width_factor_basis_points=1150
+    ),
 )
 
 GLM = AlgorithmDescriptor(
@@ -293,6 +317,9 @@ GLM = AlgorithmDescriptor(
     suffix=".rsglm",
     engine_module="rustystats",
     importance_method="Absolute coefficient",
+    training_memory=TrainingMemoryProfile(
+        fixed_bytes=352 * 1024 * 1024, width_factor_basis_points=650
+    ),
 )
 
 
@@ -407,6 +434,9 @@ XGBOOST = AlgorithmDescriptor(
     suffix=".ubj",
     engine_module="xgboost",
     importance_method="Total gain",
+    training_memory=TrainingMemoryProfile(
+        fixed_bytes=416 * 1024 * 1024, width_factor_basis_points=500
+    ),
     # reg:absoluteerror re-fits each leaf to a residual quantile after the
     # tree is built, which ignores the constraint: a constrained MAE model
     # scores non-monotone on CPU and GPU alike (MOD-F06 probe).
@@ -552,6 +582,9 @@ LIGHTGBM = AlgorithmDescriptor(
     suffix=".lgbm",
     engine_module="lightgbm",
     importance_method="Total gain",
+    training_memory=TrainingMemoryProfile(
+        fixed_bytes=384 * 1024 * 1024, width_factor_basis_points=550
+    ),
     # LightGBM 4.7 refuses monotone_constraints with regression_l1.
     monotone_unsupported_losses=frozenset({"MAE"}),
 )
@@ -674,6 +707,9 @@ EBM = AlgorithmDescriptor(
     suffix=".ebm",
     engine_module="interpret",
     importance_method="Mean absolute term score",
+    training_memory=TrainingMemoryProfile(
+        fixed_bytes=352 * 1024 * 1024, width_factor_basis_points=500
+    ),
     value_check=ebm_value_issue,
 )
 
@@ -780,6 +816,9 @@ TBOOST = AlgorithmDescriptor(
     suffix=".tboost",
     engine_module="t_boost",
     importance_method="Variance share",
+    training_memory=TrainingMemoryProfile(
+        fixed_bytes=320 * 1024 * 1024, width_factor_basis_points=625
+    ),
     value_check=tboost_value_issue,
 )
 

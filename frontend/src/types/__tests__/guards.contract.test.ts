@@ -2253,7 +2253,7 @@ describe("API response guards", () => {
   it("parses a strict bounded evaluation preview and defaults an omitted preview to null", () => {
     const estimate = parseTrainEstimateResponse({
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
-      training_mb: 25, available_mb: 512, bytes_per_row: 256,
+      training_mb: 25, available_mb: 512, bytes_per_row: 256, fixed_mb: 0,
       was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null, node_addresses: {},
       evaluation_preview: {
@@ -2294,7 +2294,7 @@ describe("API response guards", () => {
     ])
 
     const sized = loadUiContractFixture<Record<string, unknown>>("train_estimate_response")
-    const blank = { estimated_mb: null, training_mb: null, bytes_per_row: null }
+    const blank = { estimated_mb: null, training_mb: null, bytes_per_row: null, fixed_mb: null }
     const schema = { reason: "schema_unresolvable", blocking_node_id: null }
     expect(parseTrainEstimateResponse({ ...sized, ...blank, unavailable: schema }).unavailable).toEqual(schema)
 
@@ -2328,7 +2328,7 @@ describe("API response guards", () => {
   it("rejects malformed bounded evaluation previews", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
-      training_mb: 25, available_mb: 512, bytes_per_row: 256,
+      training_mb: 25, available_mb: 512, bytes_per_row: 256, fixed_mb: 0,
       was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null, node_addresses: {},
     }

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import numpy as np
 import polars as pl
 
+from haute._frame_bytes import frame_bytes
 from haute._logging import get_logger
 from haute._polars_utils import bounded_collect_batches, release_freed_memory
 from haute.errors import HauteValidationError
@@ -194,6 +195,56 @@ def prepare_glm_design(
         reserved_names=list(schema),
     )
     return effective_terms, rs_interactions
+
+
+#: What an in-memory GLM fit grows by per design cell (a row of one design column): 8
+#: bytes for the dense float64 design RustyStats builds, the rest its one-hot step and
+#: solver arrays. A whole fit on 1,984 categorical levels grew by 9.3 to 9.9 a cell.
+GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL = 10
+#: And per squared design column: the solver's p-by-p float64 matrices (the Gram, its
+#: factorisation, the covariance and their workspaces). Beyond the cells, fits of 9,000
+#: rows grew by 35 to 43 bytes per squared column at 1,001 to 2,846 columns, at one
+#: thread and at eight.
+GLM_IN_MEMORY_BYTES_PER_SQUARED_COLUMN = 48
+
+
+def glm_design_columns(params: Mapping[str, Any], frame: pl.DataFrame, target: str) -> int:
+    """The columns of the dense design RustyStats would build for *params* over *frame*.
+
+    Counted as RustyStats lays the design out, with each categorical's labels taken as
+    the frame's distinct values, null included, so the count never falls short.
+    """
+    from rustystats.formula import dict_to_parsed_formula
+    from rustystats.frozen_design import design_term_widths
+
+    terms, interactions = prepare_glm_design(params, frame)
+    parsed = dict_to_parsed_formula(
+        response=target,
+        terms=terms,
+        interactions=interactions or None,
+        intercept=params.get("intercept", True),
+    )
+    counts: dict[str, int] = {}
+
+    def labels(column: str) -> int:
+        if column not in counts:
+            counts[column] = frame.get_column(column).n_unique()
+        return counts[column]
+
+    return sum(width for _term, width in design_term_widths(parsed, labels))
+
+
+def glm_in_memory_fit_bytes(params: Mapping[str, Any], frame: pl.DataFrame, target: str) -> int:
+    """The memory an in-memory GLM fit of *frame* takes.
+
+    Its design's cells at 10 bytes, and its solver's matrices at 48 bytes per squared
+    column, which outweigh the cells when the rows are few and the levels many.
+    """
+    columns = glm_design_columns(params, frame, target)
+    return (
+        frame.height * columns * GLM_IN_MEMORY_BYTES_PER_DESIGN_CELL
+        + columns * columns * GLM_IN_MEMORY_BYTES_PER_SQUARED_COLUMN
+    )
 
 
 def _build_glm_builder_kwargs(
@@ -785,7 +836,7 @@ class GLMAlgorithm(BaseAlgorithm):
             on_iteration(1, 1, {"deviance": float(result.deviance)}, loss_history[0])
 
         if train_df is not None:
-            freed_bytes = train_df.estimated_size()
+            freed_bytes = frame_bytes(train_df)
             del train_df
             release_freed_memory(freed_bytes)
 

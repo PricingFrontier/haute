@@ -2242,6 +2242,7 @@ export interface TrainEstimateResponse {
   estimated_mb: number | null;
   evaluation_preview?: EvaluationPreviewPayload;
   fit_mode: 'in_memory' | 'out_of_core';
+  fixed_mb: number | null;
   gpu_vram_available_mb: number | null;
   gpu_vram_estimated_mb: number | null;
   gpu_vram_rows: number | null;

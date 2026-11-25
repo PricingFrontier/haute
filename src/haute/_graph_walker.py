@@ -71,6 +71,7 @@ from haute._execution_context import (
     ExecutionProfile,
     naming_nodes_from,
 )
+from haute._frame_bytes import frame_bytes
 from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names, upstream_node_ids
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
@@ -1810,7 +1811,7 @@ class _Walk:
             else df.width == len(names)
         )
         self.frames[node_id] = df if not row_limit and covers else frame
-        self.memory_bytes[node_id] = int(df.estimated_size("b"))
+        self.memory_bytes[node_id] = frame_bytes(df)
 
     def _collect_projection(
         self, node_id: str, node: GraphNode, names: list[str]

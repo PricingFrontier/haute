@@ -21,12 +21,12 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from haute._execution_context import ExecutionMemoryLimitExceededError
+from haute._frame_bytes import series_bytes_per_row
 from haute._native_memory_limit import (
     NativeLimitState,
     native_headroom_bytes,
     native_memory_backend_scope,
 )
-from haute._ram_estimate import string_view_bytes_per_row
 from haute.routes import _optimiser_service as svc
 from haute.routes._optimiser_service import (
     AutoRangeReducerBudgetError,
@@ -181,7 +181,7 @@ def test_string_view_width_matches_arrow_buffers(values: list[str]) -> None:
     arrow = pa.array(values, type=pa.string_view())
     arrow_bytes = sum(buffer.size for buffer in arrow.buffers() if buffer is not None)
 
-    assert string_view_bytes_per_row(pl.Series(values)) * len(values) == arrow_bytes
+    assert series_bytes_per_row(pl.Series(values)) * len(values) == arrow_bytes
 
 
 # --- budget ----------------------------------------------------------------

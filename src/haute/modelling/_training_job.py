@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
+from haute._frame_bytes import frame_bytes
 from haute._logging import get_logger
 from haute._polars_dtypes import (
     CONTRACT_NUMBER_NAMES,
@@ -594,7 +595,8 @@ class TrainingJob:
         ``"in_memory"`` (default) or ``"out_of_core"``: a GLM, or XGBoost on the CPU,
         fitted out of core reads its training rows from disk and never holds them
         whole, giving the in-memory model bit for bit. Training decides it from the
-        memory estimate; the fit never chooses it.
+        memory estimate, and an in-memory GLM whose dense design would not fit the
+        context's remaining budget is fitted out of core instead.
     scratch_dir : str | None
         Where an out-of-core fit keeps its files; a temporary directory when unset.
     """
@@ -2192,7 +2194,7 @@ class TrainingJob:
             except BaseException:
                 _remove_temp_parquet(data_path, context="training_input_parquet_write")
                 raise
-            freed_bytes = df.estimated_size()
+            freed_bytes = frame_bytes(df)
             del df
             release_freed_memory(freed_bytes)
             _mem_checkpoint("wrote temp parquet, freed df")
@@ -2556,7 +2558,30 @@ class TrainingJob:
             execution_context=execution_context,
         )
         _mem_checkpoint(f"read train partition ({len(train_df):,} rows)")
-        train_bytes = train_df.estimated_size()
+        train_bytes = frame_bytes(train_df)
+
+        if is_glm and self._glm_design_outgrows_headroom(train_df, fit_params, execution_context):
+            # The estimate reads no categorical levels; the dense design is judged here,
+            # before it exists, and the same model is fitted out of core instead.
+            del train_df
+            release_freed_memory(train_bytes)
+            fit_result = self._fit_glm_out_of_core(
+                algo,
+                data_path,
+                features,
+                cat_features,
+                fit_params,
+                on_iteration,
+                _report,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
+            return _TrainModelResult(
+                model=fit_result.model,
+                algo=algo,
+                fit_result=fit_result,
+                fit_params=fit_params,
+            )
 
         def load_validation() -> pl.DataFrame:
             _report("Loading validation data", 0.25)
@@ -2597,7 +2622,7 @@ class TrainingJob:
                     **adapter_kwargs,
                 )
             _mem_checkpoint("frame-based algo.fit() returned")
-            eval_bytes = 0 if eval_df is None else eval_df.estimated_size()
+            eval_bytes = 0 if eval_df is None else frame_bytes(eval_df)
             del train_df, eval_df
             release_freed_memory(train_bytes + eval_bytes)
         else:
@@ -2641,7 +2666,7 @@ class TrainingJob:
             eval_bytes = 0
             if has_validation:
                 eval_df = load_validation()
-                eval_bytes = eval_df.estimated_size()
+                eval_bytes = frame_bytes(eval_df)
                 _report("Building eval pool", 0.25)
                 val_y = eval_df[self.target].cast(pl.Float64).to_numpy()
                 val_w = eval_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
@@ -2869,6 +2894,34 @@ class TrainingJob:
                 )
         return fit_result
 
+    def _glm_design_outgrows_headroom(
+        self,
+        train_df: pl.DataFrame,
+        fit_params: dict[str, Any],
+        execution_context: ExecutionContext | None,
+    ) -> bool:
+        """Whether an in-memory GLM fit of *train_df* needs more than the budget has left.
+
+        A context without a budget leaves the fit in memory.
+        """
+        from haute.modelling._rustystats import glm_in_memory_fit_bytes
+
+        remaining = (
+            execution_context.remaining_memory_bytes() if execution_context is not None else None
+        )
+        if remaining is None:
+            return False
+        needed = glm_in_memory_fit_bytes(fit_params, train_df, self.target)
+        if needed <= remaining:
+            return False
+        logger.info(
+            "glm_design_fits_out_of_core",
+            rows=train_df.height,
+            needed_mb=round(needed / 1024**2, 1),
+            remaining_mb=round(remaining / 1024**2, 1),
+        )
+        return True
+
     def _glm_select_columns(self, features: list[str]) -> list[str] | None:
         """Column subset needed for GLM parquet reads, or ``None`` for CatBoost.
 
@@ -3093,7 +3146,7 @@ class TrainingJob:
                 )
             except _METRIC_STAGE_FAILURE_TYPES as exc:
                 raise self._metric_stage_error(exc, evaluation_set="validation") from exc
-            freed_bytes = val_df.estimated_size()
+            freed_bytes = frame_bytes(val_df)
             del val_df, val_y_true, val_y_pred, val_w
             release_freed_memory(freed_bytes)
 
@@ -3252,7 +3305,7 @@ class TrainingJob:
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "tboost_tables", exc)
 
-        freed_bytes = diag_df.estimated_size()
+        freed_bytes = frame_bytes(diag_df)
         del diag_df, diag_row_order
         release_freed_memory(freed_bytes)
 

@@ -48,6 +48,27 @@ _THREAD_START_FAILURE_MARKERS = ("can't start new thread", "could not spawn thre
 _polars_thread_pools_started = False
 _polars_thread_pools_lock = threading.Lock()
 
+#: glibc reads its malloc arena limit from this variable when a process starts.
+MALLOC_ARENA_MAX_ENV = "MALLOC_ARENA_MAX"
+# glibc gives a thread that allocates its own malloc arena, a 64 MiB address-space
+# reservation, up to eight per CPU, and keeps every one for the life of the process.
+# Under RLIMIT_AS each counts against the cap. Measured on a 22-CPU Linux host on
+# Polars 2.0 (specs/execution-engine/low-level.md): a warm worker held 5.1 GB of
+# address space, and a streaming scan of eight Parquet files started 83 IO threads
+# after the cap that reserved 5.6 GB more; with two arenas, 0.6 GB and 0.4 GB.
+_SPAWNED_MALLOC_ARENAS = 2
+
+
+def spawned_malloc_arena_environment(inherited: str | None) -> dict[str, str]:
+    """The ``MALLOC_ARENA_MAX`` a spawned Linux worker takes, or nothing.
+
+    *inherited* is the value this process runs under: an operator's own setting is
+    kept. Other hosts do not use glibc's allocator, so nothing is set there.
+    """
+    if not sys.platform.startswith("linux") or inherited is not None:
+        return {}
+    return {MALLOC_ARENA_MAX_ENV: str(_SPAWNED_MALLOC_ARENAS)}
+
 
 def model_thread_address_space_allowance() -> int:
     """Address space a training fit's cap allows for what its model library reserves.
@@ -162,7 +183,14 @@ class _ResourceApi(Protocol):
 
 
 def _resource_api() -> _ResourceApi | None:
-    """Load the optional POSIX API without relying on Windows typeshed stubs."""
+    """The POSIX ``RLIMIT_AS`` API where the kernel enforces it, else ``None``.
+
+    macOS accepts ``setrlimit(RLIMIT_AS, ...)`` but does not enforce it, so the
+    API is unavailable there. This is the one place that says whether an
+    address-space cap exists; every caller asks it rather than the platform.
+    """
+    if sys.platform == "darwin":
+        return None
     try:
         module = importlib.import_module("resource")
     except ImportError:
@@ -177,8 +205,6 @@ def native_memory_caps_supported() -> bool:
     """Whether this host has a native kernel process-memory cap mechanism."""
     if sys.platform == "win32":
         return True
-    if sys.platform == "darwin":
-        return False
     if sys.platform.startswith("linux"):
         return _linux_cgroup_v2_available() or _rlimit_as_supported()
     return _rlimit_as_supported()
@@ -477,7 +503,7 @@ class NativeMemoryLease:
 
     def _apply_rlimit(self, growth_bytes: int, address_space_allowance_bytes: int = 0) -> None:
         resource_api = _resource_api()
-        if resource_api is None or sys.platform == "darwin":
+        if resource_api is None:
             raise NativeMemoryLimitUnsupportedError("native address-space limits are unavailable")
         if self._rlimit_original is None:
             self._rlimit_original = resource_api.getrlimit(resource_api.RLIMIT_AS)

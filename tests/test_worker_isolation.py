@@ -2261,14 +2261,17 @@ def test_running_interpreter_resource_tracker_has_the_private_shape_recovery_nee
 class _EnvironmentProbeProcess:
     """Minimal process stand-in that records the environment it was started in."""
 
-    def __init__(self, *, failure: BaseException | None = None) -> None:
+    def __init__(
+        self, *, failure: BaseException | None = None, variable: str = "POLARS_MAX_THREADS"
+    ) -> None:
         self.observed: str | None = None
         self.failure = failure
         self.starts = 0
+        self.variable = variable
 
     def start(self) -> None:
         self.starts += 1
-        self.observed = os.environ.get("POLARS_MAX_THREADS")
+        self.observed = os.environ.get(self.variable)
         if self.failure is not None:
             raise self.failure
 
@@ -2334,6 +2337,33 @@ def test_a_spawned_worker_runs_at_least_two_polars_threads(
 
     assert process.observed == observed
     assert os.environ.get("POLARS_MAX_THREADS") == inherited
+
+
+@pytest.mark.parametrize(
+    ("platform", "inherited", "observed"),
+    [("linux", None, "2"), ("linux", "8", "8"), ("win32", None, None), ("darwin", None, None)],
+    ids=["linux", "linux-operator-setting", "windows", "macos"],
+)
+def test_a_spawned_linux_worker_runs_with_bounded_malloc_arenas(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    inherited: str | None,
+    observed: str | None,
+) -> None:
+    """Under RLIMIT_AS every glibc arena is a 64 MiB reservation against the cap (PL2-18)."""
+    import haute._native_memory_limit as native
+
+    if inherited is None:
+        monkeypatch.delenv("MALLOC_ARENA_MAX", raising=False)
+    else:
+        monkeypatch.setenv("MALLOC_ARENA_MAX", inherited)
+    monkeypatch.setattr(native.sys, "platform", platform)
+    process = _EnvironmentProbeProcess(variable="MALLOC_ARENA_MAX")
+
+    start_process_with_environment(process, {})
+
+    assert process.observed == observed
+    assert os.environ.get("MALLOC_ARENA_MAX") == inherited
 
 
 @pytest.mark.meta

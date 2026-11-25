@@ -5,6 +5,7 @@
   "training_mb": null,
   "available_mb": 8192.0,
   "bytes_per_row": null,
+  "fixed_mb": null,
   "was_downsampled": false,
   "warning": null,
   "gpu_vram_estimated_mb": null,

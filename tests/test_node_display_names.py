@@ -1084,6 +1084,8 @@ def test_a_training_joins_downsampling_warning_names_the_copys_children() -> Non
         estimated_bytes=1 << 30,
         available_bytes=2 << 30,
         bytes_per_row=100.0,
+        fixed_bytes=0,
+        row_width_bytes=100.0,
         was_downsampled=False,
         warning=None,
         unbounded_join_node_ids=(_COPY_SCALE, _COPY_FINISH),

@@ -37,7 +37,7 @@ describe("TrainingActionsAndResults", () => {
           ramEstimate: makeTrainEstimate({
             total_rows: 10_000_000_000,
             safe_row_limit: 149_958_852,
-            bytes_per_row: 5_000,
+            bytes_per_row: 5_000, fixed_mb: 0,
             available_mb: 71_065,
             was_downsampled: false,
             warning: null,
@@ -313,7 +313,7 @@ describe("TrainingActionsAndResults", () => {
     render(<TrainingActionsAndResults {...makeProps({
       ramEstimate: makeTrainEstimate({
         total_rows: 100_000,
-        bytes_per_row: 1_048_576,
+        bytes_per_row: 1_048_576, fixed_mb: 0,
         safe_row_limit: null,
         fit_mode: "out_of_core",
       }),
@@ -323,6 +323,30 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.queryByText("Training rows")).toBeNull()
     expect(screen.getByText("Est. in-memory RAM")).toBeInTheDocument()
     expect(screen.getByText("97.7 GB")).toBeInTheDocument()
+  })
+
+  it("keeps the family's fixed memory when the user's row limit scales the rows", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      rowLimit: 50_000,
+      ramEstimate: makeTrainEstimate({
+        total_rows: 100_000,
+        bytes_per_row: 10_485.76, fixed_mb: 400,
+        safe_row_limit: null,
+      }),
+    })} />)
+    // 400 MB fixed, plus 50,000 rows at 0.01 MB each.
+    expect(screen.getByText("Est. training RAM").nextElementSibling).toHaveTextContent("900 MB")
+  })
+
+  it("keeps the family's fixed memory in an unproven row bound's RAM", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimate: makeTrainEstimate({
+        total_rows: 100_000,
+        bytes_per_row: 10_485.76, fixed_mb: 400,
+        unbounded_join_node_ids: ["join"],
+      }),
+    })} />)
+    expect(screen.getByText("RAM at upper bound").nextElementSibling).toHaveTextContent("1.4 GB")
   })
 
   it("trains a chunked GLM on the user's own row limit", () => {
@@ -343,7 +367,7 @@ describe("TrainingActionsAndResults", () => {
       ramEstimate: makeTrainEstimate({
         total_rows: 10_000_000_000,
         safe_row_limit: null,
-        bytes_per_row: 5_000,
+        bytes_per_row: 5_000, fixed_mb: 0,
         unbounded_join_node_ids: ["competitor_join"],
         fit_mode: "out_of_core",
       }),
@@ -372,7 +396,7 @@ describe("TrainingActionsAndResults", () => {
         safe_row_limit: 500,
         estimated_mb: null,
         training_mb: null,
-        bytes_per_row: null,
+        bytes_per_row: null, fixed_mb: null,
         available_mb: 8192,
         unavailable: { reason: "row_count_unprovable", blocking_node_id: "explode_items" },
         // The estimate gives the node it names its label.
@@ -398,7 +422,7 @@ describe("TrainingActionsAndResults", () => {
         total_rows: 250000,
         estimated_mb: null,
         training_mb: null,
-        bytes_per_row: null,
+        bytes_per_row: null, fixed_mb: null,
         available_mb: 8192,
         unavailable: { reason: "schema_unresolvable", blocking_node_id: null },
       }),
