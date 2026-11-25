@@ -2469,8 +2469,10 @@ Out of scope:
   details the app sets on it, such as who saved it, deciding as any value does, though the
   store keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
   the quote stays open, and a quote opened again starts those cells as Defaults says.
-  Mark final is off while the quote has unsaved values or no price of this release, and is
-  refused naming each check the quote fails. Whether a saved quote is priced is
+  Mark final is off while the quote has unsaved values or no price of this release, and
+  while Validation says it fails a check ("The quote does not pass Validation"), so the
+  press is not offered to be refused; the server still checks, and a refusal names each
+  check the quote fails. Whether a saved quote is priced is
   for Mark final alone: neither the page nor its history says priced or unpriced, as an
   underwriter cares whether a quote is final, and a pipeline run is not a quotation
   (decided 2026-11-05). Mark final's reasons and refusals ask for the quote to be saved, or

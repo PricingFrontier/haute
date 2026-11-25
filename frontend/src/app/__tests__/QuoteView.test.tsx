@@ -194,9 +194,19 @@ describe("QuoteView", () => {
     expect(screen.getByRole("button", { name: "Mark final" })).toBeInTheDocument()
   })
 
-  it("marks final with a required field empty, for the server to name each field that keeps it from being final", async () => {
-    // The sheets' required State is empty: only the server checks Required, as it is marked final.
+  it("does not mark final a quote failing Validation, saying why", async () => {
+    // The sheets' required State is empty.
     vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ year: "2026" }] } }))
+    await opened()
+
+    const final = screen.getByRole("button", { name: "Mark final" })
+    expect(final).toBeDisabled()
+    expect(final).toHaveAttribute("title", "The quote does not pass Validation")
+  })
+
+  it("names each check the server refuses Mark final for, its check the one that counts", async () => {
+    // Validation passes on the sheets; the server, on the quote as stored, says otherwise.
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ year: "2026", state: "CA" }] } }))
     vi.mocked(changeAppQuote).mockRejectedValue(
       new ApiError("HTTP 409", 409, "not ready", {}, {
         message: "Q-000001/1 cannot be marked final yet: policy.State needs a value; equipment row 2.Value needs a value.",

@@ -1300,8 +1300,8 @@ after: a `quote_name` cell on the sheets is read only), its stage, and:
   value outside its range, saves.
 - **Mark final** makes the quote the final quotation, once it is saved with a price of the
   running release and passes every check the analyst set: required columns, ranges,
-  allowed values and validations (see [Validation](#validation)). Otherwise the app names
-  each check it fails. A final quote cannot be saved until
+  allowed values and validations (see [Validation](#validation)). Until then it is greyed
+  out, and **Validation** lists what fails. A final quote cannot be saved until
   someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
   replaces the final quotation.
 - **Validation** is outlined green while the quote on the sheets passes every check and

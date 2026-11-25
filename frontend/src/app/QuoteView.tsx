@@ -7,7 +7,7 @@
  * kept in the browser and leaving with them asks first.
  */
 import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
-import { Fragment, useEffect, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
@@ -21,6 +21,7 @@ import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibi
 import { QUOTE_DETAILS } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
+import { quoteChecks } from "../utils/quoteChecks"
 import ValidationButton from "../workbench/ValidationButton"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
@@ -262,7 +263,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const saveTitle = closed ? closedWhy : !typed ? "Type the quote first" : (unkeyed ?? "Save the quote (Ctrl+S)")
 
   // Whether the quote passes its checks is the server's to say as it is marked final;
-  // Validation says what it would say, of what the sheets hold.
+  // Validation says what it would say, of what the sheets hold, and Mark final is off
+  // while it says the quote fails one.
+  const failing = useMemo(() => form !== null && quoteChecks(form, values, price?.tables ?? null).some((check) => !check.passed), [form, values, price])
   const finalBlock = !editor
     ? "Changing quotes needs the app's edit role"
     : quote === null
@@ -277,7 +280,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
               : "The quote has no price yet"
             : quote.priced_release !== release?.id
               ? "Saved on an earlier release: save it again first"
-              : null
+              : failing
+                ? "The quote does not pass Validation"
+                : null
 
   const markFinal = async () => {
     if (quote === null) return
