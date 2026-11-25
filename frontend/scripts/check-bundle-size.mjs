@@ -317,8 +317,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // and searching each column's label) brings it to 1,836.4 KiB (initial 307.9 KiB);
 // 1,838 KiB (approved, 24 November 2026) restores about 1.6 KiB headroom. An Export's raw
 // values setting and a Text Box component bring it to 1,838.0 KiB (initial 308.0 KiB);
-// 1,840 KiB (approved, 24 November 2026) restores about 2.0 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1840
+// 1,840 KiB (approved, 24 November 2026) restores about 2.0 KiB headroom. The optimiser
+// roadmap (a solve that breaches a bound saying so beside "Converged", a one-constraint solve's
+// bisection history and its validator) brings main's 1,839.9 KiB to 1,840.5 KiB (initial
+// 308.9 KiB); 1,842 KiB (approved, 25 November 2026) restores about 1.5 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1842
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
