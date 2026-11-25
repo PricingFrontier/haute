@@ -119,7 +119,10 @@ results are supplied by API and result-store layers.
   values found in optimiser input: 'expected_income' (1 null row)."), and a configured column
   the rows do not have is named as missing ("Missing columns in scored data: ['volume']."). A present value that is not
   a number (a text cell, say) replaces the curves and the statistics with a message naming the
-  column and the value, and the frame and its tabs stay usable.
+  column and the value, and the frame and its tabs stay usable. A scenario at which a series has
+  no value lists a count of 0 and a dash for each statistic, never zeros. When the solve would
+  refuse every previewed row, the panes still open with the notices (no chart and no quote
+  navigation), rather than the no-data notice.
 - Modelling and optimiser action areas render actionable memory-pressure and
   rejected-strategy diagnostics with profile, blocking node/operator, cost,
   reason, and remediation when the guarded payload supplies them. Other,

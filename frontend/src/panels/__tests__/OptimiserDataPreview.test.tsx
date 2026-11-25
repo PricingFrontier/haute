@@ -93,62 +93,36 @@ describe("OptimiserDataPreview", () => {
 
       const stats = computeScenarioStatsBySeries({
         rows: countedRows,
-        scenarioIndices: [0, 1, 2],
         series: ["margin", "volume"],
         scenarioValueCol: "scenario_value",
       })
 
       expect(rowVisits).toBe(rows.length)
-      expect(stats.get("margin")?.[0]).toMatchObject({
+      // Only the scenarios the rows hold, in order.
+      expect(stats.get("margin")?.map((s) => s.scenarioIndex)).toEqual([0, 2])
+      expect(stats.get("margin")?.[0]).toEqual({
         scenarioIndex: 0,
         scenarioValue: 0.9,
         count: 2,
-        mean: 150,
-        min: 100,
-        p25: 125,
-        median: 150,
-        p75: 175,
-        max: 200,
+        summary: { mean: 150, std: 50, min: 100, p25: 125, median: 150, p75: 175, max: 200 },
       })
-      expect(stats.get("margin")?.[1]).toEqual({
-        scenarioIndex: 1,
-        scenarioValue: 0,
-        count: 0,
-        mean: 0,
-        std: 0,
-        min: 0,
-        p25: 0,
-        median: 0,
-        p75: 0,
-        max: 0,
-      })
-      expect(stats.get("volume")?.[2]).toMatchObject({
+      expect(stats.get("volume")?.[1]).toMatchObject({
         scenarioIndex: 2,
         scenarioValue: 1.1,
         count: 2,
-        mean: 7,
-        min: 5,
-        p25: 6,
-        median: 7,
-        p75: 8,
-        max: 9,
+        summary: { mean: 7, min: 5, p25: 6, median: 7, p75: 8, max: 9 },
       })
     })
 
-    it("handles empty input while preserving requested series and scenario buckets", () => {
+    it("gives a series no summary at a scenario where it has no value", () => {
       const stats = computeScenarioStatsBySeries({
-        rows: [],
-        scenarioIndices: [3],
+        rows: [{ quoteId: "Q", scenarioIndex: 3, scenarioValue: 1, values: { constraint: 4 } }],
         series: ["objective", "constraint"],
         scenarioValueCol: "scenario_value",
       })
 
-      expect(stats.get("objective")).toEqual([
-        { scenarioIndex: 3, scenarioValue: 0, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 },
-      ])
-      expect(stats.get("constraint")).toEqual([
-        { scenarioIndex: 3, scenarioValue: 0, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 },
-      ])
+      expect(stats.get("objective")).toEqual([{ scenarioIndex: 3, scenarioValue: 1, count: 0, summary: null }])
+      expect(stats.get("constraint")?.[0].summary?.mean).toBe(4)
     })
   })
 
@@ -687,6 +661,31 @@ describe("OptimiserDataPreview", () => {
       // Scenario 1's count and mean are Q002's 220 alone, not a mean with a zero.
       expect(scenarioOne[2]).toBe("1")
       expect(scenarioOne[3]).toBe("220")
+    })
+
+    it("shows no statistics, not zeros, for a scenario whose objective is null in every quote", () => {
+      const preview = makePreviewData().preview.map((row) =>
+        row.scenario_index === 1 ? { ...row, margin: null } : row,
+      )
+      const { container } = renderComponent({ preview })
+      fireEvent.click(screen.getByText("Statistics"))
+      const marginTable = container.querySelector("table")!
+      const scenarioOne = Array.from(marginTable.querySelectorAll("tbody tr"))
+        .map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent))
+        .find((cells) => cells[0] === "1")!
+      expect(scenarioOne.slice(2)).toEqual(["0", "—", "—", "—", "—", "—", "—", "—"])
+    })
+
+    it("keeps the notices when the solve would refuse every row", () => {
+      const preview = makePreviewData().preview.map((row) => ({ ...row, scenario_value: null }))
+      const { container } = renderComponent({ preview })
+      const notice = "Null values found in optimiser input: 'scenario_value' (6 null rows)."
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(notice)
+      expect(screen.queryByText(/No scenario data in preview/)).not.toBeInTheDocument()
+      expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+      expect(container.querySelector('svg[style*="background"]')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByText("Statistics"))
+      expect(screen.getByTestId("optimiser-scenario-gaps")).toHaveTextContent(notice)
     })
 
     it("reports a NaN constraint cell as non-finite and leaves its point out", () => {

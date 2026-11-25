@@ -241,8 +241,8 @@ export function scenarioDataUnavailable(
   scenario: OptimiserScenarioData,
 ): "no_objective" | "no_data" | null {
   if (!scenario.objectiveCol) return "no_objective"
-  // An unreadable cell is shown by the panes themselves.
-  if (scenario.valueError !== null) return null
+  // An unreadable cell, or rows the solve would refuse, are shown by the panes themselves.
+  if (scenario.valueError !== null || scenario.gapNotices.length > 0) return null
   if (scenario.quoteIds.length === 0 || scenario.currentRows.length === 0) return "no_data"
   return null
 }

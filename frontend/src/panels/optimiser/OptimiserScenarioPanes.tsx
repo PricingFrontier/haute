@@ -10,7 +10,7 @@ import { ChevronLeft, ChevronRight, Search } from "lucide-react"
 import { CHART_COLORS } from "../../theme/colors"
 import { chartDomain, chartTickSpan, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
 import { formatNumber } from "../../utils/formatValue"
-import type { ScenarioStats } from "../optimiserScenarioStats"
+import type { ScenarioStats, ScenarioSummary } from "../optimiserScenarioStats"
 import type { ScenarioRow } from "./scenarioRows"
 import type { OptimiserScenarioData } from "./useOptimiserScenarioData"
 
@@ -294,6 +294,9 @@ const ChartArea = memo(function ChartArea({
 // ─── Scenario-level summary statistics ───────────────────────────
 
 const STAT_COLUMNS = ["Count", "Mean", "Std", "Min", "P25", "Median", "P75", "Max"] as const
+const SUMMARY_FIELDS: (keyof ScenarioSummary)[] = ["mean", "std", "min", "p25", "median", "p75", "max"]
+const EMPHASISED: ReadonlySet<keyof ScenarioSummary> = new Set(["mean", "median"])
+const NO_VALUE = "—"
 
 function ScenarioStatsTable({
   column,
@@ -340,13 +343,15 @@ function ScenarioStatsTable({
                 <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-primary)" }}>{s.scenarioIndex}</td>
                 <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-muted)" }}>{formatNumber(s.scenarioValue)}</td>
                 <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{s.count}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatNumber(s.mean)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.std)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.min)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.p25)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatNumber(s.median)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.p75)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.max)}</td>
+                {SUMMARY_FIELDS.map((field) => (
+                  <td
+                    key={field}
+                    className="px-2 py-0.5 font-mono text-right"
+                    style={{ color: EMPHASISED.has(field) ? "var(--text-primary)" : "var(--text-secondary)" }}
+                  >
+                    {s.summary ? formatNumber(s.summary[field]) : NO_VALUE}
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -411,8 +416,8 @@ export function ScenarioQuoteNavigation({ scenario }: { scenario: OptimiserScena
     setSearchValue,
     handleSearchSubmit,
   } = scenario
-  // An unreadable cell leaves no quotes to move between.
-  if (scenario.valueError !== null) return null
+  // An unreadable cell, or rows all refused, leave no quotes to move between.
+  if (scenario.valueError !== null || quoteIds.length === 0) return null
   return (
     <>
       <div className="flex items-center gap-1" data-testid="optimiser-quote-navigation">
@@ -492,7 +497,7 @@ export function ScenarioCurvesPane({ scenario }: { scenario: OptimiserScenarioDa
   return (
     <>
       <ScenarioGapNotices notices={scenario.gapNotices} />
-      <div className="flex gap-6">
+      {currentRows.length > 0 && <div className="flex gap-6">
         {/* Legend / series checkboxes */}
         <div className="shrink-0 space-y-1 min-w-[140px]">
           <label
@@ -576,7 +581,7 @@ export function ScenarioCurvesPane({ scenario }: { scenario: OptimiserScenarioDa
             />
           )}
         </div>
-      </div>
+      </div>}
     </>
   )
 }

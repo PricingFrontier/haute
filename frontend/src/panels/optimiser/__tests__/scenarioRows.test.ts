@@ -79,6 +79,14 @@ describe("readScenarioRows", () => {
     expect(scenarioGapNotices(read)).toEqual(["Missing columns in scored data: ['volume']."])
   })
 
+  it("counts a column once when it plays two roles", () => {
+    const read = readScenarioRows([row({ scenario_value: null })], { ...COLUMNS, series: ["scenario_value", "volume"] })
+    expect(read.rows).toEqual([])
+    expect(scenarioGapNotices(read)).toEqual([
+      "Null values found in optimiser input: 'scenario_value' (1 null row).",
+    ])
+  })
+
   it("reads a numeric string, as the server writes a wide integer", () => {
     const read = readScenarioRows([row({ expected_income: "9007199254740993" })], COLUMNS)
     expect(read.rows[0].values.expected_income).toBe(9007199254740992)

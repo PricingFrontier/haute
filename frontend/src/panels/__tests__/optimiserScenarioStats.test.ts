@@ -26,7 +26,7 @@ describe("computeScenarioStatsBySeries", () => {
       series: ["premium", "volume"],
       scenarioValueCol: "scenario_value",
     })
-    expect(stats.get("premium")?.[0]).toMatchObject({ count: 1, mean: 100, min: 100, max: 100 })
-    expect(stats.get("volume")?.[0]).toMatchObject({ count: 2, mean: 2 })
+    expect(stats.get("premium")?.[0]).toMatchObject({ count: 1, summary: { mean: 100, min: 100, max: 100 } })
+    expect(stats.get("volume")?.[0]).toMatchObject({ count: 2, summary: { mean: 2 } })
   })
 })

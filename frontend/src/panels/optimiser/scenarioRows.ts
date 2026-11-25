@@ -85,14 +85,13 @@ export function readScenarioRows(rows: Iterable<PreviewRow>, columns: ScenarioCo
   const [objective, ...constraints] = series
   const checked = [...new Set([objective, scenarioValueCol, scenarioIndexCol, ...constraints].filter(Boolean))]
   const tallies = new Map(checked.map((column) => [column, { column, absent: 0, nulls: 0, nans: 0, infinities: 0 }]))
-  const tally = (column: string, cell: Cell): number | null => {
-    if (cell.kind === "value") return cell.value
+  const tally = (column: string, cell: Cell) => {
+    if (cell.kind === "value") return
     const gaps = tallies.get(column)!
     if (cell.kind === "absent") gaps.absent += 1
     else if (cell.kind === "null") gaps.nulls += 1
     else if (cell.kind === "nan") gaps.nans += 1
     else gaps.infinities += 1
-    return null
   }
 
   const read: ScenarioRow[] = []
@@ -101,14 +100,21 @@ export function readScenarioRows(rows: Iterable<PreviewRow>, columns: ScenarioCo
     const quoteId = row[quoteIdCol]
     // An absent quote id column is the no-data notice's to report, not a null count.
     if (quoteId == null && Object.hasOwn(row, quoteIdCol)) quoteIdNulls += 1
-    const scenarioIndex = tally(scenarioIndexCol, readCell(row, scenarioIndexCol))
+    // Each column is read and counted once, whichever roles it plays.
+    const cells = new Map(checked.map((column) => [column, readCell(row, column)]))
+    cells.forEach((cell, column) => tally(column, cell))
+    const valueOf = (column: string) => {
+      const cell = cells.get(column)!
+      return cell.kind === "value" ? cell.value : null
+    }
+    const scenarioIndex = valueOf(scenarioIndexCol)
     if (scenarioIndex !== null && !Number.isInteger(scenarioIndex)) {
       throw new ScenarioDataError(`Expected an integer scenario index in "${scenarioIndexCol}", received ${scenarioIndex}`)
     }
-    const scenarioValue = tally(scenarioValueCol, readCell(row, scenarioValueCol))
+    const scenarioValue = valueOf(scenarioValueCol)
     const values: Record<string, number> = {}
     for (const column of series) {
-      const value = tally(column, readCell(row, column))
+      const value = valueOf(column)
       if (value !== null) values[column] = value
     }
     if (quoteId == null || scenarioIndex === null || scenarioValue === null) continue
