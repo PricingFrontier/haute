@@ -558,7 +558,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    place (`_validate_training_artifacts`) before it takes the job store's lock, so no file
    is read while status polls wait on it: the staged set is the run's own and no longer
    changes. It rewrites all artifact paths to their absolute
-   locations inside the job's artifact directory, and the publish callback, which only hands
+   locations inside the job's artifact directory, releases the job's admission
+   (`publish_completion(releasing=...)`, background-jobs "An outcome follows its release": the
+   worker has exited), and the publish callback, which only hands
    over those validated fields, transitions the job to `"completed"`
    with final `elapsed_seconds` and `artifact_handles["training_artifacts"]` (kind
    `modelling_training_artifacts`, version 1, the directory and each artifact kind's file

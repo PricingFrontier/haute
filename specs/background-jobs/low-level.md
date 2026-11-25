@@ -80,7 +80,9 @@
   optional test-only transition fault injector. The module re-exports
   `TerminalReason` and `TERMINAL_REASONS` from `_job_store.py`. `transition()` delegates to the
   store's public terminal operation; `publish_completion()` delegates to the public
-  compare-and-swap publication operation. It never acquires the store lock, reads
+  compare-and-swap publication operation. Both take `releasing: ExecutionContext | None`,
+  the admitted context the job's own work ran under, and release it before the store write
+  (see "An outcome follows its release"). It never acquires the store lock, reads
   backing state, calls a private merge helper, or schedules cleanup itself.
 - **`require_job_status(job)`** — returns the job's `status` after validating it
   against the same closed set enforced by `JobStore`. It remains useful at external
@@ -171,8 +173,13 @@
 
 ## Control flow
 
-### `JobLifecycle.transition(job_id, *, to, message, fields, expected_status="running", elapsed_seconds, now)`
+### `JobLifecycle.transition(job_id, *, to, message, fields, expected_status="running", elapsed_seconds, now, releasing)`
 
+0. If `releasing` is given, release it (`ExecutionContext.release_admission()`) before
+   the write below. The lease returns the reservation even when one of its cleanups
+   raises; that failure is logged (`job_admission_cleanup_failed`) and kept on the outcome
+   as `cleanup_error`/`cleanup_error_class`, as the isolated supervisor keeps one, and
+   never changes the outcome or stops it being written.
 1. Validate the destination and optimistic-lock state in the facade (`expected_status`
    may be only `"running"` or `"completed"`; the latter is valid only with `to="error"`;
    any other value or destination raises `ValueError`). Payload fields are validated by
@@ -200,7 +207,8 @@
    the write and after the swap but before scheduling, preserving the two explicit
    fault points without privileged lifecycle/store collaboration.
 
-`JobLifecycle.publish_completion(job_id, *, publish, message, elapsed_seconds, now)`
+`JobLifecycle.publish_completion(job_id, *, publish, message, elapsed_seconds, now, releasing)`
+releases `releasing` first, exactly as `transition` does (step 0), then
 delegates to `JobStore.compare_and_publish_completion`. Under the store lock it
 checks that the current status is still `running`; if not, it returns `None` without
 invoking `publish`. If the claim is live, it invokes the artifact/result publisher
@@ -211,8 +219,9 @@ and observes the completed record after publication; no reader can observe durab
 artifacts paired with a still-running or cancelled in-memory result. The caller-supplied
 publisher must not mutate its own job record (raises `RuntimeError`) and must return
 a mapping (raises `ValueError`). A publisher does no slow work under the lock: training
-reads and validates its artifacts before it claims, and its publisher only hands over the
-validated fields. Publisher exceptions propagate and leave the job record
+reads and validates its artifacts before it claims, and the optimiser's in-process solve
+persists its artifacts before it claims (removing them when the claim is lost); each
+publisher only hands over the prepared fields. Publisher exceptions propagate and leave the job record
 unchanged. Filesystem transaction and rollback semantics remain owned by the job-specific
 publisher.
 
@@ -440,7 +449,10 @@ The thread executes one total outcome pipeline:
    outcome with a bounded generic message plus `supervisor_error_class`
    (no `worker_error_class`, which only typed worker failures carry); the
    original exception is retained as `exception_to_report`.
-2. `_finish_outcome` runs the parent completion/cleanup callback. A cleanup failure
+2. `_finish_outcome` runs the parent completion/cleanup callback, before the terminal
+   write, so the cleanup that releases the job's admission precedes the outcome. A caller
+   whose `completed_fields` publishes the completion itself (training) releases the
+   admission there, through `publish_completion(releasing=...)`. A cleanup failure
    is retained as `cleanup_error`/`cleanup_error_class` without changing the worker
    outcome, and is logged with its job ID and traceback for operator diagnosis. In
    particular, cleanup after a committed completed publication cannot discard its
@@ -579,6 +591,20 @@ is only warranted for a concrete thread callable that can honour such a signal.
   competing completion and cancellation attempts, one owns the running record;
   completed publication is a one-way door, while non-completed terminal reasons
   retain the documented precedence policy.
+- **An outcome follows its release.** A job's own work releases its execution admission
+  before it records a completed or failed terminal state (`completed`, `error`,
+  `contract_error`, `memory_limited`): it passes the context it ran under as `releasing`,
+  or has already released it (the isolated supervisor's `on_finished` cleanup runs before
+  `_persist_terminal_outcome`). Work it must do under the grant (persisting artifacts, the
+  last stage) comes before that, and execution metrics are read from the context before or
+  after the release alike, since they are recorded data. A reader that sees such a state
+  therefore finds no in-flight reservation the job holds, with no grace, and new work it
+  starts is admitted against the memory the job gave back. A stop (`cancelled`, `timed_out`,
+  `superseded`) is the exception: a route or a timer records it while the work is still
+  running, and the work releases when it has stopped. Every job type follows this:
+  optimiser solve (thread and session), solve setup, frontier auto-range, training and
+  dispersion (preparation and worker), node data builds and profiles, Explore pivots, and
+  input-cache builds.
 - **`JobLifecycle.transition` returning `None` is not an error** — it's the
   documented way to signal "this write lost the race" or "this write was rejected by
   precedence"; callers must handle it explicitly rather than assume every transition
@@ -652,7 +678,14 @@ is only warranted for a concrete thread callable that can honour such a signal.
   latest owner). Each family carries a `hypothesis.find` negative control
   refuting a wrong model (first-write-wins and last-write-wins lifecycles, a
   release that frees any owner, a superseded job that may publish).
-- `tests/test_job_lifecycle.py` — transition metadata correctness; store-boundary
+- `tests/conftest.py::_outcomes_follow_their_release` (autouse) — a completed or failed
+  terminal write the store accepts while the job still holds an in-flight reservation
+  (`_execution_admission` records each reservation's `job_id`) fails the test that drove
+  it, naming the job, the outcome and the reservation, so any job path that records its
+  outcome before releasing fails in whichever test exercises it; a stop is exempt.
+- `tests/test_job_lifecycle.py` — `releasing` is released before the store write, for a
+  transition and a completion publication, and a cleanup that fails during that release is
+  kept on the outcome as `cleanup_error` without changing it. Transition metadata correctness; store-boundary
   rejection of invalid transitions; compare-and-swap completion publication
   (publisher suppression after a lost claim, publisher failure, and real-thread
   completion/cancellation contention); `completed`'s

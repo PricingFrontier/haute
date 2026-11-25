@@ -1108,6 +1108,51 @@ class TestFinalizeSolveResult:
         assert job.get("artifact_handles") is None
         assert artifact_dir is None
 
+    def test_a_stop_while_the_artifacts_are_written_leaves_none_behind(self):
+        """The artifacts are written before the claim; a stop that wins it removes them."""
+        from haute.routes import _optimiser_artifacts
+        from haute.routes._job_lifecycle import JobLifecycle
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
+        written: list[dict[str, Any]] = []
+        real_persist = _optimiser_artifacts._persist_apply_result_artifact
+
+        def persist_then_stop(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            handle = real_persist(*args, **kwargs)
+            written.append(handle)
+            JobLifecycle(store).transition(job_id, to="cancelled", message="Cancelled")
+            return handle
+
+        with patch.object(
+            _optimiser_artifacts, "_persist_apply_result_artifact", side_effect=persist_then_stop
+        ):
+            published = _finalize_solve_result(
+                self._make_solve_result(),
+                mode="online",
+                solver=MagicMock(),
+                quote_grid=MagicMock(),
+                store=store,
+                job_id=job_id,
+                elapsed=12.0,
+            )
+
+        assert published is False
+        job = store.require_job(job_id)
+        assert job["status"] == "cancelled"
+        assert job.get("artifact_handles") is None
+        (handle,) = written
+        assert not Path(handle["path"]).exists()
+
 
 # ---------------------------------------------------------------------------
 # apply_lambdas unit tests (row count & preview via mock)

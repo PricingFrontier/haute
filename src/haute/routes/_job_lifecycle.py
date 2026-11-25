@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from haute._execution_context import ExecutionContext, ExecutionMemoryPressureEvent
+from haute._logging import get_logger
 from haute.routes._job_store import (
     JOB_STATUSES,
     RUNNING_STATUS,
@@ -18,6 +19,8 @@ from haute.routes._job_store import (
     TerminalReason,
 )
 from haute.schemas import JobStatus
+
+logger = get_logger(component="server.job_lifecycle")
 
 
 def bind_running_execution_metrics_publisher(
@@ -58,9 +61,39 @@ def require_job_status(job: Mapping[str, Any]) -> JobStatus:
     return cast(JobStatus, status)
 
 
+def _release_before_outcome(job_id: str, releasing: ExecutionContext | None) -> dict[str, str]:
+    """Release *releasing* before *job_id*'s outcome is written; a failed cleanup's fields.
+
+    The lease returns the reservation even when one of its cleanups raises. That
+    failure is logged and kept on the outcome as ``cleanup_error`` /
+    ``cleanup_error_class``, as the isolated supervisor keeps one: it never
+    changes the outcome or stops it being recorded.
+    """
+    if releasing is None:
+        return {}
+    try:
+        releasing.release_admission()
+    except Exception as exc:
+        logger.error(
+            "job_admission_cleanup_failed",
+            job_id=job_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        return {"cleanup_error": str(exc), "cleanup_error_class": type(exc).__name__}
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class JobLifecycle:
-    """Typed transition helper for one ``JobStore`` namespace."""
+    """Typed transition helper for one ``JobStore`` namespace.
+
+    The job's own work records its outcome with the admitted context it ran
+    under as ``releasing``, which is released before the write ("an outcome
+    follows its release"); only a stop recorded while the work still runs
+    (a cancel or timeout route) leaves it held, for the work to release.
+    """
 
     store: JobStore
     fault_injector: Callable[[str], None] | None = None
@@ -75,6 +108,7 @@ class JobLifecycle:
         expected_status: LifecycleExpectedStatus = RUNNING_STATUS,
         elapsed_seconds: float | None = None,
         now: float | None = None,
+        releasing: ExecutionContext | None = None,
     ) -> JobSnapshot | None:
         """Move a job to a terminal state according to reason precedence.
 
@@ -90,11 +124,12 @@ class JobLifecycle:
             raise ValueError("Lifecycle transitions may expect only 'running' or 'completed'")
         if expected_status == "completed" and to != "error":
             raise ValueError("A completed lifecycle record may only be corrected to 'error'")
+        cleanup_failure = _release_before_outcome(job_id, releasing)
         return self.store.transition_terminal(
             job_id,
             to=to,
             message=message,
-            fields=fields,
+            fields={**(fields or {}), **cleanup_failure} if cleanup_failure else fields,
             expected_status=expected_status,
             elapsed_seconds=elapsed_seconds,
             now=now,
@@ -109,11 +144,13 @@ class JobLifecycle:
         message: str | None = None,
         elapsed_seconds: float | None = None,
         now: float | None = None,
+        releasing: ExecutionContext | None = None,
     ) -> JobSnapshot | None:
         """Atomically publish job-specific fields and mark a running job complete."""
+        cleanup_failure = _release_before_outcome(job_id, releasing)
         return self.store.compare_and_publish_completion(
             job_id,
-            publish=publish,
+            publish=(lambda: {**publish(), **cleanup_failure}) if cleanup_failure else publish,
             message=message,
             elapsed_seconds=elapsed_seconds,
             now=now,

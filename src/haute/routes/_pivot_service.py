@@ -965,6 +965,7 @@ class PivotService:
                     "execution_metrics": result.execution_metrics,
                 },
                 elapsed_seconds=time.monotonic() - started,
+                releasing=context,
             )
             if transitioned is not None:
                 self._result_cache.put(spec.result_cache_key, result)
@@ -975,6 +976,7 @@ class PivotService:
                 message=exc.failure.message,
                 fields={"failure": exc.failure},
                 elapsed_seconds=time.monotonic() - started,
+                releasing=context,
             )
         except (CacheRequiredError, PointDataChangedError):
             # The data the request resolved was retired, cleared, or rewritten
@@ -988,6 +990,7 @@ class PivotService:
                 message=failure.message,
                 fields={"failure": failure},
                 elapsed_seconds=time.monotonic() - started,
+                releasing=context,
             )
         except ExecutionCancelledError:
             self._lifecycle.transition(
@@ -995,6 +998,7 @@ class PivotService:
                 to=token.terminal_reason or "cancelled",
                 message="Pivot calculation cancelled",
                 elapsed_seconds=time.monotonic() - started,
+                releasing=context,
             )
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             self._lifecycle.transition(
@@ -1003,6 +1007,7 @@ class PivotService:
                 message=str(exc),
                 fields={"error": str(exc)},
                 elapsed_seconds=time.monotonic() - started,
+                releasing=context,
             )
         except Exception as exc:
             self._lifecycle.transition(
@@ -1011,6 +1016,7 @@ class PivotService:
                 message=str(exc),
                 fields={"error": str(exc)},
                 elapsed_seconds=time.monotonic() - started,
+                releasing=context,
             )
         finally:
             if context is not None:

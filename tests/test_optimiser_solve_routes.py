@@ -35,6 +35,7 @@ from tests._optimiser_route_helpers import (
     _snapshot_parquet_data_input,
     _wait_for_store_job_terminal,
 )
+from tests._process_state import execution_admission_reservations_of
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 from tests.job_store_support import replace_job, seed_job
@@ -2068,9 +2069,10 @@ class TestLaunchBackground:
 
         from haute.routes._job_lifecycle import JobLifecycle
 
+        # The timeout route's stop, recorded while the solve still holds its grant.
         JobLifecycle(clean_job_store).transition(
             job_id,
-            to="error",
+            to="timed_out",
             message="Solve timed out after 10s",
             elapsed_seconds=10.0,
             expected_status="running",
@@ -2079,7 +2081,7 @@ class TestLaunchBackground:
         deferred_threads[0].target()
 
         job = clean_job_store.require_job(job_id)
-        assert job["status"] == "error"
+        assert job["status"] == "timed_out"
         assert job["message"] == "Solve timed out after 10s"
         assert job["elapsed_seconds"] == 10.0
         assert job["progress"] == 0.0
@@ -2380,3 +2382,121 @@ class TestIntegrationRealSolver:
         assert "optimal_scenario_value" in first_row
         # Objective value should be present in the response
         assert isinstance(data["total_objective"], (int, float))
+
+
+# ---------------------------------------------------------------------------
+# An outcome follows its release (background-jobs)
+# ---------------------------------------------------------------------------
+
+_SOLVE_TARGET = {"occurrence": None, "node_id": "opt"}
+
+
+def _hold_after_outcomes(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    """Hold a job's work just after it records its outcome, until the returned event is set.
+
+    Whatever the work does after its outcome (metrics, cleanup) then outlasts the
+    client's first look, as on a loaded CI runner, for as long as the test needs.
+    """
+    from haute.routes._job_lifecycle import JobLifecycle
+
+    looked = threading.Event()
+    real_transition = JobLifecycle.transition
+    real_publish = JobLifecycle.publish_completion
+
+    def transition(self: JobLifecycle, job_id: str, **kwargs: object) -> object:
+        written = real_transition(self, job_id, **kwargs)  # type: ignore[arg-type]
+        if written is not None:
+            looked.wait(30)
+        return written
+
+    def publish_completion(self: JobLifecycle, job_id: str, **kwargs: object) -> object:
+        published = real_publish(self, job_id, **kwargs)  # type: ignore[arg-type]
+        if published is not None:
+            looked.wait(30)
+        return published
+
+    monkeypatch.setattr(JobLifecycle, "transition", transition)
+    monkeypatch.setattr(JobLifecycle, "publish_completion", publish_completion)
+    return looked
+
+
+def _work_ended(job_id: str) -> bool:
+    """Whether the optimiser has let go of *job_id*'s work (its worker's last step)."""
+    from haute.routes.optimiser import _solve_service
+
+    deadline = time.monotonic() + 30
+    while job_id in _solve_service._jobs._tokens_by_job_id:
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root", "clean_job_store")
+class TestAnOutcomeFollowsItsRelease:
+    """A client that sees a job's outcome finds none of the job's memory reserved, no grace."""
+
+    def _solve(self, client: object, scored_data: str) -> str:
+        resp = client.post(  # type: ignore[attr-defined]
+            "/api/optimiser/solve",
+            json={"graph": _make_optimiser_graph(scored_data), "target": _SOLVE_TARGET},
+        )
+        assert resp.status_code == 200, resp.text
+        return str(resp.json()["job_id"])
+
+    @pytest.mark.parametrize("execution_mode", ["thread", "process"])
+    def test_a_completed_solve_holds_no_reservation(
+        self, client, scored_data, monkeypatch, execution_mode
+    ):
+        monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", execution_mode)
+        looked = _hold_after_outcomes(monkeypatch)
+        job_id = self._solve(client, scored_data)
+        try:
+            status = _poll_until_done(client, job_id, timeout=120)
+            held = execution_admission_reservations_of(job_id)
+        finally:
+            looked.set()
+
+        assert status["status"] == "completed", status.get("message")
+        assert held == ()
+        assert _work_ended(job_id)
+
+    def test_a_failed_solve_holds_no_reservation(self, client, scored_data, monkeypatch):
+        def failing_solve(*_args: object, **_kwargs: object) -> bool:
+            raise RuntimeError("solver blew up")
+
+        monkeypatch.setattr("haute.routes._optimiser_service._solve_online", failing_solve)
+        looked = _hold_after_outcomes(monkeypatch)
+        job_id = self._solve(client, scored_data)
+        try:
+            status = _poll_until_done(client, job_id)
+            held = execution_admission_reservations_of(job_id)
+        finally:
+            looked.set()
+
+        assert status["status"] == "error", status.get("message")
+        assert held == ()
+        assert _work_ended(job_id)
+
+    def test_a_completed_auto_range_holds_no_reservation(self, client, scored_data, monkeypatch):
+        looked = _hold_after_outcomes(monkeypatch)
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
+            json={"graph": _make_optimiser_graph(scored_data), "target": _SOLVE_TARGET},
+        )
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+        try:
+            deadline = time.monotonic() + 30
+            while (
+                status := client.get(f"/api/optimiser/frontier/auto-range/status/{job_id}").json()
+            )["status"] == "running":
+                assert time.monotonic() < deadline, "the auto-range job did not finish"
+                time.sleep(0.02)
+            held = execution_admission_reservations_of(job_id)
+        finally:
+            looked.set()
+
+        assert status["status"] == "completed", status.get("message")
+        assert held == ()
+        assert _work_ended(job_id)

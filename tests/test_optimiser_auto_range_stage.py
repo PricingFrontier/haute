@@ -104,8 +104,8 @@ def _run(
 
 def _held_reservations() -> list[tuple[str, str]]:
     return sorted(
-        (profile.value, operation)
-        for profile, _bytes, operation in _execution_admission._IN_FLIGHT_RESERVATIONS.values()
+        (held.profile.value, held.operation)
+        for held in _execution_admission._IN_FLIGHT_RESERVATIONS.values()
     )
 
 

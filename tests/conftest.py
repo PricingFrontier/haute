@@ -462,8 +462,55 @@ def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
 
 
 #: How long a test's own work may take to release its memory reservation after the test
-#: body returns (a job thread recording its outcome) before the reservation counts as left.
+#: body returns (work still stopping after a cancel, or a job the test did not wait for)
+#: before the reservation counts as left.
 _RESERVATION_RELEASE_GRACE_S = 5.0
+
+#: The outcomes recorded while the work may still be running: a route's cancel or timeout,
+#: or a later job's supersession. The work releases its memory when it has stopped.
+_STOP_REASONS = frozenset({"cancelled", "timed_out", "superseded"})
+
+
+@pytest.fixture(autouse=True)
+def _outcomes_follow_their_release(monkeypatch: pytest.MonkeyPatch):
+    """A job records a completed or failed outcome only once its memory reservation is free.
+
+    A client that sees the outcome may start new work at once, which a reservation the
+    finished job still held would count against (background-jobs, "An outcome follows
+    its release"). Any terminal write the store accepts while the job still holds one
+    fails the test that drove it, whichever job type wrote it. A stop is exempt.
+    """
+    from haute.routes._job_store import JobStore
+    from tests._process_state import execution_admission_reservations_of
+
+    early: list[str] = []
+    real_transition = JobStore.transition_terminal
+    real_publish = JobStore.compare_and_publish_completion
+
+    def transition_terminal(self: JobStore, job_id: str, *, to: str, **kwargs: Any) -> Any:
+        held = () if to in _STOP_REASONS else execution_admission_reservations_of(job_id)
+        written = real_transition(self, job_id, to=to, **kwargs)
+        if written is not None and held:
+            early.append(f"{to!r} for job {job_id} while it held {', '.join(held)}")
+        return written
+
+    def compare_and_publish_completion(self: JobStore, job_id: str, **kwargs: Any) -> Any:
+        held = execution_admission_reservations_of(job_id)
+        published = real_publish(self, job_id, **kwargs)
+        if published is not None and held:
+            early.append(f"'completed' for job {job_id} while it held {', '.join(held)}")
+        return published
+
+    monkeypatch.setattr(JobStore, "transition_terminal", transition_terminal)
+    monkeypatch.setattr(JobStore, "compare_and_publish_completion", compare_and_publish_completion)
+    yield
+    if early:
+        pytest.fail(
+            "A job recorded its outcome before releasing its memory: "
+            + "; ".join(early)
+            + ". Release the work's execution context first (JobLifecycle releasing=).",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

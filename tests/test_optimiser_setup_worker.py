@@ -1174,9 +1174,9 @@ def test_a_self_admitted_auto_range_job_returns_its_admission_when_it_fails(
 
     def held() -> list[str]:
         return [
-            operation
-            for _profile, _bytes, operation in _execution_admission._IN_FLIGHT_RESERVATIONS.values()
-            if operation == "frontier_auto_range"
+            held.operation
+            for held in _execution_admission._IN_FLIGHT_RESERVATIONS.values()
+            if held.operation == "frontier_auto_range"
         ]
 
     assert held() == []

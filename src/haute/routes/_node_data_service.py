@@ -9,6 +9,7 @@ API-input tables keep their existing build routes, which ``run`` delegates to.
 from __future__ import annotations
 
 import contextlib
+import functools
 import tempfile
 import threading
 import time
@@ -1133,9 +1134,12 @@ class NodeDataService:
                     },
                     expected_status="running",
                     elapsed_seconds=time.monotonic() - start_time,
+                    releasing=execution_context,
                 )
         except Exception as exc:  # a background job records every failure.
-            self._fail_job(job_id, exc, token, start_time, label="Profile")
+            self._fail_job(
+                job_id, exc, token, start_time, label="Profile", releasing=execution_context
+            )
         finally:
             if execution_context is not None:
                 execution_context.release_admission()
@@ -1217,10 +1221,16 @@ class NodeDataService:
         start_time: float,
         *,
         label: str,
+        releasing: ExecutionContext | None,
         execution_context: ExecutionContext | None = None,
     ) -> None:
-        """Record one job failure with the shared worker failure envelope."""
+        """Record one job failure with the shared worker failure envelope.
+
+        *releasing*, the failed work's context, is released before the outcome is
+        written; *execution_context* supplies a worker failure's metrics.
+        """
         elapsed = time.monotonic() - start_time
+        transition = functools.partial(self._lifecycle.transition, releasing=releasing)
         if isinstance(exc, _WorkerReportedError):
             terminal_reason: TerminalReason
             if exc.kind == "memory":
@@ -1256,7 +1266,7 @@ class NodeDataService:
                         job_id=job_id,
                         error=str(metrics_exc),
                     )
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to=terminal_reason,
                 message=exc.detail,
@@ -1287,7 +1297,7 @@ class NodeDataService:
                         "rss_bytes": exc.rss_bytes,
                         "rss_limit_bytes": exc.rss_limit_bytes,
                     }
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to=reason,
                 message=message,
@@ -1299,11 +1309,9 @@ class NodeDataService:
                 # Preparation reports a cancelled job as a contract error; the
                 # job's own cancellation or supersession reason is the outcome.
                 reason = token.terminal_reason or "cancelled"
-                self._lifecycle.transition(
-                    job_id, to=reason, message=f"{label} {reason}", elapsed_seconds=elapsed
-                )
+                transition(job_id, to=reason, message=f"{label} {reason}", elapsed_seconds=elapsed)
             else:
-                self._lifecycle.transition(
+                transition(
                     job_id,
                     to=contract_error_terminal_reason(exc),
                     message=str(exc),
@@ -1312,7 +1320,7 @@ class NodeDataService:
                 )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
             message = memory_limit_user_message(exc, operation_noun=label)
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to="memory_limited",
                 message=message,
@@ -1324,7 +1332,7 @@ class NodeDataService:
                 elapsed_seconds=elapsed,
             )
         elif isinstance(exc, (CacheRequiredError, PointDataChangedError)):
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to="contract_error",
                 message=str(exc),
@@ -1335,7 +1343,7 @@ class NodeDataService:
             # The parent's planning or input preparation met the pipeline's own error, as
             # the worker's build would have.
             message = pipeline_error_message(exc)
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to="contract_error",
                 message=message,
@@ -1344,7 +1352,7 @@ class NodeDataService:
             )
         elif isinstance(exc, PipelineSettingsError):
             # Admission refused: the settings file's message names what to fix.
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to="error",
                 message=str(exc),
@@ -1353,7 +1361,7 @@ class NodeDataService:
             )
         else:
             answer = answer_failure(exc, operation="node_data_job")
-            self._lifecycle.transition(
+            transition(
                 job_id,
                 to=answer.terminal_reason,
                 message=answer.message,
@@ -1475,6 +1483,7 @@ class NodeDataService:
                         message=f"Cache build {reason}",
                         expected_status="running",
                         elapsed_seconds=time.monotonic() - start_time,
+                        releasing=execution_context,
                     )
                     return
                 self._lifecycle.transition(
@@ -1491,6 +1500,7 @@ class NodeDataService:
                     },
                     expected_status="running",
                     elapsed_seconds=time.monotonic() - start_time,
+                    releasing=execution_context,
                 )
         except Exception as exc:  # a background job records every failure.
             # Before the failure is published, for the same reason.
@@ -1501,6 +1511,7 @@ class NodeDataService:
                 token,
                 start_time,
                 label="Cache build",
+                releasing=execution_context,
                 execution_context=execution_context,
             )
         finally:

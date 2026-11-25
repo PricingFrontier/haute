@@ -550,8 +550,14 @@ class _WorkerHarness:
         harness = self
 
         class FakeExecutionContext:
+            def __init__(self) -> None:
+                self.released = False
+
             def release_admission(self) -> None:
-                harness.events.append("released")
+                # Idempotent, as a real context's lease is.
+                if not self.released:
+                    self.released = True
+                    harness.events.append("released")
 
         return FakeExecutionContext
 
@@ -1425,8 +1431,14 @@ class _ApiInputWorker:
         )
 
         class Context:
+            def __init__(self) -> None:
+                self.released = False
+
             def release_admission(self, **_kwargs: Any) -> None:
-                worker.released += 1
+                # Idempotent, as a real context's lease is.
+                if not self.released:
+                    self.released = True
+                    worker.released += 1
 
             def checkpoint(self, *, label: str) -> None:
                 del label

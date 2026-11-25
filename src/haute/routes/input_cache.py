@@ -784,6 +784,7 @@ def _run_build(
                 },
             },
             elapsed_seconds=time.monotonic() - started_at,
+            releasing=execution_context,
         )
 
     def fail_with(failure: _WorkerBuildError) -> None:
@@ -816,7 +817,9 @@ def _run_build(
                 token=token,
             )
             timeout_timer.cancel()
-            _complete_api_input_job(job_id, api_input, lifecycle, store, started_at)
+            _complete_api_input_job(
+                job_id, api_input, lifecycle, store, started_at, releasing=execution_context
+            )
             return
         assert identity is not None
         execution_context = create_admitted_execution_context(
@@ -858,6 +861,7 @@ def _run_build(
                 },
             },
             elapsed_seconds=time.monotonic() - started_at,
+            releasing=execution_context,
         )
     except _WorkerBuildError as failure:
         logger.warning(
@@ -937,6 +941,8 @@ def _complete_api_input_job(
     lifecycle: JobLifecycle,
     store: Any,
     started_at: float,
+    *,
+    releasing: ExecutionContext,
 ) -> None:
     snapshot = _api_input_status(source, include_running_build=False)
     tables = snapshot.tables or []
@@ -957,6 +963,7 @@ def _complete_api_input_job(
             },
         },
         elapsed_seconds=time.monotonic() - started_at,
+        releasing=releasing,
     )
 
 

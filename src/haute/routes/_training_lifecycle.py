@@ -655,7 +655,12 @@ class TrainService:
             worker_owns_cleanup = True
         except Exception as exc:
             self._record_preparation_failure(
-                job_id, exc, kind="training", operation_noun="Training", config=config
+                job_id,
+                exc,
+                kind="training",
+                operation_noun="Training",
+                config=config,
+                releasing=execution_context,
             )
         finally:
             if not worker_owns_cleanup:
@@ -671,12 +676,14 @@ class TrainService:
         kind: str,
         operation_noun: str,
         config: Mapping[str, Any],
+        releasing: ExecutionContext | None,
     ) -> None:
         """Land a preparation failure in the job, as every preparation owner does.
 
         A cancellation takes the token's reason, an admission or memory failure
         is ``memory_limited``, a ``RequestRefusedError`` keeps its parts, and anything
         else ends as its failure answer says (the raw text stays in ``error``).
+        Preparation's context, *releasing*, is released before the outcome is written.
         """
         if isinstance(exc, ExecutionCancelledError):
             reason = self._training_jobs.cancellation_reason(job_id) or "cancelled"
@@ -685,11 +692,14 @@ class TrainService:
                 to=reason,
                 message="Cancelled" if reason == "cancelled" else reason,
                 elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
+                releasing=releasing,
             )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            self._persist_preparation_refusal(job_id, _memory_limit_refusal(exc))
+            self._persist_preparation_refusal(
+                job_id, _memory_limit_refusal(exc), releasing=releasing
+            )
         elif isinstance(exc, RequestRefusedError):
-            self._persist_preparation_refusal(job_id, exc)
+            self._persist_preparation_refusal(job_id, exc, releasing=releasing)
         else:
             answer = _training_failure_answer(
                 exc, operation_noun=operation_noun, context=_training_context_phrase(config)
@@ -699,9 +709,12 @@ class TrainService:
                 to=answer.terminal_reason,
                 message=answer.message,
                 fields={**answer.job_fields(), "error": str(exc)},
+                releasing=releasing,
             )
 
-    def _persist_preparation_refusal(self, job_id: str, exc: RequestRefusedError) -> None:
+    def _persist_preparation_refusal(
+        self, job_id: str, exc: RequestRefusedError, *, releasing: ExecutionContext | None
+    ) -> None:
         message, fields = _refusal_job_parts(exc, job_id=job_id)
         terminal: TerminalReason
         if isinstance(exc, AnsweredFailureError):
@@ -717,6 +730,7 @@ class TrainService:
             to=terminal,
             message=message,
             fields=fields,
+            releasing=releasing,
         )
 
     def cancel(self, job_id: str) -> JobSnapshot:
@@ -883,6 +897,7 @@ class TrainService:
                 kind="dispersion",
                 operation_noun="Dispersion estimation",
                 config=config,
+                releasing=execution_context,
             )
         finally:
             if not worker_owns_cleanup:
@@ -1505,15 +1520,18 @@ class TrainService:
         except BaseException:
             # Ownership backstop: no exit from supervision may leave the
             # parent-owned temp parquet behind.
-            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
             raise
 
-    def _discard_prepared_parquet(self, job_id: str, tmp_parquet: str) -> None:
+    def _discard_prepared_parquet(
+        self, job_id: str, tmp_parquet: str, *, releasing: ExecutionContext
+    ) -> None:
         """Remove the parent-owned parquet, failing the job loudly if it survives.
 
         A removal failure is never swallowed: a surviving partial training file
         contradicts every terminal state this path can record, so it becomes a
-        500 ``error`` naming the cleanup failure.
+        500 ``error`` naming the cleanup failure, recorded once *releasing*, the
+        preparation's context, is released.
         """
         try:
             _remove_prepared_parquet(tmp_parquet)
@@ -1525,7 +1543,9 @@ class TrainService:
                 error=str(exc),
             )
             raise self._fail_preparation_worker(
-                job_id, ServiceFailedError(f"Training preparation cleanup failed: {exc}")
+                job_id,
+                ServiceFailedError(f"Training preparation cleanup failed: {exc}"),
+                releasing=releasing,
             ) from exc
 
     def _supervise_preparation_worker(
@@ -1578,7 +1598,7 @@ class TrainService:
         )
 
         def timed_out() -> ExecutionCancelledError:
-            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
             self.timeout(job_id, timeout=int(timeout_seconds), start_time=start_time)
             return ExecutionCancelledError("training_preparation", job_id=job_id)
 
@@ -1593,7 +1613,7 @@ class TrainService:
                 deadline=start_time + timeout_seconds,
             )
         except ExecutionCancelledError:
-            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
             raise
         except Exception as exc:
             if time.monotonic() - start_time >= timeout_seconds:
@@ -1617,12 +1637,12 @@ class TrainService:
                         config=replace(worker_config, timeout_seconds=remaining),
                     )
                 except WorkerStoppedError:
-                    self._discard_prepared_parquet(job_id, tmp_parquet)
+                    self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
                     raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
                 except WorkerTimeoutError:
                     raise timed_out() from None
                 except WorkerError as exc:
-                    self._discard_prepared_parquet(job_id, tmp_parquet)
+                    self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
                     raise self._fail_preparation_worker(
                         job_id,
                         worker_failure_refusal(
@@ -1631,16 +1651,19 @@ class TrainService:
                             timed_out="Training preparation took too long.",
                             memory_limit_bytes=budget.memory_limit_bytes,
                         ),
+                        releasing=execution_context,
                     ) from None
 
         if not isinstance(outcome, TrainingPreparationOutcome):
-            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
             invalid = TypeError(
                 f"The training preparation worker returned {type(outcome).__name__}, not an "
                 "outcome."
             )
             raise self._fail_preparation_worker(
-                job_id, failure_refusal(invalid, operation="training_preparation")
+                job_id,
+                failure_refusal(invalid, operation="training_preparation"),
+                releasing=execution_context,
             )
 
         # The job records the child's metrics carrying the parent's preparation
@@ -1657,12 +1680,13 @@ class TrainService:
 
         failure = outcome.failure
         if failure is not None:
-            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
             self._lifecycle.transition(
                 job_id,
                 to=failure.terminal_reason,
                 message=failure.message,
                 fields=dict(failure.fields),
+                releasing=execution_context,
             )
             raise RequestRefusedError(failure.http_detail, status_code=failure.http_status_code)
 
@@ -1672,12 +1696,13 @@ class TrainService:
             or not prepared_path.exists()
             or prepared_path.stat().st_size == 0
         ):
-            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._discard_prepared_parquet(job_id, tmp_parquet, releasing=execution_context)
             raise self._fail_preparation_worker(
                 job_id,
                 ServiceFailedError(
                     "Training preparation worker did not produce its prepared data."
                 ),
+                releasing=execution_context,
             )
 
         if outcome.feature_selection is not None:
@@ -1690,11 +1715,11 @@ class TrainService:
         return tmp_parquet
 
     def _fail_preparation_worker(
-        self, job_id: str, refusal: RequestRefusedError
+        self, job_id: str, refusal: RequestRefusedError, *, releasing: ExecutionContext
     ) -> RequestRefusedError:
         """Record a supervisor-side preparation failure and return its refusal: ended
         ``memory_limited`` for a 507, ``contract_error`` for a refusal the user can act on,
-        ``error`` otherwise."""
+        ``error`` otherwise. Preparation's context, *releasing*, is released first."""
         job_message, fields = _refusal_job_parts(refusal, job_id=job_id)
         status = refusal.status_code
         self._lifecycle.transition(
@@ -1704,6 +1729,7 @@ class TrainService:
             else ("error" if status >= 500 else "contract_error"),
             message=job_message,
             fields=fields,
+            releasing=releasing,
         )
         return refusal
 
@@ -2047,10 +2073,12 @@ class TrainService:
                 node_id=stored.get("node_id"),
                 pipeline_source=stored.get("pipeline_source") or None,
             )
+            # The worker has exited: its grant is released before the completion shows.
             completed = self._lifecycle.publish_completion(
                 job_id,
                 publish=publish_completion_fields,
                 message="Training completed",
+                releasing=execution_context,
             )
             if completed is not None:
                 self._release_superseded_training_artifacts(completed)

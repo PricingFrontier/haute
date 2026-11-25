@@ -2013,6 +2013,7 @@ class OptimiserSolveService:
                     else None
                 ),
                 elapsed_seconds=elapsed_seconds,
+                releasing=execution_context,
             )
             return
         failure = classify_optimiser_failure(
@@ -2034,7 +2035,10 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None,
         elapsed_seconds: float,
     ) -> None:
-        """Record a classified failure as the job's terminal state, with its metrics."""
+        """Record a classified failure as the job's terminal state, with its metrics.
+
+        *execution_context* is the failed work's own and is released first.
+        """
         fields = dict(failure.fields)
         fields["elapsed_seconds"] = elapsed_seconds
         if execution_context is not None:
@@ -2053,6 +2057,7 @@ class OptimiserSolveService:
             message=failure.message,
             fields=fields,
             elapsed_seconds=elapsed_seconds,
+            releasing=execution_context,
         )
 
     def start_frontier_auto_range(
@@ -2458,12 +2463,14 @@ class OptimiserSolveService:
                     terminal_reason=to,
                 ),
             )
+        # The failed step's context is released first: the job's outcome follows it.
         self._lifecycle.transition(
             job_id,
             to=to,
             message=message,
             fields=update,
             elapsed_seconds=elapsed_seconds,
+            releasing=execution_context,
         )
 
     def _record_http_setup_failure(
@@ -2678,6 +2685,7 @@ class OptimiserSolveService:
                             else execution_context.metrics_with_worker_evidence(worker_metrics)
                         ),
                     },
+                    releasing=execution_context,
                 )
                 return response
         except BackgroundJobStoppedError:
@@ -3628,10 +3636,13 @@ class OptimiserSolveService:
                     message=message,
                     fields=fields,
                     elapsed_seconds=time.monotonic() - start_time,
+                    releasing=execution_context,
                 )
                 if error_job is None:
                     logger.info("solve_error_update_skipped", job_id=job_id)
             finally:
+                # The outcome was recorded with the grant already released (by the
+                # completion or the failure above); the metrics are recorded data.
                 current = self._store.get_job(job_id)
                 if current is not None:
                     self._store.update_job(
@@ -3702,6 +3713,7 @@ class OptimiserSolveService:
                 message=answer.message,
                 fields=answer.job_fields(),
                 elapsed_seconds=time.monotonic() - start_time,
+                releasing=execution_context,
             )
             if not ctx.registration_already_active:
                 self._release_job_ownership(
