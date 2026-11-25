@@ -2106,7 +2106,9 @@ Loud, typed, and never averaged away:
   (sanitized) is what the model sees.
 - **Limits** — the per-turn tool-call cap and wall-clock timeout each terminate the stream
   with a named terminal event stating which limit was hit. Edits already applied remain (each
-  was a complete valid save); nothing is auto-reverted.
+  was a complete valid save); nothing is auto-reverted. An apply already saving when the time
+  limit passes completes, and its change-applied event streams before the terminal event, so
+  its card and Undo show without reopening the chat.
 - **Client disconnect** aborts the provider stream and stops the loop between tool
   executions; an executing save always completes. No orphaned provider streams or
   unmatched persisted tool calls outlive the request, and cleanup failure cannot retain

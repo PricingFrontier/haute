@@ -2245,6 +2245,42 @@ class TestLimits:
         stored = store.lookup(session_id).history[-1].messages
         assert [message.tool_call_id for message in stored if message.role == "tool"] == ["t1"]
 
+    async def test_an_apply_saved_after_the_deadline_is_shown_before_the_failure(
+        self, store, session_id
+    ):
+        """AST-06: an apply that began in time completes, so its end and its change card
+        stream before the time limit's failure, and the chat shows the change at once."""
+
+        async def slow_apply(name: str, arguments: dict) -> dict:
+            await asyncio.sleep(0.15)
+            return dict(_APPLIED)
+
+        provider = ScriptedProvider(
+            [
+                [ToolCallRequest("t1", "apply_graph_plan", {}), TurnStop("tool_use", _usage())],
+                [TextDelta("never reached"), TurnStop("end", _usage())],
+            ]
+        )
+
+        events = await _run(
+            store,
+            session_id,
+            "apply",
+            provider=provider,
+            execute_tool=slow_apply,
+            turn_timeout=0.05,
+        )
+
+        assert [event.type for event in events] == [
+            "tool_started",
+            "tool_finished",
+            "change_applied",
+            "failed",
+        ]
+        assert events[1].is_error is False
+        assert events[2].change.id == _APPLIED["change"]["id"]
+        assert "time" in events[3].message.lower()
+
     @pytest.mark.parametrize(
         "script",
         [

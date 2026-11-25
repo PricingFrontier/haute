@@ -1568,7 +1568,11 @@ the turn that follows.
    `failed` naming the limit. A non-mutating tool still running at the deadline is cancelled
    rather than drained; the interrupted call receives a matched, value-free
    `tool_interrupted` error in durable history so the timeout remains a real response bound
-   without creating an orphaned provider call/result pair.
+   without creating an orphaned provider call/result pair. The deadline ends the turn but
+   leaves its reader, so the call's tool-finished event, and for an apply that saved its
+   change-applied event and any build-plan update, stream before `failed`: an apply that
+   began in time and saved after the deadline shows its change card and its Undo at once.
+   Only a reader that left (cancellation, a closed stream) is sent nothing more.
 7. Cancellation: the client dropping the SSE connection cancels the generator. The provider
    stream is closed immediately; no further tool is dispatched; a save/publish already in
    flight is wrapped in `asyncio.shield` so the transactional write and its broadcast always
@@ -2917,7 +2921,8 @@ fixture for route tests). The implemented coverage is:
   tool's reported progress streams as `tool_progress` events while the call runs, between
   its started and finished rows; a turn closed at a progress event cancels a read tool,
   whose matched result is `tool_interrupted`; and closing at every tool yield, the
-  progress yield included, never persists an orphaned call.
+  progress yield included, never persists an orphaned call. An apply that saves after the
+  turn's deadline streams its tool-finished and change-applied events before `failed`.
 - **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
   transcript rehydration (a stored turn outcome closes its turn as an `outcome` entry,

@@ -7,10 +7,10 @@ specification](../assistant/high-level.md) describes it. `AST-02` is about what 
 applied or undone change tells the editor of its version capture. It comes
 from the second run of the review plan's sweep of failed writes on
 10 November 2026 and was reproduced through the assistant's service with a real git lock.
-`AST-04` and `AST-06` come from the plan's phase 5, a reader from a second model
+`AST-04` comes from the plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit.
-A worker ran each through the editor's assistant routes with a stand-in
-for the provider, and the main session ran each again on 13 November.
+A worker ran it through the editor's assistant routes with a stand-in
+for the provider, and the main session ran it again on 13 November.
 
 ## Priorities
 
@@ -20,7 +20,6 @@ for the provider, and the main session ran each again on 13 November.
 |---|---|---:|---|
 | AST-02 | Planned | P3 | An applied or undone assistant change whose version capture fails says so and names its files, as a save does. |
 | AST-04 | Planned | P2 | A provider is sent only what its own policy allows: not the earlier answers of a chat begun under a wider policy, and not what a policy saved during the turn allows. |
-| AST-06 | Planned | P3 | An apply that is saved after the turn's time limit is shown as applied, with its Undo. |
 
 ## Planned improvements
 
@@ -99,27 +98,4 @@ settings request is refused for the whole turn. A test covers each.
 
 **Evidence:** `src/haute/assistant/_session.py`;
 `src/haute/assistant/_tools.py`; `src/haute/routes/assistant.py`;
-`specs/assistant/high-level.md`.
-
-### AST-06 — An apply that lands after the turn's time limit is shown as applied
-**Why:** Reproduced on 13 November 2026 with the turn's time limit set to
-4 seconds in place of the default 600. The assistant's last call of the
-turn applies a plan that deletes a node. The call starts before the limit
-and its save ends after it. The stream carries the start of the apply and
-then the failure "Assistant time limit exceeded.", with no end of the
-apply and no change card. On disk the node is gone and the change is
-committed. The chat shows a failed turn, and no card with its Undo, until
-the chat is opened again, when the change is listed. The assistant
-specification has "a change-applied event after each successful apply".
-
-**Plan:** Send the end of the apply and its change card whenever the apply
-completed, and the failure after them.
-
-**Acceptance:** In the run above the stream carries the apply's end and
-its change card before the failure, and the chat shows the change with its
-Undo without being reopened.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_loop.py`;
 `specs/assistant/high-level.md`.
