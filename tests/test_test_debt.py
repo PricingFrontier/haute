@@ -1031,7 +1031,8 @@ def _runs_on_windows(step: dict[str, Any]) -> bool:
         "check cannot judge: condition it on runner.os == or != a system alone."
     )
     operator, _quote, system = match.groups()
-    return (system == "Windows") == (operator == "==")
+    # GitHub Actions compares strings without regard to case.
+    return (system.casefold() == "windows") == (operator == "==")
 
 
 def _windows_job_modules(workflow: dict[str, Any]) -> set[str]:
@@ -1117,8 +1118,10 @@ def test_the_windows_job_runs_only_the_steps_its_windows_leg_runs() -> None:
         {"if": "runner.os != 'Windows'", "run": "uv run pytest tests/b.py"},
         {"if": "runner.os == 'Windows'", "run": "uv run pytest tests/c.py"},
         {"if": 'runner.os == "macOS"', "run": "uv run pytest tests/d.py"},
+        {"if": "runner.os != 'windows'", "run": "uv run pytest tests/f.py"},
+        {"if": "runner.os == 'WINDOWS'", "run": "uv run pytest tests/g.py"},
     )
-    assert _windows_job_modules(workflow(*steps)) == {"tests/a.py", "tests/c.py"}
+    assert _windows_job_modules(workflow(*steps)) == {"tests/a.py", "tests/c.py", "tests/g.py"}
 
     unjudged = {"name": "Matrix", "if": "matrix.os == 'windows-latest'", "run": "tests/e.py"}
     with pytest.raises(AssertionError, match="cannot judge"):
