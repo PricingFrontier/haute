@@ -2140,7 +2140,10 @@ class TestANewProjectPassesItsOwnLintJob:
             "tool"
         ].get("ruff")
 
-        for check in (["check", "."], ["format", "--check", "."]):
+        # A project takes whichever ruff is newest, whose defaults check more than this
+        # repository's pinned one: import sorting is checked by name, as a newer ruff's
+        # `ruff check .` checks it.
+        for check in (["check", "."], ["check", "--select", "I", "."], ["format", "--check", "."]):
             ruff = subprocess.run(
                 [sys.executable, "-m", "ruff", *check, "--no-cache"],
                 cwd=tmp_path,

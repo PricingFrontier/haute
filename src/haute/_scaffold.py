@@ -2558,7 +2558,6 @@ from collections.abc import Callable
 
 import polars as pl
 
-
 # ── Date helpers ──────────────────────────────────────────────────────
 
 
@@ -2662,7 +2661,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute.parser import parse_pipeline_file
-
 
 PIPELINE_FILE = Path(__file__).resolve().parent.parent / "rating" / "main.py"
 
