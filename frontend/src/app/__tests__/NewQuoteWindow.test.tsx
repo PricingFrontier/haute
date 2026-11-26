@@ -328,7 +328,7 @@ describe("NewQuoteWindow", () => {
 
     const said = await screen.findByTestId("new-quote-refused")
     expect(said).toHaveTextContent("The dev database doesn't match the form:")
-    expect(said).toHaveTextContent("State (state) is missing")
+    expect(said).toHaveTextContent("Missing fields: policy.state")
     // Refused before anything was written: nothing may have been made, so nothing is kept.
     expect(screen.queryByTestId("new-quote-unknown")).toBeNull()
     expect(readKeptCreation(KEPT)).toBeNull()

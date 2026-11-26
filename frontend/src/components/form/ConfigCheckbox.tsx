@@ -4,6 +4,8 @@ interface ConfigCheckboxProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  /** The label names the box without showing: a box whose row already says what it is. */
+  labelHidden?: boolean;
   disabled?: boolean;
   id?: string;
 }
@@ -12,6 +14,7 @@ export default function ConfigCheckbox({
   checked,
   onChange,
   label,
+  labelHidden = false,
   disabled = false,
   id: externalId,
 }: ConfigCheckboxProps) {
@@ -34,7 +37,7 @@ export default function ConfigCheckbox({
       />
       <label
         htmlFor={checkboxId}
-        className="text-xs select-none"
+        className={labelHidden ? "sr-only" : "text-xs select-none"}
         style={{
           color: disabled ? "var(--text-muted)" : "var(--text-secondary)",
           cursor: disabled ? "not-allowed" : "pointer",

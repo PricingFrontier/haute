@@ -11,13 +11,14 @@ import { Eye, EyeOff, List, X } from "lucide-react"
 import type { CSSProperties } from "react"
 import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, NumberField, QuietAction, ValidatedTextField } from "../components/form"
-import { hasInputs, hasOutputs, isOutputColumn, ownOutputs, tableColumns, typedInputs } from "../utils/quoteIdentity"
+import { hasInputs, hasOutputs, isOutputColumn, ownOutputs, tableColumns } from "../utils/quoteIdentity"
 import { readTypedNumber, trimTyped } from "../utils/typedNumbers"
 import {
   columnKey,
   CONDITION_TESTS,
   COUNT_TESTS,
   conditionFault,
+  conditionInputs,
   DAYS_MAX,
   isGroup,
   isListCondition,
@@ -88,7 +89,7 @@ const listedNumbersValid = (text: string): string | null => {
 const splitValues = (text: string): string[] => text.split(",").map((value) => value.trim()).filter((value) => value !== "")
 
 /** A one-row table's columns the column select offers: its inputs, and, on what takes nothing typed, its outputs too, tested on the price. */
-const offeredColumns = (table: SchemaTable, priced: boolean): SchemaColumn[] => [...typedInputs(table), ...(priced ? ownOutputs(table) : [])]
+const offeredColumns = (table: SchemaTable, priced: boolean): SchemaColumn[] => [...conditionInputs(table), ...(priced ? ownOutputs(table) : [])]
 
 /** Whether the column select offers a many-row table's rows: an input table's, and, on what takes nothing typed, a table of outputs alone's too. */
 const rowsOffered = (table: SchemaTable, priced: boolean): boolean => hasInputs(table) || (priced && hasOutputs(table))

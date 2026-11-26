@@ -126,13 +126,14 @@ export interface MenuItem {
 const MENU_GAP = 4
 
 /**
- * A button showing `icon` alone, named `label`, opening a menu of `items`: drawn on the
+ * A button showing `icon` alone, or the word `text` where one is given, named `label`,
+ * opening a menu of `items`: drawn on the
  * document's body below the button, flush with its right edge, or above it where the window
  * has no room below, so a list's scrolling never clips it. A press or the focus elsewhere, a
  * scroll or the window's resize closes it, so one menu is open at a time, and Escape, which
  * gives the focus back to the button.
  */
-export function Menu({ label, icon: Icon, items, testId }: { label: string; icon: LucideIcon; items: MenuItem[]; testId?: string }) {
+export function Menu({ label, icon: Icon, text, items, testId }: { label: string; icon: LucideIcon; text?: string; items: MenuItem[]; testId?: string }) {
   const [open, setOpen] = useState(false)
   const button = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
@@ -179,7 +180,7 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
       <button
         ref={button}
         type="button"
-        className={ICON_BUTTON}
+        className={text === undefined ? ICON_BUTTON : `${ROW_BUTTON} gap-0.5`}
         aria-label={label}
         title={label}
         aria-haspopup="menu"
@@ -187,6 +188,7 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
         data-testid={testId}
         onClick={() => setOpen((was) => !was)}
       >
+        {text}
         <Icon size={12} aria-hidden="true" />
       </button>
       {open &&

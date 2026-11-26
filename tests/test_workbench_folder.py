@@ -1035,6 +1035,36 @@ def test_an_output_column_s_file_holds_no_rule_but_required(project: Path) -> No
     assert next(column for column in pricing.columns if column.name == "premium").required
 
 
+def test_a_validation_and_its_message_are_written_to_its_output_columns_file_and_read_back(
+    project: Path,
+) -> None:
+    checked = copy.deepcopy(FORM)
+    table_of(checked, "pricing")["outputs"].append(
+        column(
+            "premium_ok",
+            "bool",
+            validation=True,
+            validation_message="The premium is below the minimum",
+        )
+    )
+
+    written = json.loads(files_of(checked, project)["schema/pricing.json"])
+    assert written["outputs"][-1] == {
+        "name": "premium_ok",
+        "type": "bool",
+        "validation": True,
+        "validation_message": "The premium is below the minimum",
+    }
+    write_form(project, checked)
+    spec = read_form_document(config(project)).spec
+    pricing = next(table for table in spec.data_schema.tables if table.name == "pricing")
+    held = next(column for column in pricing.columns if column.name == "premium_ok")
+    assert (held.validation, held.validation_message) == (
+        True,
+        "The premium is below the minimum",
+    )
+
+
 def test_files_name_tables_and_columns_by_name(project: Path) -> None:
     files = files_of(FORM, project)
 

@@ -127,10 +127,13 @@ small mark beside the label on the sheets; for an Integer or a Decimal, its **fo
 the Explore pivot offers them; and, for an input, its **default**, its
 **placeholder**, what an empty cell shows (any type but True/false and Date), and the
 rules an underwriter's value must meet: required, a range for a number, the allowed
-values. A number shows in its format wherever the sheets show it, and in its default, a
+values. An output can be required too. A True/false output has **Validation** in
+Required's place: tick it to make the column a check the pipeline answers, and type the
+**message** an underwriter reads while it fails (see [Validation](#validation)). A number
+shows in its format wherever the sheets show it, and in its default, a
 percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
 or the default it shows as typed, and what is typed is what is saved and priced. To the
-right of each column's name, a line sums up what is set: required, its range and default,
+right of each column's name, a line sums up what is set: required or validation, its range and default,
 shown in its format, its allowed values, and a number's format and decimal places.
 
 **Where it's used**, the eye beside a column, lists the sheets that use it, each with the
@@ -261,7 +264,7 @@ business, which the underwriter app keeps with each saved quote and lists on its
 page. Its columns are fixed, in this order: **quote_reference**, **quote_option**,
 **quote_name**, **insured**, **broker**, **inception_date**, **expiry_date**,
 **is_renewal**, **stage**, **assignee**, **archived**, **created_date**, **created_by**,
-**modified_date**, **modified_by** and **haute_version**. Put them on the sheets as any
+**modified_date**, **modified_by**, **haute_version** and **validation_passed**. Put them on the sheets as any
 other columns, and give them labels, groups, help and placeholders, and the ones your
 underwriters type defaults and rules; the pipeline receives the table as it receives any
 other input, so a rule can read a quote's inception date or whether it is a renewal.
@@ -276,19 +279,27 @@ shows **Missing column** on the sheets while you build, for you to remove or mov
 column of your own, and is not shown in Preview or the app.
 
 The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
-**created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
-itself: their cells take no typing on the sheets in the app and take no rules and no
+**created_date**, **created_by**, **modified_date**, **modified_by**, **haute_version** and
+**validation_passed** itself: their cells take no typing on the sheets in the app and take no rules and no
 default. The underwriter keys the **quote_reference** once, in the window that makes the
 quote; it never changes after. **created_date** and **created_by** say when the quote was
 made and by whom; **modified_date** and **modified_by** when it was last saved or changed
-and by whom; **haute_version** is the version of Haute the app ran then. The two dates are
+and by whom; **haute_version** is the version of Haute the app ran then;
+**validation_passed** is ticked when the quote as last saved passes every check
+**Mark final** makes, the same answer the **Validation** button gives for a saved quote. It is
+set each time the quote is saved, so in a database that had quotes before the column was
+added it is empty until a quote's next save; set it to true in SQL for the quotes already
+final, which are not saved again. On a sheet its box cannot be ticked by hand, in Preview
+or in the app: it shows what the **Validation** button says of the values on the sheets. A
+**Show when** cannot test it, since what shows decides which checks are made. The two dates are
 dates in UTC, so near midnight they can differ by a day from the time the app shows you.
 The pipeline receives **quote_reference**, **quote_option**, **created_date** and
 **created_by**, and every other column of `quote_details`, whatever the sheets hide.
-**stage**, **assignee**, **archived**, **modified_date**, **modified_by** and
-**haute_version** are kept with the quote and never reach the pipeline, so assigning or
-archiving a quote never changes what it was priced on. In Preview the columns the pipeline
-receives hold what you type into the sample, to try a rule that reads them; an app without
+**stage**, **assignee**, **archived**, **modified_date**, **modified_by**,
+**haute_version** and **validation_passed** are kept with the quote and never reach the pipeline, so assigning or
+archiving a quote never changes what it was priced on. Preview acts as the app does: the
+columns the app sets, and **quote_name**, take no typing on a sheet there either, and
+**quote_reference** and **quote_option** show `PREVIEW` and 1; an app without
 a quote store leaves them blank. Assigning, archiving, restoring, marking final and
 amending a quote change those details alone, its values and price kept, and its activity
 shows when a quote moved. A quote takes
@@ -740,7 +751,7 @@ when a section above them opens or closes the sheet scrolls to keep their place.
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
 priced, as if they had never been typed, for the sample priced in Preview (and what the
 Workbench Input's previews run on) and for a quote in the underwriter app, and a hidden required
-cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
+cell is never marked, nor do a hidden cell's rules stop a quote being marked final. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
 holds, and a value only a hidden component or a hidden field takes is left out even when a
 Chart that shows plots it. A Heading takes nothing either; it just hides and shows. A
@@ -811,6 +822,35 @@ no Workbench Output on the pipeline, a value that does not fit its column — th
 says why, as it does when the pipeline returns output rows that do not fit their table's
 rows (an index value missing, repeated or on no row). A table's outputs with nothing connected, or an
 output the pipeline doesn't fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
+
+### Validation
+
+A quote can be saved whatever its cells hold. It can be marked final only once it passes
+every check the schema sets:
+
+- each column marked **Required**, input or output, holds a value;
+- each number with a **range** is within it;
+- each column with **allowed values** holds one of them;
+- each **validation** is true.
+
+A validation is a True/false output column that the pipeline fills: true where the quote
+passes, false where it does not. Use one for any condition of your own, such as a premium
+at or above its minimum or a schedule's total within the line. Add the column to an output
+table, tick **Validation** in its details and type its message, then fill it in the
+pipeline as you fill any output, for example with a step that compares the premium with
+the minimum. A validation the pipeline leaves empty fails, so a column nothing fills stops
+every quote. In a table with many rows, every row must pass, and a table with no rows
+passes.
+
+A required cell, a range and allowed values are not checked on a cell the sheets hide for
+the quote, as nobody could fill it in. A validation is always checked, whether or not a
+sheet shows it.
+
+**Validation** in the toolbar is outlined green while the sample passes every check and
+red while it fails any, with the number failing. Press it to list the checks that fail,
+each by its table and column with what it asks for, the rows failing in a
+table with many rows, and a failing validation's message. An output's checks fail until
+the sample is priced. The underwriter app's quote has the same button.
 
 ### Test quotes
 
@@ -1203,8 +1243,9 @@ alone; in Team you can narrow the list to who a quote is with, and order it by w
 saved, by **Quote reference** (A to Z, each reference's options in order) or by its
 insured. The list names the quote details' columns as the schema does, by their labels. The
 list, the search and the order are in the page's address, so a link or Back returns to the
-same list. Each row has **Read**, which opens the quote to look at it, changing nothing,
-**Edit**, which opens it to work on it, and a **⋯** menu holding what you do to the quote as
+same list. Under **Validation** a row shows a green tick when the quote as last saved
+passes every check and a red cross when it does not. Each row has **Read**, which opens the quote to look at it, changing nothing,
+**Edit**, which opens it to work on it, and an **Actions** menu holding what you do to the quote as
 a whole; clicking the row itself opens nothing. One person edits a quote at a time: **Edit**
 on a quote someone else is editing says who, and **Read** still opens it. A quote is free
 again as its editor leaves it, or a few minutes after their page closes:
@@ -1238,7 +1279,7 @@ exactly what it sent, and keeps it if you close it: the app offers it back, with
 again** or **Discard**, the next time it opens in that tab, so a quote is never made twice.
 
 ### A quote
-A quote opens at its own address, read only from **Read** (with **Edit** in its bar) or
+A quote opens at its own address, read only from **Read** (the same bar, with **Save** greyed out) or
 held as yours from **Edit**; a new quote opens to edit. While you edit it, nobody else can
 save or change it; if your page stops renewing its hold, say after the laptop slept, and
 someone else starts editing, your page turns read only, naming them, and keeps what you
@@ -1259,10 +1300,13 @@ after: a `quote_name` cell on the sheets is read only), its stage, and:
   value is not of its column's type, naming each one; a required value left empty, or a
   value outside its range, saves.
 - **Mark final** makes the quote the final quotation, once it is saved with a price of the
-  running release and every column the analyst made required, input or output, holds a
-  value; otherwise the app names each one that does not. A final quote cannot be saved until
+  running release and passes every check the analyst set: required columns, ranges,
+  allowed values and validations (see [Validation](#validation)). Until then it is greyed
+  out, and **Validation** lists what fails. A final quote cannot be saved until
   someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
   replaces the final quotation.
+- **Validation** is outlined green while the quote on the sheets passes every check and
+  red while it fails any, with the number failing; press it to list what fails. It reads what is on the sheets now, saved or not.
 - **History**: the handover note, the quotes it came from or that were made from it, and
   what was done to the quote, by whom and when, with the reasons given for amending it.
 

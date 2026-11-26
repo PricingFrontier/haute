@@ -40,6 +40,9 @@ phase's carrying of projects made on Windows to Linux, and was run again on Wind
 Server 2022 under repeated requests, lost connections and hand-made schemas. A worker
 built the run and the main session ran it again on 16 November 2026.
 
+`WB-78` is what the validations of 25 November 2026 left for later: a check that warns
+without stopping Mark final.
+
 ## Priorities
 
 **Start with:** `WB-50`
@@ -64,6 +67,7 @@ built the run and the main session ran it again on 16 November 2026.
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 | WB-77 | Planned | P3 | A PostgreSQL quote store whose server keeps the connection open but never answers is refused within the statement deadline, as one that stops acknowledging is. |
+| WB-78 | Planned | P3 | A validation can be a warning: shown failing, without stopping Mark final. |
 
 ## Planned improvements
 
@@ -675,3 +679,25 @@ connection is not handed out again.
 
 **Evidence:** `src/haute/_quote_store/_providers.py::deadline_hook`;
 `src/haute/_quote_store/_providers.py::make_server_engine`.
+
+### WB-78 — A validation that warns
+**Why:** Decided with the validations on 25 November 2026. Every check stops Mark final:
+a required column without a value, a value outside its range or allowed values, and a
+validation, a True/false output the pipeline fills, that does not hold true. Some of a
+project's conditions are for an underwriter to weigh, not for the form to enforce: a
+premium far from the last one, a rate under the technical rate. Today those either stop
+the quote or are not validations at all.
+
+**Plan:** To be designed. The questions it has to answer: whether a level is a
+validation's alone or a required column's, a range's and allowed values' too; whether
+passing over a warning takes a reason, and where that is recorded; and how the toolbar's
+Validation button tells a warning from what stops the quote.
+
+**Acceptance:** A quote failing only warnings can be marked final, and one failing a check
+that stops is refused as now.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_checks.py::quote_checks`;
+`src/haute/_quote_store/_book.py` (`QuoteBook.finalise`);
+`frontend/src/workbench/ValidationButton.tsx`.

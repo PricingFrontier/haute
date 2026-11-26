@@ -172,6 +172,27 @@ describe("QuotesPage", () => {
     expect(screen.getByText("2 quotes")).toBeInTheDocument()
   })
 
+  it("says with a tick or a cross whether each quote as saved passes every check, and names its menu Actions", async () => {
+    const details = appQuote().details
+    vi.mocked(fetchAppQuotes).mockResolvedValue(
+      page([
+        appQuote({ reference: "Q-000001", details: { ...details, validation_passed: true } }),
+        appQuote({ reference: "Q-000002", details: { ...details, validation_passed: false } }),
+        appQuote({ reference: "Q-000003" }),
+      ]),
+    )
+    show()
+
+    const passed = await screen.findByTestId("quote-row-Q-000001/1")
+    expect(screen.getByRole("columnheader", { name: "Validation" })).toBeInTheDocument()
+    expect(within(passed).getByRole("img", { name: "Validation passed" })).toBeInTheDocument()
+    expect(within(passed).queryByRole("img", { name: "Validation failed" })).toBeNull()
+    expect(within(screen.getByTestId("quote-row-Q-000002/1")).getByRole("img", { name: "Validation failed" })).toBeInTheDocument()
+    // A quote whose row holds no validation_passed says neither.
+    expect(within(screen.getByTestId("quote-row-Q-000003/1")).queryByRole("img")).toBeNull()
+    expect(within(passed).getByRole("button", { name: "Actions for Q-000001/1" })).toHaveTextContent("Actions")
+  })
+
   it("reads a quote from its row's Read and edits it from Edit, the row itself opening nothing, and duplicates one in the window", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2, version: 3 })]))
     vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ insured: "Acme" }] } }))

@@ -307,6 +307,8 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept_in_the_forms_table
         "modified_date": today,
         "modified_by": "ana@example.com",
         "haute_version": "9.9.9",
+        # The form asks nothing the saved quote lacks.
+        "validation_passed": True,
     }
     # The values read back as cells, the app's details among them.
     assert answered["values"]["policy_details"] == [{"state": "NY", "exposure": "1000"}]
@@ -661,7 +663,7 @@ def test_a_new_quote_leaving_a_required_detail_empty_is_made_and_saved(
         assert page.save(quote, values=blank).status_code == 200
         not_ready = page.change({**quote, "version": 2}, "final")
         assert not_ready.status_code == 409
-        assert not_ready.json()["detail"]["missing"] == ["quote_details.insured"]
+        assert not_ready.json()["detail"]["failing"] == ["quote_details.insured needs a value"]
 
 
 def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: Page) -> None:

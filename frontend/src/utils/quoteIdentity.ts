@@ -34,6 +34,7 @@ export const QUOTE_DETAILS_COLUMNS = [
   ["modified_date", "date"],
   ["modified_by", "str"],
   ["haute_version", "str"],
+  ["validation_passed", "bool"],
 ] as const satisfies ReadonlyArray<readonly [name: string, type: SchemaColumn["type"]]>
 
 type QuoteDetailColumn = (typeof QUOTE_DETAILS_COLUMNS)[number]
@@ -64,6 +65,7 @@ export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set([
   QUOTE_DETAILS.modified_date,
   QUOTE_DETAILS.modified_by,
   QUOTE_DETAILS.haute_version,
+  QUOTE_DETAILS.validation_passed,
 ])
 
 /**
@@ -78,6 +80,7 @@ export const QUOTE_DETAILS_STORE_ONLY: ReadonlySet<string> = new Set([
   QUOTE_DETAILS.modified_date,
   QUOTE_DETAILS.modified_by,
   QUOTE_DETAILS.haute_version,
+  QUOTE_DETAILS.validation_passed,
 ])
 
 /**
@@ -102,6 +105,8 @@ export const blankColumn = (name: string, type: SchemaColumn["type"]): SchemaCol
   max: null,
   options: [],
   options_source: null,
+  validation: false,
+  validation_message: "",
   index: null,
   help: "",
   placeholder: "",

@@ -23843,6 +23843,16 @@
           "default": true,
           "title": "Use Grouping",
           "type": "boolean"
+        },
+        "validation": {
+          "default": false,
+          "title": "Validation",
+          "type": "boolean"
+        },
+        "validation_message": {
+          "default": "",
+          "title": "Validation Message",
+          "type": "string"
         }
       },
       "required": [
@@ -23855,6 +23865,8 @@
         "max",
         "options",
         "options_source",
+        "validation",
+        "validation_message",
         "index",
         "help",
         "placeholder",

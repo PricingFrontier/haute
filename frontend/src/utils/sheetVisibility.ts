@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { hasInputs, isOutputColumn, ownInputs, QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns, tableColumns, tableIndex, typedInputs } from "./quoteIdentity"
+import { hasInputs, isOutputColumn, ownInputs, QUOTE_DETAILS, QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns, tableColumns, tableIndex, typedInputs } from "./quoteIdentity"
 import { isDay } from "./isoDate"
 import {
   filled,
@@ -213,6 +213,17 @@ const countFits = (test: ConditionTest, count: number): boolean => {
 }
 
 /**
+ * Whether a column is quote_details' validation_passed, which the checks work out from the
+ * rules of what shows (`quoteChecks`): were it to decide what shows, the answer saved would
+ * change what the next check of the same values reads, so no condition tests it or tests
+ * against it (`_worked_out` in `src/haute/_workbench_visibility.py`).
+ */
+export const isWorkedOut = (tableId: string, columnId: string): boolean => tableId === QUOTE_DETAILS_NAME && columnId === QUOTE_DETAILS.validation_passed
+
+/** A table's inputs a condition can test or test against: what is typed into it (`typedInputs`) but the column the checks work out. */
+export const conditionInputs = (table: SchemaTable): SchemaColumn[] => typedInputs(table).filter((column) => !isWorkedOut(table.name, column.name))
+
+/**
  * What stops a condition holding as written, or null when it fits: a clause completing a
  * sentence that starts with its sheet's or component's name. A one-row table's condition
  * is checked by its column, then its table's rows, then the field it is tested against
@@ -225,6 +236,7 @@ export function conditionFault(spec: FormSpec, condition: SingleCondition): stri
   if (isListCondition(condition)) return listFault(table, condition)
   const column = table === undefined ? undefined : tableColumns(table).find((candidate) => candidate.name === condition.column)
   if (table === undefined || column === undefined) return "tests a column that is no longer in the schema"
+  if (isWorkedOut(table.name, column.name)) return `tests ${column.name}, which the checks work out from what shows`
   if (table.rows === "many") return `tests ${column.name}, which is in a table with many rows`
   const { field } = condition
   if (field === null) return testFault(column, condition, null)
@@ -240,6 +252,7 @@ export function conditionFault(spec: FormSpec, condition: SingleCondition): stri
 function otherFault(column: SchemaColumn, table: SchemaTable | undefined, columnId: string): SchemaColumn | string {
   const other = table === undefined ? undefined : tableColumns(table).find((candidate) => candidate.name === columnId)
   if (table === undefined || other === undefined) return `tests ${column.name} against a field that is no longer in the schema`
+  if (isWorkedOut(table.name, other.name)) return `tests ${column.name} against ${other.name}, which the checks work out from what shows`
   if (isOutputColumn(table, other)) return `tests ${column.name} against ${other.name}, which is an output`
   if (table.rows === "many") return `tests ${column.name} against ${other.name}, which is in a table with many rows`
   return other
@@ -830,6 +843,39 @@ export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): F
 const NO_COLUMNS: ReadonlySet<string> = new Set()
 
 /**
+ * `rowsByTable` with each locked column's cells as `held` holds them, row for row: rows set
+ * whole, as an Import or a grid's insert sets them, change no cell that takes no typing, in
+ * Preview as in the app.
+ */
+export function withLocked<R extends Record<string, unknown>>(held: Readonly<Record<string, readonly R[]>>, rowsByTable: Record<string, R[]>, locked: ReadonlySet<string>): Record<string, R[]> {
+  if (locked.size === 0) return rowsByTable
+  return Object.fromEntries(
+    Object.entries(rowsByTable).map(([tableId, rows]) => [
+      tableId,
+      rows.map((row, at) => {
+        const before: Record<string, unknown> = held[tableId]?.[at] ?? {}
+        const next: Record<string, unknown> = { ...row }
+        for (const name of new Set([...Object.keys(row), ...Object.keys(before)])) {
+          if (!locked.has(columnKey(tableId, name))) continue
+          if (name in before) next[name] = before[name]
+          else delete next[name]
+        }
+        return next as R
+      }),
+    ]),
+  )
+}
+
+/**
+ * The quote_details columns the app sets itself, by `columnKey`, which take no typing on a
+ * sheet, in Preview as in the app: `QUOTE_DETAILS_MANAGED` and the quote's name, given in
+ * the New quote window as the quote is made and never changed after.
+ */
+export const APP_SET_COLUMNS: ReadonlySet<string> = new Set(
+  [...QUOTE_DETAILS_MANAGED, QUOTE_DETAILS.quote_name].map((id) => columnKey(QUOTE_DETAILS_NAME, id)),
+)
+
+/**
  * Whether a quote has anything typed to price or save, as the server counts it: a value in
  * a column the sheets show, other than a column the app sets (`locked`, by `columnKey`),
  * a numbered index, an index of values (`withPresetRows`) and the default a new quote
@@ -987,7 +1033,7 @@ export function testFields(schema: FormSchema, tableId: string, column: SchemaCo
   const tables = own.rows === "many" ? [own] : schema.tables.filter((table) => table.rows === "one")
   return tables.flatMap((table) =>
     ownInputs(table)
-      .filter((other) => other.index !== "numbered" && other.type === column.type && !(table.name === tableId && other.name === column.name))
+      .filter((other) => other.index !== "numbered" && other.type === column.type && !(table.name === tableId && other.name === column.name) && !isWorkedOut(table.name, other.name))
       .map((other) => ({ table, column: other })),
   )
 }
@@ -998,9 +1044,9 @@ export function testFields(schema: FormSchema, tableId: string, column: SchemaCo
  * its type's first test and no value; or null when the schema has neither.
  */
 export function newCondition(spec: FormSpec): SingleCondition | null {
-  const one = spec.schema.tables.find((table) => table.rows === "one" && typedInputs(table).length > 0)
+  const one = spec.schema.tables.find((table) => table.rows === "one" && conditionInputs(table).length > 0)
   if (one !== undefined) {
-    const column = typedInputs(one)[0]
+    const column = conditionInputs(one)[0]
     return { table: one.name, column: column.name, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
   }
   for (const table of spec.schema.tables) {

@@ -3,8 +3,9 @@
  * lists (My work, Team, Archived) and the stages of the one showing, each with its count;
  * above the list its name, the search, in Team an assignee, the order and New quote, which
  * opens the New quote window over the list as it is; the list itself a table at Haute's
- * density, a page at a time, each row always offering Read, Edit (for one who may change
- * quotes, unless someone else is editing it) and a menu of what is done to the quote as a
+ * density, a page at a time, each row saying with a tick or a cross whether the quote as
+ * saved passes every check, and always offering Read, Edit (for one who may change
+ * quotes, unless someone else is editing it) and Actions, a menu of what is done to the quote as a
  * whole: Duplicate, Renew and Create
  * alternative (the window again, filled from the quote), Archive or Restore, and Copy link. The
  * list showing is in the page's address.
@@ -13,18 +14,20 @@ import {
   Archive,
   ArchiveRestore,
   BadgeCheck,
+  Check,
+  ChevronDown,
   CircleDashed,
   Copy,
   FileText,
   GitBranchPlus,
   Link2,
-  MoreHorizontal,
   Plus,
   RefreshCcw,
   RotateCw,
   Search,
   UserRound,
   Users,
+  X,
   type LucideIcon,
 } from "lucide-react"
 import { useEffect, useRef, useState, type MouseEvent } from "react"
@@ -180,12 +183,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             // The list shown when Undo is pressed, which may be another than the one archived from.
             void answer([under(page)], changeAppQuote(archived.reference, archived.option, "restore", archived.version, {}), {
               ok: () => useQuoteListStore.getState().reload(),
-              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
+              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, { oneLine: true })}`),
             })
           },
         })
       },
-      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
+      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${appErrorMessage(reason, { oneLine: true })}`),
     })
   }
 
@@ -195,7 +198,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
         void useQuoteListStore.getState().reload()
         addToast("success", `Restored ${quote.label}`)
       },
-      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
+      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, { oneLine: true })}`),
     })
   }
 
@@ -226,7 +229,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const view = VIEWS.find((each) => each.view === query.view) ?? VIEWS[0]
   const stage = STAGES.find((each) => each.stage === query.stage)
   const filtered = query.search !== "" || query.stage !== null || query.assignee !== null
-  const span = 6 + columns.length
+  const span = 7 + columns.length
 
   return (
     <div className="flex min-h-0 flex-1" data-testid="quotes-page">
@@ -322,6 +325,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                   </th>
                 ))}
                 <th className="h-7 w-20 px-2 font-semibold">Stage</th>
+                <th className="h-7 w-20 px-2 font-semibold">Validation</th>
                 <th className="h-7 px-2 font-semibold">With</th>
                 <th className="h-7 w-24 px-2 font-semibold">Saved</th>
                 <th className="h-7 px-2" aria-label="Actions" />
@@ -398,6 +402,11 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                         {quote.archived && query.view !== "archived" && <StageChip stage="archived" />}
                       </span>
                     </td>
+                    <td className="px-2">
+                      {/* A quote saved before the store held the column says neither. */}
+                      {quote.details[QUOTE_DETAILS.validation_passed] === true && <Check size={14} role="img" aria-label="Validation passed" style={{ color: "var(--success)" }} />}
+                      {quote.details[QUOTE_DETAILS.validation_passed] === false && <X size={14} role="img" aria-label="Validation failed" style={{ color: "var(--danger)" }} />}
+                    </td>
                     <td className="max-w-[180px] truncate px-2" style={{ color: "var(--text-secondary)" }} title={quote.assignee}>
                       {quote.assignee === principal ? "You" : quote.assignee}
                     </td>
@@ -405,7 +414,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                       {relativeTime(new Date(quote.saved_at))}
                     </td>
                     <td className="px-2">
-                      <span className="flex items-center justify-end gap-0.5">
+                      <span className="flex items-center justify-end gap-2">
                         <button
                           type="button"
                           className={ROW_BUTTON}
@@ -427,7 +436,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                             Edit
                           </button>
                         )}
-                        <Menu label={`Actions for ${quote.label}`} icon={MoreHorizontal} items={actions(quote)} testId={`quote-actions-${quote.label}`} />
+                        <Menu label={`Actions for ${quote.label}`} text="Actions" icon={ChevronDown} items={actions(quote)} testId={`quote-actions-${quote.label}`} />
                       </span>
                     </td>
                   </tr>

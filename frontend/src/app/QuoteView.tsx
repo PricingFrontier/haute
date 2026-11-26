@@ -1,13 +1,13 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
- * to Quotes, its reference and option, name and stage, Save and Mark final or Amend,
- * History, the zoom, and why it has no price), a line of who saved it,
+ * to Quotes, its reference and option, name and stage, Save over History, Validation
+ * over Mark final or Amend, the zoom, and why it has no price), a line of who saved it,
  * where it came from and who it is with, and the notices of
  * anything that stands in the way. The quote is priced as it is typed. Values not saved are
  * kept in the browser and leaving with them asks first.
  */
-import { ArrowLeft, BadgeCheck, History, LockOpen, Pencil } from "lucide-react"
-import { Fragment, useEffect, useRef, useState } from "react"
+import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
@@ -21,6 +21,8 @@ import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibi
 import { QUOTE_DETAILS } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
+import { quoteChecks } from "../utils/quoteChecks"
+import ValidationButton from "../workbench/ValidationButton"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { EDIT_RENEW_MS, fullTime, QUOTES_RECHECK_MS, valuesKey } from "./quoteValues"
@@ -28,7 +30,7 @@ import { editPath, followLink, listPath, navigate, quotePath, setLeaveGuard, typ
 import { BUTTON, Notice, ReleaseNotice, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
-import useOpenQuoteStore, { busy, canEdit, editQuote, openQuotePart, readOnlyReason, takesChanges } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, canEdit, openQuotePart, readOnlyReason, takesChanges } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "quote" }>
 
@@ -254,13 +256,16 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   // Why a quote read only takes no change, in the words its controls say it in.
   const closedWhy =
     reason === "read"
-      ? "Press Edit to change this quote"
+      ? "Open this quote with Edit on the Quotes page to change it"
       : reason === "editing"
         ? "Someone else is editing this quote"
         : "This quote does not take changes as it is"
   const saveTitle = closed ? closedWhy : !typed ? "Type the quote first" : (unkeyed ?? "Save the quote (Ctrl+S)")
 
-  // Whether each required field holds a value is the server's to say as the quote is marked final.
+  // Whether the quote passes its checks is the server's to say as it is marked final;
+  // Validation says what it would say, of what the sheets hold, and Mark final is off
+  // while it says the quote fails one.
+  const failing = useMemo(() => form !== null && quoteChecks(form, values, price?.tables ?? null).some((check) => !check.passed), [form, values, price])
   const finalBlock = !editor
     ? "Changing quotes needs the app's edit role"
     : quote === null
@@ -275,7 +280,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
               : "The quote has no price yet"
             : quote.priced_release !== release?.id
               ? "Saved on an earlier release: save it again first"
-              : null
+              : failing
+                ? "The quote does not pass Validation"
+                : null
 
   const markFinal = async () => {
     if (quote === null) return
@@ -348,6 +355,12 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || unkeyed !== null || nothingNew} title={!closed && nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
           {saving ? "Saving…" : "Save"}
         </button>
+        <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
+          History
+        </ToolbarButton>
+      </ToolbarColumn>
+      <ToolbarColumn role="group" aria-label="Validation">
+        <ValidationButton form={form} values={values} tables={price?.tables ?? null} disabled={!ready} />
         {quote?.stage === "final" ? (
           <ToolbarButton icon={LockOpen} onClick={() => void amend()} disabled={working || reason !== "final"} title={reason === "final" ? "Take the quote back to draft to amend it, giving a reason" : closedWhy}>
             Amend
@@ -357,18 +370,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
             Mark final
           </ToolbarButton>
         )}
-      </ToolbarColumn>
-      {reason === "read" && editor && quote !== null && (
-        <ToolbarColumn role="group" aria-label="Edit">
-          <ToolbarButton icon={Pencil} onClick={() => void editQuote(quote)} title="Edit the quote, held as yours while you do">
-            Edit
-          </ToolbarButton>
-        </ToolbarColumn>
-      )}
-      <ToolbarColumn role="group" aria-label="History">
-        <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
-          History
-        </ToolbarButton>
       </ToolbarColumn>
       <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />
       {error !== null && (
@@ -521,7 +522,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {refusal !== null && (
         <Notice tone="danger" testId={refusal.of === "save" ? "notice-invalid" : "notice-not-ready"} onDismiss={() => dismiss("refusal")}>
-          {refusal.of === "save" ? "Not saved, as these values are not of their columns' types: " : "Not marked final, as these have no value: "}
+          {refusal.of === "save" ? "Not saved, as these values are not of their columns' types: " : "Not marked final: "}
           <Places places={refusal.places} />
         </Notice>
       )}

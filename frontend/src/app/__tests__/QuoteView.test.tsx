@@ -194,14 +194,24 @@ describe("QuoteView", () => {
     expect(screen.getByRole("button", { name: "Mark final" })).toBeInTheDocument()
   })
 
-  it("marks final with a required field empty, for the server to name each field that keeps it from being final", async () => {
-    // The sheets' required State is empty: only the server checks Required, as it is marked final.
+  it("does not mark final a quote failing Validation, saying why", async () => {
+    // The sheets' required State is empty.
     vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ year: "2026" }] } }))
+    await opened()
+
+    const final = screen.getByRole("button", { name: "Mark final" })
+    expect(final).toBeDisabled()
+    expect(final).toHaveAttribute("title", "The quote does not pass Validation")
+  })
+
+  it("names each check the server refuses Mark final for, its check the one that counts", async () => {
+    // Validation passes on the sheets; the server, on the quote as stored, says otherwise.
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ year: "2026", state: "CA" }] } }))
     vi.mocked(changeAppQuote).mockRejectedValue(
       new ApiError("HTTP 409", 409, "not ready", {}, {
-        message: "Q-000001/1 needs a value in policy.State, equipment row 2.Value before it is marked final.",
+        message: "Q-000001/1 cannot be marked final yet: policy.State needs a value; equipment row 2.Value needs a value.",
         error_code: "quote_not_ready",
-        missing: ["policy.State", "equipment row 2.Value"],
+        failing: ["policy.State needs a value", "equipment row 2.Value needs a value"],
       }),
     )
     await opened()
@@ -212,12 +222,26 @@ describe("QuoteView", () => {
     confirmQuestion("Mark final")
 
     const notice = await screen.findByTestId("notice-not-ready")
-    expect(notice).toHaveTextContent("Not marked final, as these have no value: policy.State; equipment row 2.Value.")
-    expect(within(notice).getByText("policy.State")).toBeInTheDocument()
-    expect(within(notice).getByText("equipment row 2.Value")).toBeInTheDocument()
+    expect(notice).toHaveTextContent("Not marked final: policy.State needs a value; equipment row 2.Value needs a value.")
+    expect(within(notice).getByText("policy.State needs a value")).toBeInTheDocument()
+    expect(within(notice).getByText("equipment row 2.Value needs a value")).toBeInTheDocument()
     expect(screen.getByTestId("stage-draft")).toBeInTheDocument()
     fireEvent.click(within(notice).getByRole("button", { name: "Dismiss" }))
     expect(screen.queryByTestId("notice-not-ready")).toBeNull()
+  })
+
+  it("says on Validation whether the quote on the sheets passes its checks, as it is typed", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ year: "2026" }] } }))
+    await opened()
+
+    const failing = within(screen.getByRole("toolbar", { name: "Quote toolbar" })).getByTestId("validation-button")
+    expect(failing).toHaveAttribute("data-state", "failing")
+    fireEvent.click(failing)
+    expect(screen.getByTestId("validation-failing")).toHaveTextContent("policy · State Needs a value")
+
+    type("CA")
+    expect(screen.getByTestId("validation-button")).toHaveAttribute("data-state", "passing")
+    expect(screen.queryByTestId("validation-failing")).toBeNull()
   })
 
   it("names each value a save was refused for, the values kept on the sheets unsaved", async () => {
@@ -468,7 +492,7 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
   })
 
-  it("reads a quote, changing nothing and holding nothing, with Edit to edit it", async () => {
+  it("reads a quote, changing nothing and holding nothing, under the bar of one opened to edit", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     await navigate("/quotes/Q-000001/1", { force: true })
     await opened({ ...QUOTE, mode: "read" })
@@ -478,10 +502,9 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("save-quote")).toBeDisabled()
     expect(screen.getByRole("button", { name: "Mark final" })).toBeDisabled()
     expect(screen.getByLabelText("Assigned to")).toBeDisabled()
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }))
-
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit"))
-    expect(editAppQuote).toHaveBeenCalledWith("Q-000001", 1, expect.any(String))
+    // The bar is the one a quote opened to edit has, button for button: it holds no Edit.
+    const bar = within(screen.getByRole("toolbar", { name: "Quote toolbar" })).getAllByRole("button").map((button) => button.textContent)
+    expect(bar).toEqual(["Save", "History", "Validation", "Mark final", "Zoom In", "Zoom Out"])
   })
 
   it("takes no handover note on a quote opened to read", async () => {
@@ -510,8 +533,8 @@ describe("QuoteView", () => {
 
     expect(screen.getByTestId("quote-read-only")).toHaveTextContent("Read only")
     expect(screen.getByTestId("notice-final")).toHaveTextContent("Marked final by jo@example.com")
-    expect(screen.getByTestId("save-quote")).toHaveAttribute("title", "Press Edit to change this quote")
-    expect(screen.getByRole("button", { name: "Amend" })).toHaveAttribute("title", "Press Edit to change this quote")
+    expect(screen.getByTestId("save-quote")).toHaveAttribute("title", "Open this quote with Edit on the Quotes page to change it")
+    expect(screen.getByRole("button", { name: "Amend" })).toHaveAttribute("title", "Open this quote with Edit on the Quotes page to change it")
   })
 
   it("holds a quote open to edit, renewing it while it is open and letting it go as it is left", async () => {

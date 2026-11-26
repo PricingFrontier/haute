@@ -39,6 +39,8 @@ from typing import Any
 
 from haute._typed_numbers import trim_typed
 from haute._workbench_form import (
+    QUOTE_DETAILS_CHECKED,
+    QUOTE_DETAILS_NAME,
     CollectionWidget,
     ColumnType,
     Condition,
@@ -227,7 +229,8 @@ def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
     many-row table, input or output, each of its tests of a row on a column of the table
     other than its index and fitting so, and a total's column a number column of the table
     other than its index, its value a number. An output's is tested against values typed
-    alone, never another field."""
+    alone, never another field. None tests quote_details' ``validation_passed``, or tests
+    against it: the checks work it out from what shows (:func:`_worked_out`)."""
     if isinstance(condition, Condition):
         found = _one_row_column(spec, condition.table, condition.column)
         if found is None:
@@ -427,7 +430,10 @@ def _typed_rows(
 
 
 def _tested_column(spec: FormSpec, table_name: str, column_name: str) -> SchemaColumn | None:
-    """A one-row table's input: a condition's, or the field one tests against."""
+    """A one-row table's input: a condition's, or the field one tests against. Never the
+    column the checks work out (:func:`_worked_out`)."""
+    if _worked_out(table_name, column_name):
+        return None
     return next(
         (
             column
@@ -440,10 +446,21 @@ def _tested_column(spec: FormSpec, table_name: str, column_name: str) -> SchemaC
     )
 
 
+def _worked_out(table_name: str, column_name: str) -> bool:
+    """Whether a column is quote_details' ``validation_passed``, which the checks work out
+    from the rules of what shows: were it to decide what shows, the quote's saved answer
+    would change what the next check of the same values reads, so no condition tests it or
+    tests against it."""
+    return table_name == QUOTE_DETAILS_NAME and column_name == QUOTE_DETAILS_CHECKED
+
+
 def _one_row_column(
     spec: FormSpec, table_name: str, column_name: str
 ) -> tuple[SchemaTable, SchemaColumn] | None:
-    """A one-row table's column with its table, input or output: a condition's own."""
+    """A one-row table's column with its table, input or output: a condition's own. Never
+    the column the checks work out (:func:`_worked_out`)."""
+    if _worked_out(table_name, column_name):
+        return None
     return next(
         (
             (table, column)

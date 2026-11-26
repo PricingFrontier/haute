@@ -253,13 +253,13 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           update({
             status: "editing",
             kept: null,
-            error: appErrorMessage(error, useAppStore.getState().form),
+            error: appErrorMessage(error),
             taken: apiErrorCode(error) === "reference_taken" ? takenBy(error) : null,
             releaseMoved: moved,
           })
         } else {
           // No answer, or a server failure: it may have been made, so it stays kept.
-          update({ status: "unknown", error: appErrorMessage(error, useAppStore.getState().form, { oneLine: true }) })
+          update({ status: "unknown", error: appErrorMessage(error, { oneLine: true }) })
         }
       },
     })
@@ -318,7 +318,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           const base = from.relation === "renewal" ? asRenewal(values) : values
           update({ status: "editing", base, details: typedDetails(base), dropped: read.dropped })
         },
-        failed: (error) => update({ status: "failed", error: appErrorMessage(error, useAppStore.getState().form) }),
+        failed: (error) => update({ status: "failed", error: appErrorMessage(error) }),
       })
     },
 

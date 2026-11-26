@@ -201,54 +201,57 @@ describe("the quote store's refusals", () => {
     expect(refusalOf(refused({ error_code: "quote_values_invalid", message: "No", cells }))).toEqual({ of: "save", places: ["policy, Year", "vehicles row 3, Value"] })
   })
 
-  it("name each required field a quote marked final has no value in, and nothing for a price of another release", () => {
-    expect(refusalOf(refused({ error_code: "quote_not_ready", message: "No", missing: ["policy.Drivers", "vehicles row 3.Value"] }))).toEqual({
+  it("name each check a quote marked final fails, and nothing for a price of another release", () => {
+    expect(refusalOf(refused({ error_code: "quote_not_ready", message: "No", failing: ["policy.Drivers needs a value", "vehicles row 3.Value must be at least 1"] }))).toEqual({
       of: "final",
-      places: ["policy.Drivers", "vehicles row 3.Value"],
+      places: ["policy.Drivers needs a value", "vehicles row 3.Value must be at least 1"],
     })
     expect(refusalOf(refused({ error_code: "quote_not_ready", message: "Priced on release rel-0" }))).toBeNull()
     expect(refusalOf(refused({ error_code: "quote_locked", message: "Final" }))).toBeNull()
     expect(refusalOf(new Error("down"))).toBeNull()
   })
 
-  it("say tables that do not fit under each table, each column by its label on the sheets and its name", () => {
-    const form = sheetForm()
-    form.schema.tables[0].inputs[1].label = "Year built"
+  it("say tables that do not fit by what is wrong, each once before everything it is wrong of, each column by its table and name", () => {
     const misfits = [
       { table: "policy", column: "state", problem: "is missing" },
       { table: "policy", column: "year", problem: "holds string, not integer" },
+      // One column wrong twice is named under each.
+      { table: "policy", column: "year", problem: "takes a null, unlike the store's" },
       { table: "equipment", column: null, problem: "is missing" },
-      { table: "haute_activity", column: "actor", problem: "is missing" },
+      { table: "drivers", column: null, problem: "is missing" },
+      // A column of the same name in another table is told from it by its table.
+      { table: "haute_activity", column: "state", problem: "is missing" },
+      { table: "haute_activity", column: "at", problem: "takes a null, unlike the store's" },
+      { table: "policy", column: null, problem: "needs SELECT granted to the identity the app signs in as" },
+      { table: "quote_details", column: null, problem: "needs SELECT granted to the identity the app signs in as" },
     ]
     const refused = storeRefusal({ ...MISFIT, misfits })
 
-    expect(appErrorMessage(refused, form)).toBe(
+    expect(appErrorMessage(refused)).toBe(
       [
         "The dev database doesn't match the form:",
-        "  policy",
-        "    State (state) is missing",
-        "    Year built (year) holds string, not integer",
-        "  equipment",
-        "    The table is missing",
-        "  haute_activity",
-        "    Actor (actor) is missing",
+        "  Missing fields: policy.state, haute_activity.state",
+        "  Holds string, not integer: policy.year",
+        "  Takes a null, unlike the store's: policy.year, haute_activity.at",
+        "  Missing tables: equipment, drivers",
+        "  Needs SELECT granted to the identity the app signs in as: policy, quote_details",
       ].join("\n"),
     )
-    expect(appErrorMessage(refused, form, { oneLine: true })).toBe(
-      "The dev database doesn't match the form: policy: State (state) is missing, Year built (year) holds string, not integer; equipment: The table is missing; haute_activity: Actor (actor) is missing.",
+    expect(appErrorMessage(refused, { oneLine: true })).toBe(
+      "The dev database doesn't match the form: Missing fields: policy.state, haute_activity.state; Holds string, not integer: policy.year; Takes a null, unlike the store's: policy.year, haute_activity.at; Missing tables: equipment, drivers; Needs SELECT granted to the identity the app signs in as: policy, quote_details.",
     )
     // No environment named, the database is the store's.
-    expect(appErrorMessage(storeRefusal({ ...MISFIT, environment: null }), null)).toBe("The quote store's database doesn't match the form:\n  policy\n    State (state) is missing")
+    expect(appErrorMessage(storeRefusal({ ...MISFIT, environment: null }))).toBe("The quote store's database doesn't match the form:\n  Missing fields: policy.state")
   })
 
   it("say any other refusal of the store as its message, and know the store's from a busy pricing's", () => {
     const away = storeRefusal(UNREACHED)
-    expect(appErrorMessage(away, sheetForm())).toBe(UNREACHED.message)
+    expect(appErrorMessage(away)).toBe(UNREACHED.message)
     expect(storeRefused(away)).toBe(true)
     expect(storeRefused(storeRefusal(MISFIT))).toBe(true)
     const busy = new ApiError("HTTP 503", 503, "The app is busy pricing other quotes: try again in a few seconds.", undefined, { error_code: "pricing_busy", message: "The app is busy pricing other quotes: try again in a few seconds." })
     expect(storeRefused(busy)).toBe(false)
-    expect(appErrorMessage(busy, sheetForm())).toBe("The app is busy pricing other quotes: try again in a few seconds.")
+    expect(appErrorMessage(busy)).toBe("The app is busy pricing other quotes: try again in a few seconds.")
   })
 
   it("know a repeated write superseded since it landed", () => {

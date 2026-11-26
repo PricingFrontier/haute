@@ -1,9 +1,11 @@
 import { ClipboardCheck, Database, Eye, RotateCcw, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import SourcePipelineControls from "../components/SourcePipelineControls"
+import type { FormSpec } from "../api/types"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import ValidationButton from "./ValidationButton"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
@@ -34,10 +36,14 @@ interface WorkbenchToolbarProps {
  * Schema, opening and closing the schema's pane in either mode, over Display and the box of
  * the sheets' colours it opens, disabled in Preview; Reset, in Preview, starting the sample
  * again as a new quote, one undo step, over Test quotes, in Preview, opening and closing the
- * test quotes' panel; in Preview, why pricing the sample last failed; and
+ * test quotes' panel; Validation, in Preview, saying whether the sample would be marked
+ * final and listing what it fails; in Preview, why pricing the sample last failed; and
  * the project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
+/** The sample before the form is read. */
+const NO_SAMPLE: FormSpec["sample"] = {}
+
 export default function WorkbenchToolbar({
   onSave,
   onCommit,
@@ -58,6 +64,9 @@ export default function WorkbenchToolbar({
   const setSchemaOpen = useWorkbenchViewStore((s) => s.setSchemaOpen)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const error = useWorkbenchPricingStore((s) => s.error)
+  const form = useWorkbenchFormStore((s) => s.form)
+  // The sample's price as last made: it follows the typing once it pauses.
+  const price = useWorkbenchPricingStore((s) => s.price)
   const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
   const setTestQuotesOpen = useWorkbenchTestQuotesStore((s) => s.setOpen)
 
@@ -95,6 +104,9 @@ export default function WorkbenchToolbar({
           >
             Test quotes
           </ToolbarButton>
+        </ToolbarColumn>
+        <ToolbarColumn>
+          <ValidationButton form={form} values={form?.sample ?? NO_SAMPLE} tables={price?.tables ?? null} disabled={!ready || !previewing} />
         </ToolbarColumn>
         {previewing && error !== null && (
           <span

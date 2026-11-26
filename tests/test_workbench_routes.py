@@ -309,6 +309,8 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "max": None,
         "options": [],
         "options_source": None,
+        "validation": False,
+        "validation_message": "",
         "index": None,
         "help": "",
         "placeholder": "",
@@ -878,7 +880,7 @@ def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
     )
     # Neither the form refused nor the context its message already says.
     assert "input" not in error and "ctx" not in error
-    assert len(refused.content) < 400
+    assert len(refused.content) < len(error["msg"]) + 100
     assert files_of(project) == before
 
 

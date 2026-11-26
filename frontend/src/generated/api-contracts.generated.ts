@@ -6284,6 +6284,8 @@ export interface SchemaColumn {
   required: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
   use_grouping: boolean;
+  validation: boolean;
+  validation_message: string;
 }
 /**
  * A column of a CSV in the pipeline's ``files/params/`` folder: the file by its name in

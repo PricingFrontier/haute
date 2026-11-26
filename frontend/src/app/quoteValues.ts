@@ -15,7 +15,7 @@ import { operationKey } from "../utils/operationKey"
 import { hasInputs, tableIndex } from "../utils/quoteIdentity"
 import { formattedNumber, indexKey, KEPT_KEY, withPresetRows } from "../utils/sheetValues"
 import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
-import { fieldColumn, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -241,31 +241,41 @@ export function beingEditedBy(error: unknown): string | null {
 export const storeRefused = (error: unknown): boolean =>
   apiErrorStatus(error) === 503 && (apiErrorCode(error) ?? "").startsWith("quote_store_")
 
-/** A misfit as the page says it: a column by its label on `form`'s sheets and its name, a table's own as the table's. */
-function misfitSaid(misfit: StoreMisfit, form: FormSpec | null): string {
-  if (misfit.column === null) return `The table ${misfit.problem}`
-  const found = form === null ? null : fieldColumn(form, { table: misfit.table, column: misfit.column })
-  const label = found?.column.label || readableName(misfit.column)
-  return `${label} (${misfit.column}) ${misfit.problem}`
+/** What a misfit is of, by the name the database knows it by: a column as `table.column`, a table by its name. */
+const misfitNamed = (misfit: StoreMisfit): string => (misfit.column === null ? misfit.table : `${misfit.table}.${misfit.column}`)
+
+/** The server's words for a table or a column the database does not hold. */
+const MISSING = "is missing"
+
+/**
+ * `misfits` grouped by what is wrong, in the order each is first met: what is wrong said
+ * once ("Missing fields", "Missing tables", any other problem in its own words) before
+ * everything it is wrong of. A table's problem and a column's are never one group.
+ */
+function misfitGroups(misfits: StoreMisfit[]): string[] {
+  const groups = new Map<string, string[]>()
+  for (const misfit of misfits) {
+    const of = misfit.column === null ? "tables" : "fields"
+    const wrong = misfit.problem === MISSING ? `Missing ${of}` : misfit.problem.charAt(0).toUpperCase() + misfit.problem.slice(1)
+    const key = `${of}\n${wrong}`
+    groups.set(key, [...(groups.get(key) ?? [wrong]), misfitNamed(misfit)])
+  }
+  return [...groups.values()].map(([wrong, ...named]) => `${wrong}: ${named.join(", ")}`)
 }
 
 /**
- * What the app says of a route's failure (specs/workbench): tables that do not fit named
- * misfit by misfit under each table, each column by its label on `form`'s sheets and its
- * name; any other failure as its message. On one line with `oneLine`, as a bar shows it.
+ * What the app says of a route's failure (specs/workbench): tables that do not fit said by
+ * what is wrong, each thing wrong once with everything it is wrong of after it, a column by
+ * its table's and its name in the database; any other failure as its message. On one line
+ * with `oneLine`, as a bar shows it.
  */
-export function appErrorMessage(error: unknown, form: FormSpec | null, { oneLine = false }: { oneLine?: boolean } = {}): string {
+export function appErrorMessage(error: unknown, { oneLine = false }: { oneLine?: boolean } = {}): string {
   const found = storeMisfits(error)
   if (found === null) return apiErrorMessage(error)
   const database = found.environment === null ? "The quote store's database" : `The ${found.environment} database`
-  const tables = new Map<string, string[]>()
-  for (const misfit of found.misfits) tables.set(misfit.table, [...(tables.get(misfit.table) ?? []), misfitSaid(misfit, form)])
-  if (oneLine) {
-    const listed = [...tables].map(([table, said]) => `${table}: ${said.join(", ")}`)
-    return `${database} doesn't match the form: ${listed.join("; ")}.`
-  }
-  const listed = [...tables].flatMap(([table, said]) => [`  ${table}`, ...said.map((each) => `    ${each}`)])
-  return [`${database} doesn't match the form:`, ...listed].join("\n")
+  const groups = misfitGroups(found.misfits)
+  if (oneLine) return `${database} doesn't match the form: ${groups.join("; ")}.`
+  return [`${database} doesn't match the form:`, ...groups.map((each) => `  ${each}`)].join("\n")
 }
 
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
@@ -293,8 +303,8 @@ export interface Refusal {
 
 /**
  * The places a refusal names as stopping it: a save's values not of their columns' types
- * (`quote_values_invalid`), or the required fields without a value that kept a quote from
- * being marked final (`quote_not_ready`); null for any other, and for one naming none.
+ * (`quote_values_invalid`), or the checks failed that kept a quote from being marked
+ * final, each as the server says it (`quote_not_ready`); null for any other, and for one naming none.
  */
 export function refusalOf(error: unknown): Refusal | null {
   const detail = apiErrorRawDetail(error)
@@ -308,7 +318,7 @@ export function refusalOf(error: unknown): Refusal | null {
     return places.length === 0 ? null : { of: "save", places }
   }
   if (code === "quote_not_ready") {
-    const places = listed("missing").filter((field): field is string => typeof field === "string")
+    const places = listed("failing").filter((field): field is string => typeof field === "string")
     return places.length === 0 ? null : { of: "final", places }
   }
   return null

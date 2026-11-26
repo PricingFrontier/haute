@@ -12,7 +12,6 @@ import type { WorkbenchAppQuote } from "../api/types"
 import { answer, newest, requestKind, under } from "../utils/answers"
 import { canonicalJson } from "../utils/canonicalJson"
 import { appErrorMessage, storeRefused } from "./quoteValues"
-import useAppStore from "./useAppStore"
 
 interface QuoteListState {
   /** The list loaded, as its query. */
@@ -62,7 +61,7 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
       ok: (page) => set({ query, quotes: page.quotes, counts: page.counts, next: page.next_cursor ?? null, status: "ready", storeRefused: false, refusals: 0 }),
       failed: (error) => {
         const refused = storeRefused(error)
-        set((s) => ({ status: "error", error: appErrorMessage(error, useAppStore.getState().form), storeRefused: refused, refusals: refused ? s.refusals + 1 : 0 }))
+        set((s) => ({ status: "error", error: appErrorMessage(error), storeRefused: refused, refusals: refused ? s.refusals + 1 : 0 }))
       },
     })
   },
@@ -75,7 +74,7 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
     if (query === null || next === null || loadingMore) return
     await answer([under(listAsked)], fetchAppQuotes(query, next), {
       ok: (page) => set((s) => ({ quotes: [...s.quotes, ...page.quotes], counts: page.counts, next: page.next_cursor ?? null })),
-      failed: (error) => set({ error: appErrorMessage(error, useAppStore.getState().form, { oneLine: true }) }),
+      failed: (error) => set({ error: appErrorMessage(error, { oneLine: true }) }),
     }, { pending: (waiting) => set({ loadingMore: waiting }) })
   },
 }))
