@@ -267,7 +267,7 @@ In `haute.toml`, fill in what `haute init` left empty: the registry in `[deploy.
 
 The production stage is started by hand, which needs Azure DevOps Services: Azure DevOps Server does not offer stages started by hand.
 
-To release: merge to main, read the `impact-report` artifact of the **Publish → Staging** stage, then start the **Staging → Production** stage from the run's page.
+To release: merge to main, read the `impact-report` artifact of the **Publish → Staging** stage, then start the **Staging → Production** stage from the run's page. The run itself finishes once staging is rolled out, and the production stage waits there until someone starts it. It can only release from a run of main: started from a pull request's run, it is skipped, and it refuses a commit that staging is not running.
 
 ---
 
