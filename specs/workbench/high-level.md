@@ -277,8 +277,8 @@ Out of scope:
   out, or names an image SOURCE's app is not running.
 
   A rollout leaves the switch from one release to the next to Azure, as single revision mode
-  makes it, so that an app can be updated release after release with its underwriters never
-  without it. The container's image is set to the new one with a revision suffix of its own
+  makes it, so that an app can be updated release after release without being taken down
+  for it. The container's image is set to the new one with a revision suffix of its own
   (the time and a random part, so no two rollouts share one), so a new revision always
   starts, beside the old one. Nothing is stopped first: Azure goes on sending every request
   to the old revision until the new one is ready, then sends every request to the new one
@@ -314,7 +314,10 @@ Out of scope:
   served (Azure's latest ready one) is set again with a suffix of its own and waited on as a
   rollout's is, within ten minutes more, Azure moving the requests to it and stopping the
   failed revision, and the run fails naming
-  what failed and that it rolled back; an app with no revision serving before is left with the
+  what failed and that it rolled back. A revision that fails a check has taken the app's
+  requests meanwhile, for as long as the check ran (five minutes at most) and the time Azure
+  takes to move them back: single revision mode gives no way to check a revision before
+  Azure sends it the requests; an app with no revision serving before is left with the
   failed revision deactivated. A release whose quotes are closed because the environment's tables do not fit
   its form stays, its quotes closed, the run failing naming each difference: the people who
   own the database change the tables in SQL, and the app opens its quotes once they fit, with
