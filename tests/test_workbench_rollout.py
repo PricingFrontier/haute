@@ -487,17 +487,63 @@ def test_the_revision_and_the_apps_address_share_one_deadline() -> None:
     ticks = FakeClock()
     host = FakeHost()
     host.ready_after = 0
-    app = FakeApp(health=[HttpAnswer(503)] * 20, lagging=10_000)
+    # The new revision would answer the app's address on its eleventh poll, as the five
+    # minutes end: that poll is never made.
+    app = FakeApp(health=[HttpAnswer(503)] * 20, lagging=10)
 
-    with pytest.raises(RolloutError, match="The app's own address was not answered"):
+    with pytest.raises(RolloutError, match="The app's own address was not answered") as failed:
         _roll(host, app, clock=ticks.clock())
 
     waited = [ticks.t]
-    # Twenty polls on the revision's address, ten on the app's: the check gave up at five
-    # minutes in all, and the rest of the time is the recovery's.
+    # Twenty-one polls on the revision's address, ten on the app's: the check gave up at
+    # five minutes in all, and the rest of the time is the recovery's.
     health = [url for url, _ in app.asked if url.endswith("/health")]
-    assert len(health) == 21 + 11
+    assert len(health) == 21 + 10
+    assert "from the revision motor--old" in str(failed.value)
     assert waited[0] >= rollouts.HEALTH_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("refusals", "health_seconds", "message"),
+    [
+        (8, 25.0, "The forged principal was not sent"),
+        (29, 0.0, "The signed-in release was not asked"),
+        (28, 0.0, "The app's own address was not asked"),
+    ],
+    ids=["forged-principal", "signed-in-release", "the-apps-address"],
+)
+def test_no_request_of_the_check_starts_once_its_time_is_spent(
+    refusals: int, health_seconds: float, message: str
+) -> None:
+    """Requests take time as waits do. A request started within the five minutes may finish,
+    but nothing of the check starts after them, however it would have been answered: the
+    check fails saying what it did not ask, never passes past its deadline."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 0
+    app = FakeApp(health=[HttpAnswer(503)] * refusals)
+    app.hosts[ADDRESS] = host
+    started: list[float] = []
+
+    def taking_time(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        started.append(ticks.t)
+        ticks.t += health_seconds if url.endswith("/health") else 10.0
+        return app(url, headers)
+
+    with pytest.raises(RolloutError, match=message) as failed:
+        rollout(
+            host,
+            environment="staging",
+            image=NEW,
+            commit=COMMIT,
+            say=lambda _: None,
+            get=taking_time,
+            clock=ticks.clock(),
+        )
+
+    assert "the hosted check's 300 seconds were spent before it" in str(failed.value)
+    assert max(started) < rollouts.HEALTH_TIMEOUT_SECONDS
+    assert f"The previous release ({OLD}) runs again" in str(failed.value)
 
 
 def test_a_re_run_is_held_to_the_revision_it_finds() -> None:

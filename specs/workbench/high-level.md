@@ -305,7 +305,8 @@ Out of scope:
   revision; and the same request signed in answers the release `/health` named and finds its
   quotes open. The app's own address, the one its underwriters use, is then asked for
   `/health` until the new revision answers it, within the same five minutes, since Azure's
-  routes follow its switch; two revisions of one release, whose id says what it prices and
+  routes follow its switch (no request of the check starts once the five minutes have
+  passed, and one started within them may finish); two revisions of one release, whose id says what it prices and
   not which image runs it, are told apart by the revision's name. The machine that runs the
   rollout so reaches each revision's address as well as the app's, and a check nothing
   answered names the address it could not reach. A new revision that fails to become ready or

@@ -497,16 +497,16 @@ def _answered(
     asked: str,
 ) -> str:
     """The release *revision* names in ``/health`` at *address*, asked signed in every
-    :data:`POLL_SECONDS` until that revision answers it or the *deadline* passes. The app
+    :data:`POLL_SECONDS` until that revision answers it or the *deadline* passes: no request
+    starts once it has, and one started before it may finish under its own bound. The app
     says in ``/health`` which revision it runs as: an answer from another revision says
     nothing of this one and is asked again, never taken for it. *asked* says what was."""
+    health: HttpAnswer | None = None
+    answering: object = None
     while True:
-        health = get(f"https://{address}/health", signed)
-        said = _json(health) if health.status == 200 else {}
-        release, answering = said.get("release"), said.get("revision")
-        if isinstance(release, str) and release and answering == revision:
-            return release
         if clock.now() >= deadline:
+            if health is None:
+                raise RolloutError(_spent(f"{asked} was not asked"))
             by = f" from the revision {answering}" if isinstance(answering, str) else ""
             # No server answered at all: the address is one this machine cannot reach.
             unreached = (
@@ -520,7 +520,17 @@ def _answered(
                 f"{asked} was not answered by the revision {revision} within "
                 f"{HEALTH_TIMEOUT_SECONDS} seconds (last answer: {_said(health)}{by}).{unreached}"
             )
+        health = get(f"https://{address}/health", signed)
+        said = _json(health) if health.status == 200 else {}
+        release, answering = said.get("release"), said.get("revision")
+        if isinstance(release, str) and release and answering == revision:
+            return release
         clock.sleep(POLL_SECONDS)
+
+
+def _spent(what: str) -> str:
+    """The failure of a request the hosted check did not start, its time spent before it."""
+    return f"{what}: the hosted check's {HEALTH_TIMEOUT_SECONDS} seconds were spent before it."
 
 
 def hosted_check(
@@ -535,7 +545,8 @@ def hosted_check(
     the revision; a forged principal is refused by the host; and the signed-in app answers
     the same release with its quotes open. The app's own address, the one its underwriters
     use, is then asked until that revision answers it, since Azure's routes follow its
-    switch. One deadline holds for both.
+    switch. One deadline holds for the whole check: no request of it starts once the
+    deadline has passed, and one started before it may finish under its own bound.
     """
     own = revision.address
     if own is None:
@@ -548,12 +559,16 @@ def hosted_check(
     release = _answered(
         get, own, signed, revision.name, deadline, clock, "The revision's health check"
     )
+    if clock.now() >= deadline:
+        raise RolloutError(_spent("The forged principal was not sent"))
     forged = get(f"https://{own}/api/app/release", forged_principal())
     if not _refused(forged, own, address):
         raise RolloutError(
             "The app answered a request that forged a signed-in principal "
             f"({_said(forged)}): its host's built-in authentication must stand in front of it."
         )
+    if clock.now() >= deadline:
+        raise RolloutError(_spent("The signed-in release was not asked"))
     answer = get(f"https://{own}/api/app/release", signed)
     if answer.status != 200:
         raise RolloutError(

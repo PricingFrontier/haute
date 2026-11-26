@@ -1817,7 +1817,11 @@ no longer has; and `InputSource` in
     `Authorization: Bearer`, which must answer 200 for the release `/health` named (any other
     status, or another release, failing at once) with `quotes.open`. `_answered` then polls
     `GET /health` at the app's own address, the one its underwriters use, until that revision
-    answers it, within the same deadline, since Azure's routes follow its switch. A `QuotesClosedError`
+    answers it, within the same deadline, since Azure's routes follow its switch. The
+    deadline holds the whole check: no request of it starts once the deadline has passed
+    (each poll, the forged request, the signed one and the app's address are each refused
+    then, saying what was not asked, `_spent`), and a request started before it may finish
+    under its own `REQUEST_TIMEOUT_SECONDS`, its answer taken. A `QuotesClosedError`
     (`quotes.error_code` `quote_store_mismatch`, carrying the release and the differences)
     leaves the release running. Any other failure, the update's included (refused, failed or
     past its deadline), starts one recovery deadline, `RECOVERY_TIMEOUT_SECONDS`, and
@@ -3710,7 +3714,10 @@ no longer has; and `InputSource` in
   until that revision answers it, the old revision's answers there asked again whether they
   name another release or the same one; an app's address the new revision never answers, a
   revision's address nothing answers at (the failure naming the address to reach) and a
-  revision Azure names no address for each failing; one deadline held by both addresses; an
+  revision Azure names no address for each failing; one deadline held by both addresses,
+  requests taking time as waits do: none of the check started once it has passed, whether
+  the forged request, the signed one or the app's address, and an answer the new revision
+  would have given after it never asked for; an
   app updated release after release, a failed release between two that work leaving the one
   before it running and recorded, and nothing ever deactivated; a new revision never ready
   within the deadline failing with the old one still serving, and a recovery reported only
