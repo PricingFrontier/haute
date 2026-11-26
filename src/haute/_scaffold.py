@@ -2282,7 +2282,10 @@ def _azure_devops_app_yml(host: str, store: str | None, connection: str) -> str:
     """A workbench project's pipeline for Azure DevOps: validate on a pull request and on a push
     to main; on main publish the underwriter app's image once and roll staging out to it, and
     roll production out by hand (``trigger: manual``), each a deployment under its
-    environment, whose exclusive lock keeps its rollouts one at a time.
+    environment, whose exclusive lock keeps its rollouts one at a time. The production stage
+    names no ``dependsOn``, which Azure DevOps refuses on a stage started by hand: its
+    ``condition`` holds it to main, and ``haute app rollout prod --from staging`` to the
+    commit staging runs.
 
     The pipeline holds no secret: each step that reaches Azure is an ``AzureCLI@2`` task under
     the service connection *connection* (:func:`_azure_cli_step`), the publish, the rollout
@@ -2355,10 +2358,13 @@ def _azure_devops_app_yml(host: str, store: str | None, connection: str) -> str:
                   condition: succeededOrFailed()
 
   # ── Staging → Production (by hand) ───────────────────────────
+  # A stage started by hand takes no dependsOn, which Azure DevOps refuses beside
+  # `trigger: manual`: it runs when someone starts it, on main alone, and the rollout
+  # itself refuses a commit staging does not run.
   - stage: DeployProduction
     displayName: Staging → Production
-    dependsOn: Publish
     trigger: manual
+    condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
     jobs:
       - deployment: production
         displayName: Roll production out to the release staging runs

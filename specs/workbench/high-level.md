@@ -184,7 +184,9 @@ Out of scope:
   ask for: GitHub's `release-production.yml`, run from the Actions tab for a commit of the
   default branch (its head unless another is given), GitLab's manual `deploy-production` job
   and Azure DevOps' `DeployProduction` stage, a deployment under its `production`
-  environment, triggered by hand whatever approvals it has, each run `haute app rollout prod
+  environment, triggered by hand whatever approvals it has (a stage started by hand
+  names no stage it depends on, which Azure DevOps refuses beside it: a condition holds
+  it to runs of main), each run `haute app rollout prod
   --from staging`, which rolls production to the release staging runs, refusing when staging
   runs another commit than the one being promoted. Each job that rolls out is given the
   host's credentials and time for a build, a rollout, a recovery and the impact (an hour for

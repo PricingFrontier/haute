@@ -1886,9 +1886,12 @@ class TestWorkbenchCiFiles:
             "condition": "succeededOrFailed()",
         }
         production = stages["DeployProduction"]
-        # Manual whatever approvals the environment has.
+        # Manual whatever approvals the environment has, and on main alone. It names no
+        # dependsOn: Azure DevOps refuses the whole pipeline when a stage started by hand
+        # has one ("Manually triggered stages cannot have dependencies").
         assert production["trigger"] == "manual"
-        assert production["dependsOn"] == "Publish"
+        assert "dependsOn" not in production
+        assert production["condition"] == "eq(variables['Build.SourceBranch'], 'refs/heads/main')"
         job = production["jobs"][0]
         assert job["environment"] == "production"
         steps = job["strategy"]["runOnce"]["deploy"]["steps"]
@@ -2331,6 +2334,17 @@ class TestCiRunner:
             ci_files("databricks", "github", runner=name)
         with pytest.raises(ValueError, match="runner"):
             workbench_ci_files("azure-container-apps", "gitlab", store=None, runner=name)
+
+
+def test_no_azure_devops_stage_started_by_hand_names_a_dependency() -> None:
+    """Azure DevOps refuses to queue a pipeline in which a ``trigger: manual`` stage has a
+    ``dependsOn``, so no generated pipeline holds one, whatever it is for."""
+    for label, ci, files in _ci_sets(""):
+        if ci != "azure-devops":
+            continue
+        for stage in yaml.safe_load(files["azure-pipelines.yml"])["stages"]:
+            if stage.get("trigger") == "manual":
+                assert "dependsOn" not in stage, (label, stage["stage"])
 
 
 class TestCiCredentials:

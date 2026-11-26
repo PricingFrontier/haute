@@ -361,7 +361,9 @@ last line and the impact; no stage names the `haute-credentials` group and no st
 `env` of secrets,
 and a production job run by
 hand, GitHub's `release-production.yml`, GitLab's manual `deploy-production` job and Azure
-DevOps' `DeployProduction` stage (`trigger: manual`), rolling production with `haute app
+DevOps' `DeployProduction` stage (`trigger: manual`, with no `dependsOn`, which Azure DevOps
+refuses to queue beside it, and the `condition` `eq(variables['Build.SourceBranch'],
+'refs/heads/main')`), rolling production with `haute app
 rollout prod --from staging`, on Azure DevOps one more `AzureCLI@2` step under the connection,
 exporting `AZURE_SUBSCRIPTION_ID` as the staging rollout's does, so a subscription `az account
 show` cannot read fails the step before the rollout runs; every job that rolls out given the host's credentials, an hour
@@ -3728,6 +3730,8 @@ no longer has; and `InputSource` in
   connections slow to be refused, and an error that is no refused connection raised at
   once.
 - `tests/test_scaffold.py` also covers Azure DevOps' workbench pipeline parsed: every step
+  no stage started by hand naming a `dependsOn`, in any generated pipeline, the workbench's
+  production stage held to main by its `condition`; every step
   that reaches Azure an `AzureCLI@2` task under the connection named, the publish, the
   rollout and the impact each a task of its own and production's rollout a fourth, no
   `haute-credentials` group, no `env` naming an `AZURE_` secret and no `docker login`, and
