@@ -228,6 +228,20 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
 
 ---
 
+## Running the jobs on your own runners
+
+Every job runs on a GitHub-hosted Ubuntu runner unless you name a self-hosted runner's label in `haute.toml` and run `haute ci update`:
+
+```toml
+[ci]
+provider = "github"
+runner = "pricing-linux"
+```
+
+Each runner with that label needs Ubuntu or Debian with Docker, permission to install packages unattended (`sudo apt-get`), and outbound access to the Python package index (PyPI), your base image's registry, Microsoft's container registry (a workbench project's test database image) and your own registry; in a workbench project, also to each hosted app's address ([Where the jobs run](../index.md#where-the-jobs-run)).
+
+---
+
 ## The generated workflows in detail
 
 !!! note "You don't need to read or understand the YAML below"

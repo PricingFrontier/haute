@@ -34,6 +34,7 @@ from haute._scaffold import (
     starter_pipeline,
     starter_test,
     starter_test_quote,
+    uses_service_connection,
     workbench_ci_files,
     workbench_haute_toml,
 )
@@ -856,6 +857,11 @@ class TestCompleteYamlParity:
         assert set(stages) == {"Validate", "DeployStaging", "DeployProduction"} | verification
         assert "refs/heads/main" in stages["DeployStaging"]["condition"]
         assert stages["DeployProduction"]["jobs"][0]["environment"] == "production"
+        if uses_service_connection(target, "azure-devops"):
+            # It signs in to Azure through its service connection and reads no secret
+            # (TestAzureDevOpsSignsInThroughAServiceConnection).
+            assert "env:" not in azure_devops_yml(target).split("- stage: DeployStaging")[1]
+            return
         expected = _target_secrets(target, "$({secret})")
         logs_in = target in _CONTAINER_BASED_TARGETS
         secret_steps = [("DeployStaging", "Deploy staging")]
@@ -1450,8 +1456,17 @@ def _login_scripts(target: str) -> dict[str, str]:
     ):
         names = [step.get("displayName") for step in steps]
         assert names[names.index("Log in to the registry") + 1] == deploy, label
-        scripts[label] = steps[names.index("Log in to the registry")]["script"]
+        login = steps[names.index("Log in to the registry")]
+        # A target that signs in to Azure through a service connection logs in with the
+        # Azure CLI, in a task under the connection.
+        scripts[label] = login["inputs"]["inlineScript"] if "task" in login else login["script"]
     return scripts
+
+
+def _through_a_connection(target: str, label: str) -> bool:
+    """Whether the login *label* names signs in through a service connection."""
+    provider = "azure-devops" if label.startswith("Azure DevOps") else "github"
+    return uses_service_connection(target, provider)
 
 
 def _run_login(
@@ -1462,7 +1477,8 @@ def _run_login(
     ``uv`` stands in for ``uv run haute ci registry-host``: a log line, then *host* on the
     last line, as the command prints them. ``uvx`` stands in for the AWS CLI's ``ecr
     get-login-password`` and prints *ecr* (or fails, given ``"FAIL"``); ``docker`` writes
-    its arguments, then what it reads, to ``docker.log``.
+    its arguments, then what it reads, to ``docker.log``, and ``az`` its arguments to
+    ``az.log``.
     """
     fakes = (
         "uv() {\n"
@@ -1477,7 +1493,8 @@ def _run_login(
         f"  printf '%s' '{ecr}'\n"
         "}\n"
         "docker() { printf '%s\\n' \"$*\" > docker.log; cat >> docker.log; }\n"
-        "rm -f docker.log\n"
+        "az() { printf '%s\\n' \"$*\" > az.log; }\n"
+        "rm -f docker.log az.log\n"
     )
     return subprocess.run(
         [posix_shell(), "-c", fakes + script],
@@ -1504,6 +1521,11 @@ class TestRegistryLogin:
             result = _run_login(script, tmp_path, host, credentials)
 
             assert result.returncode == 0, (label, result.stderr)
+            if _through_a_connection(target, label):
+                # The Azure CLI logs in, as the connection's identity: no secret is piped.
+                assert (tmp_path / "az.log").read_text() == f"acr login --name {host}\n", label
+                assert not (tmp_path / "docker.log").exists(), label
+                continue
             log = (tmp_path / "docker.log").read_text(encoding="utf-8")
             assert log == f"login {host} --username {user} --password-stdin\n{password}", label
 
@@ -1519,6 +1541,7 @@ class TestRegistryLogin:
 
             assert result.returncode == 0, (label, result.stderr)
             assert not (tmp_path / "docker.log").exists(), label
+            assert not (tmp_path / "az.log").exists(), label
 
     def test_an_ecr_password_that_cannot_be_fetched_fails_the_login(self, tmp_path: Path) -> None:
         credentials, host, *_ = _REGISTRY_LOGINS["aws-ecs"]
@@ -1534,9 +1557,12 @@ class TestRegistryLogin:
         # The login step is given the target's secrets; the AWS CLI also reads the AWS
         # keys from the environment.
         credentials, *_ = _REGISTRY_LOGINS[target]
-        assert set(credentials) <= set(ci_secret_names(target))
+        assert set(credentials) <= set(ci_secret_names(target, "github"))
         for label, script in _login_scripts(target).items():
             read = set(re.findall(r"\$([A-Z][A-Z0-9_]*)", script))
+            if _through_a_connection(target, label):
+                assert read == set(), label
+                continue
             assert read and read <= set(credentials), label
 
     def test_a_databricks_project_logs_in_to_no_registry(self) -> None:
@@ -1702,7 +1728,7 @@ class TestWorkbenchCiFiles:
             ).items()
         }
 
-    _SECRETS = frozenset(ci_secret_names("azure-container-apps"))
+    _SECRETS = frozenset(ci_secret_names("azure-container-apps", "github"))
 
     def test_github_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
         files = self._parsed("github")
@@ -1843,11 +1869,17 @@ class TestWorkbenchCiFiles:
         job = publish["jobs"][0]
         assert job["environment"] == "staging"
         steps = job["strategy"]["runOnce"]["deploy"]["steps"]
-        staged, measured, kept = steps[-3:]
-        assert set(staged["env"]) == self._SECRETS
-        assert 'uv run haute app rollout staging --image "$image"' in staged["script"]
-        assert measured["script"] == "uv run haute app impact"
-        assert set(measured["env"]) == self._SECRETS
+        published, staged, measured, kept = steps[-4:]
+        # Each a task of its own under the service connection, holding no secret.
+        for step in (published, staged, measured):
+            assert step["task"] == "AzureCLI@2" and "env" not in step
+            assert step["inputs"]["azureSubscription"] == "haute-azure"
+        assert "variables" not in publish
+        script = published["inputs"]["inlineScript"]
+        assert script.splitlines()[-1] == "uv run haute app build --push | tee publish.log"
+        script = staged["inputs"]["inlineScript"]
+        assert script.splitlines()[-1] == 'uv run haute app rollout staging --image "$image"'
+        assert measured["inputs"]["inlineScript"].splitlines()[-1] == "uv run haute app impact"
         assert kept == {
             "publish": "impact_report.md",
             "artifact": "impact-report",
@@ -1860,8 +1892,13 @@ class TestWorkbenchCiFiles:
         job = production["jobs"][0]
         assert job["environment"] == "production"
         steps = job["strategy"]["runOnce"]["deploy"]["steps"]
-        assert steps[-1]["script"] == "uv run haute app rollout prod --from staging"
-        assert set(steps[-1]["env"]) == self._SECRETS
+        promoted = steps[-1]
+        assert promoted["task"] == "AzureCLI@2" and "env" not in promoted
+        assert promoted["inputs"]["azureSubscription"] == "haute-azure"
+        assert promoted["inputs"]["inlineScript"].splitlines()[-1] == (
+            "uv run haute app rollout prod --from staging"
+        )
+        assert "variables" not in production
 
     @pytest.mark.parametrize("fails", [False, True], ids=["published", "publish-fails"])
     def test_the_staging_step_rolls_out_the_digest_the_publish_prints_last(
@@ -1912,6 +1949,388 @@ class TestWorkbenchCiFiles:
         assert "uv run haute deploy --dry-run" in text
         assert "haute app build" not in text
         assert "lockBehavior" not in text
+
+
+def _azure_cli_scripts(pipeline: str) -> dict[str, str]:
+    """Each ``AzureCLI@2`` step's script in an Azure DevOps pipeline, by its display name,
+    every one checked to run bash inline."""
+    scripts: dict[str, str] = {}
+    for stage in yaml.safe_load(pipeline)["stages"]:
+        for job in stage["jobs"]:
+            steps = job.get("steps") or job["strategy"]["runOnce"]["deploy"]["steps"]
+            for step in steps:
+                if step.get("task") != "AzureCLI@2":
+                    continue
+                inputs = step["inputs"]
+                assert (inputs["scriptType"], inputs["scriptLocation"]) == ("bash", "inlineScript")
+                scripts[step["displayName"]] = inputs["inlineScript"]
+    return scripts
+
+
+_DIGEST = "pricing.azurecr.io/motor@sha256:" + "a" * 64
+
+
+def _run_azure_cli_step(
+    script: str, cwd: Path, *, registry: str = "pricing.azurecr.io", subscription: str = "sub-1"
+) -> subprocess.CompletedProcess[str]:
+    """Run an ``AzureCLI@2`` step's *script* with ``az`` and ``uv`` as shell functions.
+
+    ``az`` writes its arguments to ``az.log`` and answers ``account show`` with
+    *subscription*, failing when it is empty. ``uv`` answers ``haute ci registry-host`` with
+    a log line and then *registry*, as the command prints them; any other ``haute`` command
+    it writes to ``haute.log`` with the subscription it was given, and the publish prints its
+    digest last.
+    """
+    fakes = (
+        "az() {\n"
+        "  printf '%s\\n' \"$*\" >> az.log\n"
+        '  if [ "$1" = account ]; then\n'
+        f"    [ -n '{subscription}' ] || return 1\n"
+        f"    printf '%s\\n' '{subscription}'\n"
+        "  fi\n"
+        "}\n"
+        "uv() {\n"
+        "  if [ \"$*\" = 'run haute ci registry-host' ]; then\n"
+        "    printf '%s\\n' '2026-10-29 12:00:00 [info] process_high_qos_configured'\n"
+        f"    printf '%s\\n' '{registry}'\n"
+        "    return 0\n"
+        "  fi\n"
+        '  printf \'%s|%s\\n\' "$*" "$AZURE_SUBSCRIPTION_ID" >> haute.log\n'
+        "  if [ \"$*\" = 'run haute app build --push' ]; then\n"
+        "    printf '%s\\n' '  Image pushed: pricing.azurecr.io/motor:abc1234'\n"
+        f"    printf '%s\\n' '{_DIGEST}'\n"
+        "  fi\n"
+        "}\n"
+    )
+    environment = {k: v for k, v in os.environ.items() if k != "AZURE_SUBSCRIPTION_ID"}
+    return subprocess.run(
+        [posix_shell(), "-c", fakes + script],
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestAzureDevOpsSignsInThroughAServiceConnection:
+    """On Azure DevOps a pipeline that signs in to Azure holds no secret: each step that
+    reaches Azure is an ``AzureCLI@2`` task under ``[ci] service_connection``
+    (specs/workbench, specs/pipeline-config)."""
+
+    @staticmethod
+    def _workbench(connection: str = "pricing azure (prod)") -> str:
+        files = workbench_ci_files(
+            "azure-container-apps", "azure-devops", store="sqlserver", service_connection=connection
+        )
+        return files["azure-pipelines.yml"]
+
+    def test_only_azure_container_apps_on_azure_devops_signs_in_through_one(self) -> None:
+        for ci in ("github", "gitlab", "azure-devops", "none"):
+            for target in TARGETS:
+                connected = (target, ci) == ("azure-container-apps", "azure-devops")
+                assert uses_service_connection(target, ci) is connected, (target, ci)
+                assert (ci_secret_names(target, ci) == []) is connected, (target, ci)
+
+    def test_every_step_that_reaches_azure_is_a_task_under_the_connection(self) -> None:
+        text = self._workbench()
+        tasks = [
+            step
+            for stage in yaml.safe_load(text)["stages"]
+            for job in stage["jobs"]
+            for step in job.get("steps") or job["strategy"]["runOnce"]["deploy"]["steps"]
+            if "task" in step and step["task"].startswith("AzureCLI")
+        ]
+
+        assert [task["displayName"] for task in tasks] == [
+            "Publish the app's image",
+            "Roll staging out",
+            "Compare staging with production on saved quotes",
+            "Roll production out",
+        ]
+        assert {task["inputs"]["azureSubscription"] for task in tasks} == {"pricing azure (prod)"}
+        # No secret reaches the pipeline: no group, no secret variable and no login with one.
+        for held in ("haute-credentials", "AZURE_CLIENT", "AZURE_TENANT", "docker login", "env:"):
+            assert held not in text.split("# ── Publish")[1], held
+
+    def test_the_publish_logs_in_with_the_registrys_whole_login_server(
+        self, tmp_path: Path
+    ) -> None:
+        """The Azure CLI reads the registry's name from its login server, which is not
+        always the host's first label: a registry with a domain name label is one."""
+        publish = _azure_cli_scripts(self._workbench())["Publish the app's image"]
+        for folder, registry in (
+            ("plain", "pricing.azurecr.io"),
+            ("dnl", "pricing-a1b2c3.azurecr.io"),
+        ):
+            cwd = tmp_path / folder
+            cwd.mkdir()
+
+            result = _run_azure_cli_step(publish, cwd, registry=registry)
+
+            assert result.returncode == 0, result.stderr
+            assert (cwd / "az.log").read_text() == f"acr login --name {registry}\n"
+            assert (cwd / "haute.log").read_text() == "run haute app build --push|\n"
+            assert (cwd / "publish.log").read_text().splitlines()[-1] == _DIGEST
+            assert "Image pushed" in result.stdout
+
+    def test_the_rollout_gets_the_digest_published_and_the_connections_subscription(
+        self, tmp_path: Path
+    ) -> None:
+        scripts = _azure_cli_scripts(self._workbench())
+        assert _run_azure_cli_step(scripts["Publish the app's image"], tmp_path).returncode == 0
+        (tmp_path / "haute.log").unlink()
+        (tmp_path / "az.log").unlink()
+
+        result = _run_azure_cli_step(scripts["Roll staging out"], tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "az.log").read_text() == "account show --query id --output tsv\n"
+        assert (tmp_path / "haute.log").read_text() == (
+            f"run haute app rollout staging --image {_DIGEST}|sub-1\n"
+        )
+
+    @pytest.mark.parametrize(
+        ("step", "command"),
+        [
+            ("Compare staging with production on saved quotes", "run haute app impact"),
+            ("Roll production out", "run haute app rollout prod --from staging"),
+        ],
+    )
+    def test_the_impact_and_production_get_the_connections_subscription(
+        self, tmp_path: Path, step: str, command: str
+    ) -> None:
+        result = _run_azure_cli_step(_azure_cli_scripts(self._workbench())[step], tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "haute.log").read_text() == f"{command}|sub-1\n"
+
+    @pytest.mark.parametrize(
+        "step",
+        [
+            "Roll staging out",
+            "Compare staging with production on saved quotes",
+            "Roll production out",
+        ],
+    )
+    def test_a_subscription_az_cannot_read_fails_the_step_before_haute_runs(
+        self, tmp_path: Path, step: str
+    ) -> None:
+        (tmp_path / "publish.log").write_text(f"{_DIGEST}\n")
+
+        result = _run_azure_cli_step(
+            _azure_cli_scripts(self._workbench())[step], tmp_path, subscription=""
+        )
+
+        assert result.returncode != 0
+        assert not (tmp_path / "haute.log").exists()
+
+    def test_a_publish_that_fails_fails_its_step(self, tmp_path: Path) -> None:
+        publish = _azure_cli_scripts(self._workbench())["Publish the app's image"]
+        failing = publish.replace("uv run haute app build --push", "false")
+        assert failing != publish
+
+        assert _run_azure_cli_step(failing, tmp_path).returncode != 0
+
+    def test_an_automated_deploy_to_azure_logs_in_through_the_connection(
+        self, tmp_path: Path
+    ) -> None:
+        text = azure_devops_yml("azure-container-apps", service_connection="pricing-azure")
+        stages = {stage["stage"]: stage for stage in yaml.safe_load(text)["stages"]}
+        staging = stages["DeployStaging"]["jobs"][0]["steps"]
+        production = stages["DeployProduction"]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
+
+        for stage in stages.values():
+            assert "variables" not in stage
+        for steps in (staging, production):
+            names = [step.get("displayName") for step in steps]
+            login = steps[names.index("Log in to the registry")]
+            assert login["task"] == "AzureCLI@2"
+            assert login["inputs"]["azureSubscription"] == "pricing-azure"
+            deploy = steps[names.index("Log in to the registry") + 1]
+            assert deploy["script"].startswith("uv run haute deploy") and "env" not in deploy
+        for held in ("haute-credentials", "AZURE_CLIENT", "docker login"):
+            assert held not in text
+        result = _run_azure_cli_step(_azure_cli_scripts(text)["Log in to the registry"], tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "az.log").read_text() == "acr login --name pricing.azurecr.io\n"
+
+    @pytest.mark.parametrize("target", sorted(set(TARGETS) - {"azure-container-apps"}))
+    def test_every_other_target_keeps_its_variable_group_and_names_no_connection(
+        self, target: str
+    ) -> None:
+        text = azure_devops_yml(target, service_connection="pricing-azure")
+
+        assert "haute-credentials" in text
+        assert "AzureCLI@2" not in text and "pricing-azure" not in text
+        # The connection is not read there, so one a pipeline could not name is no refusal.
+        assert azure_devops_yml(target, service_connection="") == text
+
+    @pytest.mark.parametrize(
+        "name", ["", "two\nlines", 'quo"ted', "back\\slash", " led", "x" * 101]
+    )
+    def test_a_connection_the_pipeline_cannot_name_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match="service connection"):
+            workbench_ci_files(
+                "azure-container-apps", "azure-devops", store=None, service_connection=name
+            )
+        with pytest.raises(ValueError, match="service connection"):
+            ci_files("azure-container-apps", "azure-devops", service_connection=name)
+
+    @pytest.mark.parametrize("name", ["true", "001", "1e3", "null", "Azure (pricing) 1.2_a-b"])
+    def test_a_name_yaml_would_read_as_another_type_stays_a_string(self, name: str) -> None:
+        text = self._workbench(name)
+
+        tasks = [
+            step
+            for stage in yaml.safe_load(text)["stages"]
+            for job in stage["jobs"]
+            for step in job.get("steps") or job["strategy"]["runOnce"]["deploy"]["steps"]
+            if step.get("task") == "AzureCLI@2"
+        ]
+        assert tasks and {task["inputs"]["azureSubscription"] for task in tasks} == {name}
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab"])
+    def test_other_providers_read_no_connection(self, ci: str) -> None:
+        named = workbench_ci_files(
+            "azure-container-apps", ci, store="sqlserver", service_connection=""
+        )
+
+        assert named == workbench_ci_files("azure-container-apps", ci, store="sqlserver")
+
+    def test_haute_toml_names_the_connection_only_where_the_pipeline_signs_in_through_it(
+        self,
+    ) -> None:
+        workbench = tomllib.loads(
+            workbench_haute_toml(
+                "motor", "azure-devops", host="azure-container-apps", store="sqlserver"
+            )
+        )
+        automated = tomllib.loads(haute_toml("motor", "azure-container-apps", "azure-devops"))
+
+        assert workbench["ci"] == {"provider": "azure-devops", "service_connection": "haute-azure"}
+        assert automated["ci"]["service_connection"] == "haute-azure"
+        for ci in ("github", "gitlab", "none"):
+            written = tomllib.loads(
+                workbench_haute_toml("motor", ci, host="azure-container-apps", store="sqlserver")
+            )
+            assert written["ci"] == {"provider": ci}
+        for target in sorted(set(TARGETS) - {"azure-container-apps"}):
+            assert "service_connection" not in haute_toml("motor", target, "azure-devops")
+
+    def test_env_example_holds_no_credentials_where_ci_reads_none(self) -> None:
+        text = app_env_example("azure-container-apps", ["HAUTE_DEV_PASSWORD"], ci="azure-devops")
+
+        assert "AZURE_" not in text
+        assert "[ci] service_connection" in text
+        # The analyst's own sign-ins are still named.
+        assert "HAUTE_DEV_PASSWORD=" in text
+        for line in text.splitlines():
+            assert not line or line.startswith("#") or line.endswith("="), line
+        assert "AZURE_CLIENT_SECRET=" in app_env_example("azure-container-apps", ci="github")
+        assert "AZURE_" not in env_example("azure-container-apps", ci="azure-devops")
+        assert "AZURE_CLIENT_SECRET=" in env_example("azure-container-apps", ci="gitlab")
+
+
+def _ci_sets(runner: str) -> list[tuple[str, str, dict[str, str]]]:
+    """Every set of CI files Haute generates, by what it is for and its provider: each
+    provider's for every deploy target and for a workbench on every store."""
+    sets: list[tuple[str, str, dict[str, str]]] = []
+    for ci in ("github", "gitlab", "azure-devops"):
+        for target in TARGETS:
+            sets.append((f"{ci}/{target}", ci, ci_files(target, ci, runner=runner)))
+        for store in (None, "sqlserver", "postgresql"):
+            files = workbench_ci_files("azure-container-apps", ci, store=store, runner=runner)
+            sets.append((f"{ci}/workbench/{store}", ci, files))
+    return sets
+
+
+def _where_jobs_run(ci: str, files: dict[str, str]) -> dict[str, Any]:
+    """Where each job of a provider's files runs, found by walking the parsed files, never
+    from a list of the jobs' names."""
+    found: dict[str, Any] = {}
+    if ci == "github":
+        for path, text in files.items():
+            for name, job in (yaml.safe_load(text).get("jobs") or {}).items():
+                if "uses" in job:
+                    # A called workflow's jobs are walked as that file's own.
+                    assert job["uses"].removeprefix("./") in files, (path, name)
+                    continue
+                assert job["steps"], (path, name)
+                found[f"{path}:{name}"] = job["runs-on"]
+    elif ci == "azure-devops":
+        document = yaml.safe_load(files["azure-pipelines.yml"])
+        assert "pool" not in document
+        for stage in document["stages"]:
+            assert "pool" not in stage, stage["stage"]
+            for job in stage["jobs"]:
+                found[f"{stage['stage']}:{job.get('job') or job['deployment']}"] = job["pool"]
+    else:
+        document = yaml.safe_load(files[".gitlab-ci.yml"])
+        default = document["default"]
+        for name, job in document.items():
+            if name in ("default", "stages", "variables") or not isinstance(job, dict):
+                continue
+            # Every job, a hidden one that others extend among them, takes the default's tags.
+            assert "tags" not in job and "inherit" not in job, name
+            if not name.startswith("."):
+                assert "script" in job, name
+                found[name] = default.get("tags")
+    assert found
+    return found
+
+
+class TestCiRunner:
+    """``[ci] runner`` names where every generated job runs; without one the jobs run on the
+    provider's hosted Ubuntu, or on GitLab untagged (specs/pipeline-config)."""
+
+    RUNNER = "pricing linux (docker)"
+    NAMED = {
+        "github": "pricing linux (docker)",
+        "azure-devops": {"name": "pricing linux (docker)"},
+        "gitlab": ["pricing linux (docker)"],
+    }
+    HOSTED = {
+        "github": "ubuntu-latest",
+        "azure-devops": {"vmImage": "ubuntu-latest"},
+        "gitlab": None,
+    }
+
+    def test_every_job_of_every_set_runs_on_the_runner_named(self) -> None:
+        for label, ci, files in _ci_sets(self.RUNNER):
+            for job, where in _where_jobs_run(ci, files).items():
+                assert where == self.NAMED[ci], (label, job)
+
+    def test_without_one_every_job_runs_on_the_hosted_ubuntu_or_untagged(self) -> None:
+        for label, ci, files in _ci_sets(""):
+            for job, where in _where_jobs_run(ci, files).items():
+                assert where == self.HOSTED[ci], (label, job)
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_an_empty_runner_changes_no_file(self, ci: str) -> None:
+        assert ci_files("databricks", ci, runner="") == ci_files("databricks", ci)
+        assert workbench_ci_files(
+            "azure-container-apps", ci, store="sqlserver", runner=""
+        ) == workbench_ci_files("azure-container-apps", ci, store="sqlserver")
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    @pytest.mark.parametrize("name", ["true", "001", "1e3", "null", "Default", "self-hosted"])
+    def test_a_name_yaml_would_read_as_another_type_stays_a_string(
+        self, ci: str, name: str
+    ) -> None:
+        named = {"github": name, "azure-devops": {"name": name}, "gitlab": [name]}[ci]
+
+        for where in _where_jobs_run(ci, ci_files("databricks", ci, runner=name)).values():
+            assert where == named
+
+    @pytest.mark.parametrize(
+        "name", ["two\nlines", 'quo"ted', "back\\slash", " led", "trail ", "x" * 101]
+    )
+    def test_a_runner_the_files_cannot_name_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match="runner"):
+            ci_files("databricks", "github", runner=name)
+        with pytest.raises(ValueError, match="runner"):
+            workbench_ci_files("azure-container-apps", "gitlab", store=None, runner=name)
 
 
 class TestCiCredentials:
@@ -2053,7 +2472,7 @@ class TestCiFiles:
             ci_files("databricks", "github", production_environment=name)
 
     def test_the_secrets_and_their_placeholders(self) -> None:
-        assert ci_secret_names("databricks") == [
+        assert ci_secret_names("databricks", "github") == [
             "DATABRICKS_MLFLOW_HOST",
             "DATABRICKS_MLFLOW_TOKEN",
             "DATABRICKS_RATING_HOST",
@@ -2061,7 +2480,7 @@ class TestCiFiles:
         ]
         placeholders = env_example_placeholders("databricks")
         assert placeholders["DATABRICKS_RATING_TOKEN"] == "your_databricks_token_here"
-        assert set(ci_secret_names("databricks")) <= set(placeholders)
+        assert set(ci_secret_names("databricks", "github")) <= set(placeholders)
 
     def test_a_usable_default_is_no_placeholder(self) -> None:
         # .env.example's AWS region is a value to keep, not one to replace.

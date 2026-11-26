@@ -616,7 +616,7 @@ def test_update_refuses_a_workbench_project_naming_no_host(runner, workbench_pro
 
 
 def test_a_workbench_projects_secrets_are_its_app_hosts(runner, workbench_project: Path) -> None:
-    names = ci_secret_names("azure-container-apps")
+    names = ci_secret_names("azure-container-apps", "github")
 
     result, _ = _invoke(runner, ["secrets", "--check"], _Gh(existing=tuple(names)))
 
@@ -702,6 +702,157 @@ def test_update_refuses_an_environment_the_providers_cannot_take(
     assert "[ci.production] environment" in result.output
     assert reason in result.output
     assert production.read_text(encoding="utf-8") == "name: edited\n"
+
+
+def _set_under_ci(project: Path, line: str) -> None:
+    """Write *line* into haute.toml's ``[ci]`` table, as its first key."""
+    toml = project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert text.count("[ci]\n") == 1
+    toml.write_text(text.replace("[ci]\n", f"[ci]\n{line}\n"), encoding="utf-8")
+
+
+def test_update_puts_every_job_on_the_recorded_runner(runner, project: Path) -> None:
+    import yaml
+
+    _set_under_ci(project, 'runner = "pricing-linux"')
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    workflows = sorted((project / ".github" / "workflows").glob("*.yml"))
+    where = [
+        job["runs-on"]
+        for workflow in workflows
+        for job in yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"].values()
+        if "uses" not in job
+    ]
+    assert where and set(where) == {"pricing-linux"}
+
+
+@pytest.mark.parametrize(
+    ("toml_value", "reason"), [('"two\\nlines"', "may hold only"), ("7", "a string")]
+)
+def test_update_refuses_a_runner_the_files_cannot_name(
+    runner, project: Path, toml_value: str, reason: str
+) -> None:
+    checks = project / ".github" / "workflows" / "ci.yml"
+    checks.write_text("name: edited\n", encoding="utf-8")
+    _set_under_ci(project, f"runner = {toml_value}")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 1
+    assert "runner" in result.output and reason in result.output
+    assert "Traceback" not in result.output
+    assert checks.read_text(encoding="utf-8") == "name: edited\n"
+
+
+# ---------------------------------------------------------------------------
+# Azure DevOps signs in to Azure through a service connection
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def azure_devops_workbench(runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A workbench project on Azure DevOps, as ``haute init`` makes it."""
+    use_project(tmp_path)
+    result = runner.invoke(
+        cli,
+        ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
+        + ["--ci", "azure-devops"],
+    )
+    assert result.exit_code == 0, result.output
+    return tmp_path
+
+
+def test_init_names_the_connection_an_azure_devops_workbench_signs_in_through(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    use_project(tmp_path)
+
+    result = runner.invoke(
+        cli,
+        ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
+        + ["--ci", "azure-devops"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Azure DevOps needs a service connection to Azure named haute-azure" in result.output
+    assert "needs these CI secrets" not in result.output
+    settings = tomllib.loads((tmp_path / "haute.toml").read_text(encoding="utf-8"))
+    assert settings["ci"] == {"provider": "azure-devops", "service_connection": "haute-azure"}
+    # CI holds no secret, so .env.example names only the analyst's own sign-ins.
+    env = (tmp_path / ".env.example").read_text(encoding="utf-8")
+    assert "AZURE_" not in env and "HAUTE_DEV_PASSWORD=" in env
+    pipeline = (tmp_path / "azure-pipelines.yml").read_text(encoding="utf-8")
+    assert pipeline.count('azureSubscription: "haute-azure"') == 4
+    assert "haute-credentials" not in pipeline
+
+
+def test_update_signs_in_through_the_recorded_connection(
+    runner, azure_devops_workbench: Path
+) -> None:
+    toml = azure_devops_workbench / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert 'service_connection = "haute-azure"' in text
+    toml.write_text(text.replace('"haute-azure"', '"pricing (prod)"'), encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    pipeline = (azure_devops_workbench / "azure-pipelines.yml").read_text(encoding="utf-8")
+    assert pipeline.count('azureSubscription: "pricing (prod)"') == 4
+    assert "haute-azure" not in pipeline
+    env = (azure_devops_workbench / ".env.example").read_text(encoding="utf-8")
+    assert "AZURE_" not in env
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "reason"),
+    [
+        ('service_connection = "haute-azure"\n', "", "is empty"),
+        ('"haute-azure"', '""', "is empty"),
+        ('"haute-azure"', "'quo\"ted'", "may hold only"),
+    ],
+    ids=["no-key", "empty", "a-name-the-files-cannot-hold"],
+)
+def test_update_refuses_an_azure_devops_workbench_whose_connection_it_cannot_name(
+    runner, azure_devops_workbench: Path, old: str, new: str, reason: str
+) -> None:
+    pipeline = azure_devops_workbench / "azure-pipelines.yml"
+    pipeline.write_text("edited\n", encoding="utf-8")
+    toml = azure_devops_workbench / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert old in text
+    toml.write_text(text.replace(old, new), encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 1
+    assert "[ci] service_connection" in result.output and reason in result.output
+    assert pipeline.read_text(encoding="utf-8") == "edited\n"
+
+
+def test_an_azure_devops_workbench_is_told_it_has_no_secrets_to_set(
+    runner, azure_devops_workbench: Path
+) -> None:
+    result = runner.invoke(cli, ["ci", "secrets"])
+
+    assert result.exit_code == 0, result.output
+    assert "has no CI secrets" in result.output
+    assert "[ci] service_connection" in result.output
+
+
+def test_another_provider_reads_no_connection(runner, workbench_project: Path) -> None:
+    # A GitHub project naming one the files could not hold is not refused: nothing reads it.
+    _set_under_ci(workbench_project, "service_connection = 'quo\"ted'")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
 
 
 def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:

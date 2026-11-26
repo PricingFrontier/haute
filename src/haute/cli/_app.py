@@ -210,18 +210,18 @@ def handle_app_rollout(config: AppRolloutConfig) -> None:
             None if config.source is None else rollouts.app_environment(workbench, config.source)
         )
         commit = rollouts.head_commit(project_dir)
-        values = rollouts.credentials()
+        sign_in = rollouts.azure_sign_in()
         if source is not None:
             assert config.source is not None
             image = rollouts.promoted(
-                rollouts.AzureContainerApps(source, values), config.source, commit
+                rollouts.AzureContainerApps(source, sign_in), config.source, commit
             )
             click.echo(f"  ✓ {config.source} runs {image} for commit {commit[:12]}")
         else:
             assert config.image is not None
             image = config.image
         release = rollouts.rollout(
-            rollouts.AzureContainerApps(target, values),
+            rollouts.AzureContainerApps(target, sign_in),
             environment=config.environment,
             image=image,
             commit=commit,
@@ -246,10 +246,10 @@ def handle_app_impact(config: AppImpactConfig) -> None:
         workbench = read_workbench_config(project_dir)
         staging = rollouts.app_environment(workbench, "staging")
         production = rollouts.app_environment(workbench, "prod")
-        values = rollouts.credentials()
+        sign_in = rollouts.azure_sign_in()
     report = impacts.impact(
-        rollouts.AzureContainerApps(production, values),
-        rollouts.AzureContainerApps(staging, values),
+        rollouts.AzureContainerApps(production, sign_in),
+        rollouts.AzureContainerApps(staging, sign_in),
         sample=config.sample,
         say=click.echo,
     )

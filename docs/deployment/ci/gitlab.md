@@ -206,6 +206,20 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
 
 ---
 
+## Running the jobs on your own runners
+
+The generated jobs carry no tag, so whichever runners take untagged jobs run them. To send them to runners of your own, name the runners' tag in `haute.toml` and run `haute ci update`:
+
+```toml
+[ci]
+provider = "gitlab"
+runner = "pricing-linux"
+```
+
+Each runner with that tag needs the Docker executor, and for a container target or a workbench project it must be privileged and share `/certs/client` with the Docker-in-Docker service the image is built through. It also needs outbound access to the Python package index (PyPI), Docker Hub, your base image's registry and your own registry; in a workbench project, also to each hosted app's address ([Where the jobs run](../index.md#where-the-jobs-run)).
+
+---
+
 ## The generated pipeline in detail
 
 !!! note "You don't need to read or understand the YAML below"

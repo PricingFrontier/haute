@@ -18,14 +18,16 @@ from haute._project_context import context_thread
 from haute._workbench_config import AppEnvironment, WorkbenchConfig
 from haute._workbench_rollout import (
     AppState,
+    AzureSignIn,
     Clock,
     HttpAnswer,
     QuotesClosedError,
     Recorded,
     RevisionState,
     RolloutError,
+    ServicePrincipal,
     app_environment,
-    credentials,
+    azure_sign_in,
     head_commit,
     hosted_check,
     promoted,
@@ -217,7 +219,7 @@ def _roll(host: FakeHost, app: FakeApp, image: str = NEW, **options: Any) -> str
     [
         ({"single_revision": False}, "keeps several revisions active"),
         ({"containers": 2}, "runs 2 containers"),
-        ({"address": None}, "no requests at a public address"),
+        ({"address": None}, "no requests from outside its Container Apps environment"),
         ({"client_id": None}, "signs no one in through Microsoft Entra ID"),
     ],
     ids=["multiple-revision-mode", "two-containers", "no-address", "no-entra-id"],
@@ -903,15 +905,159 @@ def test_an_environment_the_project_does_not_name_is_refused(
         app_environment(config, "staging")
 
 
-def test_each_unset_credential_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in rollouts.CREDENTIAL_VARIABLES:
+#: The four variables a job gives for the sign-in.
+_SIGN_IN_VARIABLES = (rollouts.SUBSCRIPTION_VARIABLE, *rollouts.SERVICE_PRINCIPAL_VARIABLES)
+
+
+@pytest.fixture
+def job(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """A job that gives nothing yet for the sign-in, with the Azure CLI on its path."""
+    for name in _SIGN_IN_VARIABLES:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("AZURE_TENANT_ID", "tenant")
+    _azure_cli(monkeypatch, found=True)
+    return monkeypatch
+
+
+def _azure_cli(monkeypatch: pytest.MonkeyPatch, *, found: bool) -> None:
+    monkeypatch.setattr(
+        rollouts.shutil, "which", lambda name: "/usr/bin/az" if found and name == "az" else None
+    )
+
+
+def test_all_three_variables_sign_in_as_the_service_principal(job: pytest.MonkeyPatch) -> None:
+    job.setenv("AZURE_SUBSCRIPTION_ID", "subscription-1")
+    job.setenv("AZURE_TENANT_ID", "tenant")
+    job.setenv("AZURE_CLIENT_ID", "client")
+    job.setenv("AZURE_CLIENT_SECRET", "s3cret")
+
+    sign_in = azure_sign_in()
+
+    # The Azure CLI on the path changes nothing: what the job gives is the sign-in.
+    assert sign_in == AzureSignIn("subscription-1", ServicePrincipal("tenant", "client", "s3cret"))
+    assert "s3cret" not in repr(sign_in)
+
+
+def test_none_of_the_three_signs_in_through_the_azure_cli(job: pytest.MonkeyPatch) -> None:
+    job.setenv("AZURE_SUBSCRIPTION_ID", "subscription-1")
+
+    assert azure_sign_in() == AzureSignIn("subscription-1", None)
+
+
+def test_none_of_the_three_and_no_azure_cli_is_refused_naming_both_ways(
+    job: pytest.MonkeyPatch,
+) -> None:
+    job.setenv("AZURE_SUBSCRIPTION_ID", "subscription-1")
+    _azure_cli(job, found=False)
 
     with pytest.raises(RolloutError) as refused:
-        credentials()
+        azure_sign_in()
 
-    assert "AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET" in str(refused.value)
+    assert "set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET to sign in" in str(
+        refused.value
+    )
+    assert "az login" in str(refused.value) and "not on the path" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("given", "unset"),
+    [
+        (("AZURE_TENANT_ID",), "AZURE_CLIENT_ID, AZURE_CLIENT_SECRET"),
+        (("AZURE_TENANT_ID", "AZURE_CLIENT_ID"), "AZURE_CLIENT_SECRET"),
+        (("AZURE_CLIENT_SECRET",), "AZURE_TENANT_ID, AZURE_CLIENT_ID"),
+    ],
+)
+def test_a_service_principal_given_in_part_is_refused_never_read_as_the_azure_clis(
+    job: pytest.MonkeyPatch, given: tuple[str, ...], unset: str
+) -> None:
+    job.setenv("AZURE_SUBSCRIPTION_ID", "subscription-1")
+    for name in given:
+        job.setenv(name, "given")
+
+    with pytest.raises(RolloutError) as refused:
+        azure_sign_in()
+
+    assert f"set {unset} too, to sign in as the CI service principal" in str(refused.value)
+
+
+def test_the_subscription_unset_is_named_beside_whatever_else_is_missing(
+    job: pytest.MonkeyPatch,
+) -> None:
+    job.setenv("AZURE_TENANT_ID", "tenant")
+
+    with pytest.raises(RolloutError) as refused:
+        azure_sign_in()
+
+    assert "set AZURE_SUBSCRIPTION_ID, the subscription the apps are in" in str(refused.value)
+    assert "set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET too" in str(refused.value)
+
+
+def test_each_sign_in_takes_tokens_from_its_own_credential_alone() -> None:
+    """A sign-in the job gives is never set aside for the other: its credential is that one
+    kind, no chain that tries another when Azure refuses it."""
+    from azure.identity import AzureCliCredential, ClientSecretCredential
+
+    environment = AppEnvironment("staging", "pricing-rg", "motor-staging")
+    principal = ServicePrincipal("00000000-0000-0000-0000-000000000000", "client", "wrong")
+
+    given = rollouts.AzureContainerApps(environment, AzureSignIn("subscription-1", principal))
+    cli = rollouts.AzureContainerApps(environment, AzureSignIn("subscription-1"))
+
+    assert type(given._credential) is ClientSecretCredential
+    assert type(cli._credential) is AzureCliCredential
+
+
+def test_the_azure_cli_is_asked_for_the_apps_token_in_the_subscriptions_account_within_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The token request as ``az`` gets it: the app registration as its resource, the
+    account of the subscription the run reads, whatever ``az``'s current one is, and the
+    request's bound as the process's."""
+    from azure.identity._credentials import azure_cli
+
+    asked: list[tuple[list[str], float]] = []
+
+    def answer(args: list[str], **options: Any) -> str:
+        asked.append((args[1:], options["timeout"]))
+        return json.dumps({"accessToken": "a-token", "expiresOn": "2099-01-01 00:00:00.000000"})
+
+    monkeypatch.setattr(azure_cli.shutil, "which", lambda name: "az")
+    monkeypatch.setattr(azure_cli.subprocess, "check_output", answer)
+    host = rollouts.AzureContainerApps(
+        AppEnvironment("staging", "pricing-rg", "motor-staging"),
+        AzureSignIn("subscription-1"),
+        client=object(),  # type: ignore[arg-type]
+    )
+
+    assert host.token("app-client-id") == "a-token"
+    arguments, bound = asked[0]
+    assert arguments[:2] == ["account", "get-access-token"]
+    assert arguments[arguments.index("--resource") + 1] == "app-client-id"
+    assert arguments[arguments.index("--subscription") + 1] == "subscription-1"
+    assert bound == rollouts.REQUEST_TIMEOUT_SECONDS
+
+
+def test_an_azure_cli_that_is_not_signed_in_is_said_as_the_rollouts_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from azure.identity._credentials import azure_cli
+
+    def refuse(args: list[str], **options: Any) -> str:
+        raise subprocess.CalledProcessError(
+            1, args, stderr="Please run 'az login' to setup account."
+        )
+
+    monkeypatch.setattr(azure_cli.shutil, "which", lambda name: "az")
+    monkeypatch.setattr(azure_cli.subprocess, "check_output", refuse)
+    host = rollouts.AzureContainerApps(
+        AppEnvironment("staging", "pricing-rg", "motor-staging"),
+        AzureSignIn("subscription-1"),
+        client=object(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RolloutError, match="az login"):
+        host.token("app-client-id")
 
 
 def test_the_commit_is_the_one_checked_out_and_none_is_refused(tmp_path: Path) -> None:
@@ -1077,7 +1223,7 @@ def azure() -> tuple[rollouts.AzureContainerApps, _Sdk, _Credential]:
     credential = _Credential()
     host = rollouts.AzureContainerApps(
         AppEnvironment("staging", "pricing-rg", "motor-staging"),
-        {},
+        AzureSignIn("subscription-1"),
         client=sdk,  # type: ignore[arg-type]
         credential=credential,  # type: ignore[arg-type]
         now=lambda: sdk.clock[0],
@@ -1254,7 +1400,7 @@ def test_the_real_sdk_takes_the_rollouts_updates() -> None:
     )
     host = rollouts.AzureContainerApps(
         AppEnvironment("staging", "pricing-rg", "motor-staging"),
-        {},
+        AzureSignIn("subscription-1"),
         client=client,
         credential=_SdkCredential(),  # type: ignore[arg-type]
     )
@@ -1306,14 +1452,16 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Pat
         )
     toml.write_text(text, encoding="utf-8")
     init_repo(tmp_path)
-    for name in rollouts.CREDENTIAL_VARIABLES:
+    for name in _SIGN_IN_VARIABLES:
         monkeypatch.setenv(name, f"value-of-{name.lower()}")
     return tmp_path
 
 
 def _hosts(monkeypatch: pytest.MonkeyPatch, **hosts: FakeHost) -> None:
-    def make(environment: AppEnvironment, values: Mapping[str, str]) -> FakeHost:
-        assert values["AZURE_CLIENT_SECRET"] == "value-of-azure_client_secret"
+    def make(environment: AppEnvironment, sign_in: AzureSignIn) -> FakeHost:
+        assert sign_in.subscription == "value-of-azure_subscription_id"
+        assert sign_in.service_principal is not None
+        assert sign_in.service_principal.client_secret == "value-of-azure_client_secret"
         return hosts[environment.name]
 
     monkeypatch.setattr(rollouts, "AzureContainerApps", make)

@@ -25,6 +25,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import time
 import urllib.error
 import urllib.parse
@@ -40,13 +41,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 from haute._workbench_config import AppEnvironment, WorkbenchConfig, WorkbenchError
 
 if TYPE_CHECKING:
-    from azure.identity import ClientSecretCredential
+    from azure.core.credentials import TokenCredential
     from azure.mgmt.appcontainers import ContainerAppsAPIClient
 
-#: The variables the CI service principal and its subscription are named in: the four secrets
-#: a workbench project's CI is given for its host.
-CREDENTIAL_VARIABLES: tuple[str, ...] = (
-    "AZURE_SUBSCRIPTION_ID",
+#: The variable naming the subscription the hosted apps are in.
+SUBSCRIPTION_VARIABLE = "AZURE_SUBSCRIPTION_ID"
+#: The variables the CI service principal is named in, its tenant, client ID and secret: with
+#: the subscription's, the four secrets a GitHub or GitLab workbench project's CI is given.
+SERVICE_PRINCIPAL_VARIABLES: tuple[str, ...] = (
     "AZURE_TENANT_ID",
     "AZURE_CLIENT_ID",
     "AZURE_CLIENT_SECRET",
@@ -128,7 +130,8 @@ class RevisionState:
 @dataclass(frozen=True, slots=True)
 class AppState:
     """The Container App as the rollout needs it: whether it keeps one revision active at a
-    time, its containers' images, its public address (None without one), its latest revision
+    time, its containers' images, its address outside its Container Apps environment (None
+    without external ingress), its latest revision
     and every active one, its Microsoft Entra ID registration's client ID (None without one),
     the names of its Azure tags and the release recorded on it (None without a whole record)."""
 
@@ -170,7 +173,7 @@ class ContainerAppHost(Protocol):
         ...
 
     def token(self, client_id: str) -> str:
-        """A bearer token, as the CI service principal, for the app registration *client_id*."""
+        """A bearer token, as the run is signed in, for the app registration *client_id*."""
         ...
 
 
@@ -256,17 +259,91 @@ def forged_principal() -> dict[str, str]:
     }
 
 
-def credentials() -> dict[str, str]:
-    """The CI service principal and its subscription, by variable, from the environment;
-    :class:`RolloutError` naming every one of :data:`CREDENTIAL_VARIABLES` that is unset."""
-    values = {name: os.environ.get(name, "").strip() for name in CREDENTIAL_VARIABLES}
-    missing = [name for name, value in values.items() if not value]
+@dataclass(frozen=True, slots=True)
+class ServicePrincipal:
+    """The CI service principal: its tenant, its client ID and its secret, never shown."""
+
+    tenant_id: str
+    client_id: str
+    client_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class AzureSignIn:
+    """How a run signs in to Azure and the subscription it reads the apps in: as
+    *service_principal*, or, without one, through the Azure CLI's own sign-in."""
+
+    subscription: str
+    service_principal: ServicePrincipal | None = None
+
+
+def azure_sign_in() -> AzureSignIn:
+    """The run's sign-in to Azure, from the environment: by what the job gives, never by
+    what Azure then accepts.
+
+    All three of :data:`SERVICE_PRINCIPAL_VARIABLES` set are the CI service principal. None
+    set is the Azure CLI's sign-in, which an Azure DevOps service connection's step makes and
+    ``az login`` a person. :class:`RolloutError` names whatever is missing: the subscription,
+    the rest of a service principal given in part (which is never read as the Azure CLI's),
+    or, with none of the three and no ``az`` on the path, both ways.
+    """
+    subscription = os.environ.get(SUBSCRIPTION_VARIABLE, "").strip()
+    given = {name: os.environ.get(name, "").strip() for name in SERVICE_PRINCIPAL_VARIABLES}
+    unset = [name for name, value in given.items() if not value]
+    every = ", ".join(SERVICE_PRINCIPAL_VARIABLES)
+    missing: list[str] = []
+    if not subscription:
+        missing.append(f"set {SUBSCRIPTION_VARIABLE}, the subscription the apps are in")
+    principal: ServicePrincipal | None = None
+    if not unset:
+        principal = ServicePrincipal(*given.values())
+    elif len(unset) < len(given):
+        missing.append(
+            f"set {', '.join(unset)} too, to sign in as the CI service principal, or none of "
+            f"{every}, to sign in through the Azure CLI"
+        )
+    elif shutil.which("az") is None:
+        missing.append(
+            f"set {every} to sign in as the CI service principal, or sign in through the "
+            "Azure CLI (az login, or on Azure DevOps a service connection's step), which is "
+            "not on the path here"
+        )
     if missing:
         raise RolloutError(
-            "haute app rollout and haute app impact sign in to Azure as the CI service "
-            "principal: set " + ", ".join(missing) + "."
+            "haute app rollout and haute app impact reach the apps on Azure: "
+            + "; ".join(missing)
+            + "."
         )
-    return values
+    return AzureSignIn(subscription, principal)
+
+
+def _credential(sign_in: AzureSignIn) -> TokenCredential:
+    """The credential *sign_in* takes tokens from, each request bounded as the client's are.
+
+    A service principal's asks Microsoft Entra ID itself: each attempt's connection and read,
+    the retries and their waits. The Azure CLI's asks ``az`` for each token, and so holds
+    whatever sign-in ``az`` has, a service connection's (with a secret or federated) or a
+    person's, for the account the subscription is in; ``az`` is given the request's bound.
+    """
+    principal = sign_in.service_principal
+    if principal is None:
+        from azure.identity import AzureCliCredential
+
+        return AzureCliCredential(
+            subscription=sign_in.subscription, process_timeout=REQUEST_TIMEOUT_SECONDS
+        )
+    from azure.identity import ClientSecretCredential
+
+    return ClientSecretCredential(
+        principal.tenant_id,
+        principal.client_id,
+        principal.client_secret,
+        connection_timeout=REQUEST_TIMEOUT_SECONDS,
+        read_timeout=REQUEST_TIMEOUT_SECONDS,
+        retry_policy_class=_bounded_retry(),
+        retry_total=_SDK_RETRIES,
+        retry_backoff_max=_MAX_RETRY_WAIT_SECONDS,
+    )
 
 
 def app_environment(config: WorkbenchConfig, name: str) -> AppEnvironment:
@@ -493,8 +570,8 @@ def _preflight(state: AppState, environment: str, image: str) -> str:
         )
     if state.address is None:
         raise RolloutError(
-            f"{environment}'s app takes no requests at a public address: the hosted check "
-            "needs its external ingress."
+            f"{environment}'s app takes no requests from outside its Container Apps "
+            "environment: the hosted check needs its external ingress."
         )
     if state.client_id is None:
         raise RolloutError(
@@ -693,35 +770,22 @@ def _azure(what: str) -> Iterator[None]:
 
 
 class AzureContainerApps:
-    """A Container App on Azure, through ``azure-mgmt-appcontainers``, signed in as the CI
-    service principal *values* name."""
+    """A Container App on Azure, through ``azure-mgmt-appcontainers``, in the subscription
+    *sign_in* names and signed in as it says (:func:`_credential`)."""
 
     def __init__(
         self,
         environment: AppEnvironment,
-        values: Mapping[str, str],
+        sign_in: AzureSignIn,
         *,
         client: ContainerAppsAPIClient | None = None,
-        credential: ClientSecretCredential | None = None,
+        credential: TokenCredential | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         if credential is None:
-            from azure.identity import ClientSecretCredential
-
-            # Its token requests bounded as the client's are: each attempt's connection and
-            # read, the retries and their waits.
-            credential = ClientSecretCredential(
-                values["AZURE_TENANT_ID"],
-                values["AZURE_CLIENT_ID"],
-                values["AZURE_CLIENT_SECRET"],
-                connection_timeout=REQUEST_TIMEOUT_SECONDS,
-                read_timeout=REQUEST_TIMEOUT_SECONDS,
-                retry_policy_class=_bounded_retry(),
-                retry_total=_SDK_RETRIES,
-                retry_backoff_max=_MAX_RETRY_WAIT_SECONDS,
-            )
+            credential = _credential(sign_in)
         if client is None:
-            client = _client(credential, values["AZURE_SUBSCRIPTION_ID"])
+            client = _client(credential, sign_in.subscription)
         self._now = now
         self._end: float | None = None
         self._credential = credential
@@ -902,7 +966,7 @@ class AzureContainerApps:
             poller.result()
 
     def token(self, client_id: str) -> str:
-        with _azure(f"give the CI service principal a token for the app {client_id}"):
+        with _azure(f"give CI's sign-in a token for the app {client_id}"):
             return str(self._credential.get_token(f"{client_id}/.default").token)
 
 

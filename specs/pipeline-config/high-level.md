@@ -948,6 +948,35 @@ questions again, writes `haute.toml` afresh from the answers, prunes the previou
 workflow files and rewrites the newly-chosen provider's from the templates, leaving the
 pipeline folder and the tests as they are.
 
+Two more `[ci]` settings say what a generated pipeline needs of a company's own setup, in
+the provider's own terms, and `haute ci update` writes each into the files. `runner` names
+where every generated job runs: a self-hosted runner's label on GitHub (`runs-on`), a runner
+tag on GitLab (the default job's `tags`), an agent pool on Azure DevOps (`pool: name`).
+Without it GitHub's and Azure DevOps' jobs run on the provider's hosted Ubuntu, and
+GitLab's carry no tag, so whichever runners take untagged jobs run them. A named runner
+meets what the generated jobs do, which is stated, never configured. It is Ubuntu or Debian
+with Docker, where the image is built and a workbench's packaged app is tested against a
+database in a service container. It lets a job install packages unattended (`sudo apt-get`
+on GitHub and Azure DevOps, for the libraries SQL Server's driver loads). On GitLab it is a
+Docker executor, privileged and sharing `/certs/client` for the Docker-in-Docker service a
+container deploy builds through, as GitLab.com's instance runners are. It reaches the
+package index, the base image's registry, the registry the image is pushed to and, for a
+workbench, the hosted apps. On Azure DevOps it also holds the project's Python where
+`UsePythonVersion` finds it, an agent's tool cache, and the Azure CLI when the pipeline
+signs in to Azure.
+`service_connection` names the Azure Resource Manager service connection an Azure DevOps
+pipeline signs in to Azure through, which a workbench project's does, and an automated
+project's deploying to `azure-container-apps`: `haute init` writes `haute-azure` for those,
+and `haute ci update` refuses one naming none. Such a pipeline holds no secret and reads no
+variable group: each step that reaches Azure is an `AzureCLI@2` task under the connection,
+and whether the connection itself holds a secret or signs in by workload identity
+federation is the choice of whoever makes it. No other provider or target reads the key.
+Neither setting is asked by `haute init`. A company that asks more of a pipeline than
+these, a template every pipeline must extend or an internal mirror of the package index,
+is not given a setting for it: its team owns the file, with `[ci] provider = "none"` and a
+pipeline of its own at the provider's path, without Haute's first line, running the same
+`haute` commands.
+
 Sidecars are organised one type-folder per `NodeType` (`config/banding/`, `config/rating_step/`,
 etc.) rather than three alternatives considered and rejected: a single flat `config/` directory,
 which would scale poorly and give no type information from the path alone (a node's type would

@@ -331,6 +331,8 @@ def _schema() -> Mapping[str, _Table]:
         "safety": table("impact_dataset", approval=table("min_approvers")),
         "ci": table(
             "provider",
+            "runner",
+            "service_connection",
             staging=table("endpoint_suffix", "endpoint_url"),
             production=table("endpoint_url", "environment"),
         ),

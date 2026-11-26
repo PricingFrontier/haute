@@ -23,7 +23,13 @@ from haute._workbench_impact import (
     impact,
     render_report,
 )
-from haute._workbench_rollout import AppState, Clock, HttpAnswer
+from haute._workbench_rollout import (
+    AppState,
+    AzureSignIn,
+    Clock,
+    HttpAnswer,
+    ServicePrincipal,
+)
 from tests._project import use_project
 
 COMMIT = "c0ffee" + "0" * 34
@@ -267,12 +273,14 @@ def _run(
 
 def test_production_never_rolled_out_has_no_baseline_and_is_not_reached() -> None:
     apps = _apps()
+    production = FakeHost(PROD, recorded=False)
 
-    report = _run(apps, prod=FakeHost(PROD, recorded=False))
+    report = _run(apps, prod=production)
 
     assert (report.verdict, report.passed) == ("no_baseline", True)
     assert "never been rolled out" in str(report.why)
-    assert apps.prod.asked == []
+    # Neither its app nor a token for it is asked for.
+    assert apps.prod.asked == [] and production.tokens == 0
     assert report.candidate.release == "s1"
     text = render_report(report)
     assert "No baseline" in text
@@ -662,24 +670,50 @@ def test_time_running_out_before_the_quotes_are_listed_stops_the_run() -> None:
 # ── The fields compared ───────────────────────────────────────────────────
 
 
-def test_time_running_out_before_productions_token_asks_azure_for_none() -> None:
+def test_both_apps_tokens_are_taken_before_either_app_is_asked() -> None:
+    """A sign-in can ask for a token it does not hold yet only in its first minutes (a
+    federated service connection's), so production's is taken before staging's answers,
+    which can be slow, are read."""
     apps = _apps()
     clock = FakeClock()
     real = apps.staging.answer
+    production = FakeHost(PROD)
+    held: list[int] = []
 
     def slow(method: str, path: str, body: Any) -> HttpAnswer:
+        held.append(production.tokens)
         if path.startswith("/api/app/form"):
             clock.t = IMPACT_TIMEOUT_SECONDS
         return real(method, path, body)
 
     apps.staging.answer = slow  # type: ignore[method-assign]
-    production = FakeHost(PROD)
 
     report = _run(apps, prod=production, clock=clock)
 
+    # Time ran out on staging's answers: production's token was held from the first of
+    # them, and its app was never asked.
     assert report.verdict == "stopped"
-    assert production.tokens == 0
+    assert held and set(held) == {1}
     assert apps.prod.asked == []
+
+
+def test_time_running_out_before_the_tokens_asks_azure_for_none() -> None:
+    apps = _apps()
+    clock = FakeClock()
+    production, staging = FakeHost(PROD), FakeHost(STAGING)
+    read = staging.state
+
+    def slow() -> AppState:
+        clock.t = IMPACT_TIMEOUT_SECONDS
+        return read()
+
+    staging.state = slow  # type: ignore[method-assign]
+
+    report = _run(apps, prod=production, staging=staging, clock=clock)
+
+    assert report.verdict == "stopped"
+    assert (production.tokens, staging.tokens) == (0, 0)
+    assert apps.prod.asked == [] and apps.staging.asked == []
 
 
 # ── The report ────────────────────────────────────────────────────────────
@@ -756,12 +790,10 @@ def test_a_cell_keeps_its_table_whole() -> None:
 def test_the_credential_is_bounded_as_the_client_is() -> None:
     host = rollouts.AzureContainerApps(
         AppEnvironment("prod", "rg", "motor-prod"),
-        {
-            "AZURE_TENANT_ID": "00000000-0000-0000-0000-000000000000",
-            "AZURE_CLIENT_ID": "client",
-            "AZURE_CLIENT_SECRET": "secret",
-            "AZURE_SUBSCRIPTION_ID": "subscription",
-        },
+        AzureSignIn(
+            "subscription",
+            ServicePrincipal("00000000-0000-0000-0000-000000000000", "client", "secret"),
+        ),
     )
     found: dict[str, Any] = {}
 
@@ -807,7 +839,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Pat
             f'container_app = "motor-{name}"\n',
         )
     toml.write_text(text, encoding="utf-8")
-    for name in rollouts.CREDENTIAL_VARIABLES:
+    for name in (rollouts.SUBSCRIPTION_VARIABLE, *rollouts.SERVICE_PRINCIPAL_VARIABLES):
         monkeypatch.setenv(name, f"value-of-{name.lower()}")
     return tmp_path
 
@@ -815,8 +847,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Pat
 def _serve(monkeypatch: pytest.MonkeyPatch, apps: Apps, **hosts: FakeHost) -> None:
     made = {"prod": FakeHost(PROD), "staging": FakeHost(STAGING), **hosts}
 
-    def make(environment: AppEnvironment, values: Mapping[str, str]) -> FakeHost:
-        assert values["AZURE_CLIENT_SECRET"] == "value-of-azure_client_secret"
+    def make(environment: AppEnvironment, sign_in: AzureSignIn) -> FakeHost:
+        assert sign_in.service_principal is not None
+        assert sign_in.service_principal.client_secret == "value-of-azure_client_secret"
         return made[environment.name]
 
     monkeypatch.setattr(rollouts, "AzureContainerApps", make)
@@ -933,7 +966,7 @@ def test_the_cli_refuses_unset_credentials_naming_each(
     result = runner.invoke(cli, ["app", "impact"])
 
     assert result.exit_code == 1
-    assert "set AZURE_CLIENT_SECRET." in result.output
+    assert "set AZURE_CLIENT_SECRET too, to sign in as the CI service principal" in result.output
     assert not (project / "impact_report.md").exists()
 
 

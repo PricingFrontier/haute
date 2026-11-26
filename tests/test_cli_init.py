@@ -1365,7 +1365,10 @@ class TestInitWorkbench:
             text += written
         assert "uv run haute app build\n" in text
         assert "uv run haute app build --push" in text
-        assert "haute ci registry-host" in text and "$AZURE_CLIENT_SECRET" in text
+        assert "haute ci registry-host" in text
+        # Azure DevOps signs in to Azure through its service connection and holds no secret.
+        assert ("$AZURE_CLIENT_SECRET" in text) is (ci != "azure-devops")
+        assert ('azureSubscription: "haute-azure"' in text) is (ci == "azure-devops")
         for endpoint in ("haute deploy", "haute smoke", "haute impact"):
             assert endpoint not in text
         assert "uv run haute app rollout staging --image" in text

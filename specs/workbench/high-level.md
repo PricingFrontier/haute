@@ -124,11 +124,14 @@ Out of scope:
   on the one database answered, each signed in to by the hosted app's managed identity, which
   on `postgresql` also names `username_env`, `HAUTE_STORE_USERNAME`, the role the identity is
   mapped to), `[deploy.container]` (the app image's base image, on the project's Python, its
-  registry and port) and no endpoint settings, a blank form folder and `connections.toml` (a
+  registry and port) and no endpoint settings, `[ci]` (the repository's `provider`, and for
+  Azure DevOps `service_connection`, `haute-azure`, the service connection its pipeline signs
+  in to Azure through), a blank form folder and `connections.toml` (a
   `[dev]`, `[staging]` and `[prod]` connection on that database with its server and database
   left empty for the analyst to fill in and the analyst's sign-in, each naming its own
   variables, `HAUTE_<ENVIRONMENT>_USERNAME` and the like, which `.env.example` names beside
-  the host's credentials, as `haute ci update` writes it again), `haute[sqlserver,azure]` or
+  the host's credentials, where the provider's jobs read any (Azure DevOps' read none), as
+  `haute ci update` writes it again), `haute[sqlserver,azure]` or
   `haute[postgresql,azure]` as the project's dependency when it lists no `haute`, and those
   extras added to a `haute` it lists without them (the release
   installs the database's driver, which `haute app build` refuses to build without, and
@@ -188,6 +191,28 @@ Out of scope:
   the publish job, forty-five minutes for production), and the jobs that roll one environment out never
   run at once (GitHub's concurrency group, GitLab's resource group, Azure DevOps' one
   pipeline run at a time on the environment's exclusive lock, which IT sets on it).
+  The host's credentials are, on GitHub and GitLab, the repository's secrets: the CI service
+  principal's `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and
+  `AZURE_SUBSCRIPTION_ID`. On Azure DevOps the pipeline holds no secret and reads no variable
+  group: it signs in to Azure through the Azure Resource Manager service connection
+  `[ci] service_connection` names (`haute-azure` as `haute init` writes it), whichever way IT
+  made the connection, with a secret or with workload identity federation. Each step that
+  reaches Azure is an `AzureCLI@2` task under that connection, signed in as it starts: one
+  logs in to the registry (`az acr login`, given the registry's whole login server, which
+  the Azure CLI reads its name from) and runs `haute app build --push`, one runs the
+  staging rollout, one the impact, and the production stage's one the production rollout,
+  the last three taking the subscription the connection signs in to (`az account show`) as
+  `AZURE_SUBSCRIPTION_ID`. They are separate steps because a federated connection's
+  sign-in can ask for a token it does not hold yet only in its first minutes: each command
+  asks for every token it needs as it starts (Rolling the hosted app out, below), within
+  seconds of its step's sign-in. `haute ci update` refuses an Azure DevOps project whose
+  `[ci] service_connection` is empty. The jobs run on GitHub's and Azure DevOps' hosted
+  Ubuntu, and untagged on GitLab, unless
+  `[ci] runner` names where they run, a self-hosted runner's label on GitHub, a runner tag on
+  GitLab, an agent pool on Azure DevOps, whose whole contract is pipeline-config's
+  ([pipeline-config](../pipeline-config/high-level.md)): Ubuntu or Debian with Docker and
+  packages installed unattended, and on Azure DevOps the Azure CLI and the project's Python
+  where `UsePythonVersion` finds it.
   An export template's change starting the release waits on templates
   ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - **Testing the packaged app.** `haute app test [RELEASE]` (`.haute/app/release` unless
@@ -197,7 +222,11 @@ Out of scope:
   engine, on a SQLite file in a folder of the run's own, or, with `--server-url`
   (`HAUTE_APP_TEST_URL`), on a database the run makes on that server (its `master` or
   `postgres` database, signed in with `HAUTE_APP_TEST_USER` and `HAUTE_APP_TEST_PASSWORD`,
-  a login that may make and drop databases) and drops after. Its store must open as a
+  a login that may make and drop databases) and drops after. A server that does not take
+  the run's first connection, a service container still starting, is asked again, every two
+  seconds for up to two minutes, before the run fails with its last refusal: no provider
+  holds a job's steps until a database inside its service container answers, so the run
+  waits itself. Its store must open as a
   hosted app's does (the store's check). Then, through the app's own routes, each of the
   project's test quotes (`[test_quotes] dir`) is put on the sheets as opening it in
   Preview puts it there, made a quote, priced under the identity the app gave it, saved
@@ -213,16 +242,30 @@ Out of scope:
   anything it refuses a project whose app host is not `azure-container-apps`, an environment
   the table does not name or whose `resource_group` or `container_app` is empty, an image
   named other than by digest (`<repository>@sha256:<64 hex digits>`, since a tag can be
-  pointed at other bytes), a checkout whose commit git cannot name, any of `AZURE_TENANT_ID`,
-  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` unset (each named), and
+  pointed at other bytes), a checkout whose commit git cannot name, `AZURE_SUBSCRIPTION_ID`
+  unset, a sign-in to Azure it is not given whole (below), and
   an app that does not keep one revision active at a time (single revision mode), run one
-  container, take requests at a public address and sign requests in through Microsoft Entra
+  container, take requests at an address outside its Container Apps environment (external
+  ingress) and sign requests in through Microsoft Entra
   ID, an app with no room for the record (below: Azure takes 50 tags on a resource and 256
   characters in a tag's value, so an image reference longer than that is refused too), or one
-  for which the service principal those variables name cannot get a token. The
-  project's IT team gives that service principal the Container Apps Contributor role on the
-  apps (beside AcrPush on the registry) and lets it sign in to them through Azure's built-in
-  authentication, which takes a token for the app registration's client ID. `--image` names
+  its sign-in cannot get a token for. It signs in to Azure one of two ways, by what the job
+  gives it: as the service principal `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+  `AZURE_CLIENT_SECRET` name, when all three are set; or, when none of the three is set,
+  through the Azure CLI's own sign-in (`az`), which is what an Azure DevOps service
+  connection's step gives it, and `az login` a person, each token asked of `az` for the
+  account `AZURE_SUBSCRIPTION_ID`'s subscription is in, whatever `az`'s current one is. One or two of the three set is refused
+  naming those unset, and none set where no `az` is on the path is refused naming both ways;
+  a sign-in the job gives is never set aside for the other when Azure refuses it. The
+  project's IT team gives the identity CI signs in as (that service principal, or the
+  service connection's) the Container Apps Contributor role on the
+  apps (beside AcrPush on the registry, and for a service connection's identity Reader on it
+  too: the Azure CLI's login reads the registry's address from Azure, and without that read a
+  registry whose address carries a domain name label cannot be logged in to) and lets it
+  sign in to them through Azure's built-in
+  authentication, which takes a token for the app registration's client ID. The address is
+  the app's own, as Azure names it: whether the internet reaches it or only the company's
+  network is IT's choice, and the jobs run where it is reached (`[ci] runner`). `--image` names
   the image; `--from SOURCE` takes the release SOURCE's app runs, as its record (below) says,
   refused when the record is missing or malformed, names another commit than the one checked
   out, or names an image SOURCE's app is not running.
@@ -266,9 +309,13 @@ Out of scope:
   the app's own routes (a pricing saves nothing), signed in as the service principal
   `haute app rollout` signs in as. Before it reaches a host it makes the rollout's refusals: an
   app host other than `azure-container-apps`, `[workbench.app.staging]` or
-  `[workbench.app.prod]` not naming its app, or any of the four variables unset. It then reads
+  `[workbench.app.prod]` not naming its app, `AZURE_SUBSCRIPTION_ID` unset, or a sign-in to
+  Azure not given whole. It then reads
   each app's address and Entra ID registration from Azure as the rollout does, takes a token
-  for each, and reads each app's release and form revision from `/api/app/release` and its
+  for each before it asks either app anything (staging's, and production's when it records
+  a whole release: a sign-in can ask for a token it does not hold yet only in its first
+  minutes, and an app's answers can outlast them), and reads each app's release and form
+  revision from `/api/app/release` and its
   form from `/api/app/form`; an app that cannot be reached or refuses the service principal,
   or whose quotes are closed, stops the run, which fails. When production has no
   `haute-release` tag it has never been rolled out: there is no baseline, production is not
@@ -309,9 +356,10 @@ Out of scope:
   The run has ten minutes from its start (`IMPACT_TIMEOUT_SECONDS`), checked before each
   request and each wait, a wait that would pass it not taken: a request started runs to its
   own bound, thirty seconds, or seventy-five for a pricing (longer than the app's own sixty,
-  so its 504 comes first), and Azure's reads and the service principal's tokens to the
+  so its 504 comes first), and Azure's reads and the sign-in's tokens to the
   rollout's bound on each call (thirty seconds to connect and to read each attempt, two
-  retries at most, a retry's wait ten seconds at most).
+  retries at most, a retry's wait ten seconds at most; a token asked of the Azure CLI,
+  thirty seconds for its answer).
   When time runs out once quotes are listed, the quote being priced and those after it are
   not compared, the report says time ran out, and the run passes on what it compared; time
   running out before the quotes are listed stops the run.

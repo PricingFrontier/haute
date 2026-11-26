@@ -177,6 +177,12 @@ class CIConfig:
     # The environment the generated production job runs under, whose reviewers gate it;
     # empty names none, which works on every plan (``haute._scaffold.ci_files``).
     production_environment: str = ""
+    # Where the generated jobs run: a self-hosted runner's label, a runner's tag or an
+    # agent pool; empty is the provider's hosted Ubuntu.
+    runner: str = ""
+    # The service connection an Azure DevOps pipeline signs in to Azure through, which
+    # ``haute ci update`` refuses empty where the pipeline needs one.
+    service_connection: str = ""
 
 
 _T = TypeVar("_T", str, int, bool)
@@ -375,6 +381,8 @@ class DeployConfig:
             staging_endpoint_url=ci_staging.get("endpoint_url", str, ""),
             production_endpoint_url=ci_production.get("endpoint_url", str, ""),
             production_environment=ci_production.get("environment", str, ""),
+            runner=ci_raw.get("runner", str, ""),
+            service_connection=ci_raw.get("service_connection", str, ""),
         )
 
         config = cls(

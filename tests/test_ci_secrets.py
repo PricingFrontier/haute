@@ -590,7 +590,7 @@ def test_remote_secrets_of_a_workbench_project_are_its_app_hosts(
 
     assert secrets is not None
     assert secrets.target == "azure-container-apps"
-    assert list(secrets.names) == ci_secret_names("azure-container-apps")
+    assert list(secrets.names) == ci_secret_names("azure-container-apps", "github")
 
 
 def test_remote_secrets_need_haute_toml(tmp_path: Path) -> None:

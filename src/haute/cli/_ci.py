@@ -69,7 +69,7 @@ def handle_ci_secrets(config: CiSecretsConfig) -> None:
     missing.
     """
     from haute import _ci_secrets
-    from haute._scaffold import ci_credentials, ci_secret_names
+    from haute._scaffold import ci_credentials, ci_secret_names, uses_service_connection
     from haute._workbench_config import WorkbenchConfigError
 
     project_dir, deploy_config = _project()
@@ -78,9 +78,16 @@ def handle_ci_secrets(config: CiSecretsConfig) -> None:
     except WorkbenchConfigError as exc:
         raise click.ClickException(str(exc)) from exc
     provider = deploy_config.ci.provider
-    names = ci_secret_names(target)
+    names = ci_secret_names(target, provider)
     if not names:
-        click.echo(f"The {target} target needs no CI secrets.")
+        if uses_service_connection(target, provider):
+            click.echo(
+                "This project has no CI secrets: on Azure DevOps it signs in to Azure "
+                "through the service connection [ci] service_connection names in "
+                "haute.toml."
+            )
+        else:
+            click.echo(f"The {target} target needs no CI secrets.")
         return
     if provider != "github":
         guide = _PROVIDER_GUIDES.get(provider, _PROVIDER_GUIDES["github"])
@@ -157,7 +164,10 @@ def handle_ci_update() -> None:
         connection_variables,
         env_example,
         production_environment_problem,
+        runner_problem,
+        service_connection_problem,
         staging_suffix_problem,
+        uses_service_connection,
         workbench_ci_files,
     )
     from haute._workbench_config import WorkbenchConfigError, read_workbench_config
@@ -173,8 +183,10 @@ def handle_ci_update() -> None:
         raise click.ClickException(str(exc)) from exc
     staging_suffix = deploy_config.ci.staging_endpoint_suffix
     production_environment = deploy_config.ci.production_environment
+    runner = deploy_config.ci.runner
+    service_connection = deploy_config.ci.service_connection
     # A workbench project's workflows deploy no endpoint, so neither key reaches them.
-    checked = (
+    endpoint_checks = (
         ()
         if workbench
         else (
@@ -182,6 +194,13 @@ def handle_ci_update() -> None:
             ("[ci.production] environment", production_environment_problem(production_environment)),
         )
     )
+    # Only a pipeline that signs in to Azure through a service connection reads its name.
+    connection_checks = (
+        (("[ci] service_connection", service_connection_problem(service_connection)),)
+        if uses_service_connection(credentials, provider)
+        else ()
+    )
+    checked = (*endpoint_checks, ("[ci] runner", runner_problem(runner)), *connection_checks)
     for key, problem in checked:
         if problem is not None:
             raise click.ClickException(f"{key} in haute.toml {problem}.")
@@ -196,6 +215,8 @@ def handle_ci_update() -> None:
                 provider,
                 store=ci_server_engine(read_workbench_config(project_dir).store),
                 python_version=python_version,
+                runner=runner,
+                service_connection=service_connection,
             )
             if workbench
             else ci_files(
@@ -204,6 +225,8 @@ def handle_ci_update() -> None:
                 python_version=python_version,
                 staging_suffix=staging_suffix,
                 production_environment=production_environment,
+                runner=runner,
+                service_connection=service_connection,
             )
         )
     except ValueError as exc:
@@ -213,9 +236,9 @@ def handle_ci_update() -> None:
     except ConnectionsError as exc:
         raise click.ClickException(str(exc)) from exc
     env_text = (
-        app_env_example(credentials, variables)
+        app_env_example(credentials, variables, ci=provider)
         if workbench
-        else env_example(credentials, variables)
+        else env_example(credentials, variables, ci=provider)
     )
     files = {**generated, ".env.example": env_text}
     # GitHub's jobs name no Python: the pin they run on must exist and reach the repository.

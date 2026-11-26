@@ -1000,10 +1000,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
   | What | Why |
   |---|---|
-  | One service principal, its tenant, client ID, secret and subscription in the CI secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` | CI pushes the image, rolls the apps out and compares them as it |
-  | AcrPush on the registry, and Container Apps Contributor on both apps, for that service principal | to push the image, and to change and tag the apps |
-  | Single revision mode and a public address (external ingress) on each app | one release at a time, and an address the check can reach |
-  | Azure's built-in authentication with Microsoft Entra ID on each app, letting that service principal sign in | underwriters sign in through it, and so do the check and the comparison |
+  | An identity for CI. On GitHub and GitLab, one service principal: its tenant, client ID, secret and subscription in the CI secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID`. On Azure DevOps, a service connection, so the pipeline holds no secret ([Signing in to Azure](../deployment/ci/azure-devops.md#signing-in-to-azure)) | CI pushes the image, rolls the apps out and compares them as it |
+  | AcrPush on the registry, and Container Apps Contributor on both apps, for that identity; for a service connection's, Reader on the registry too | to push the image, and to change and tag the apps |
+  | Single revision mode and external ingress on each app: an address outside its Container Apps environment, which need not be open to the internet as long as the CI jobs can reach it | one release at a time, and an address the check can reach |
+  | Azure's built-in authentication with Microsoft Entra ID on each app, letting that identity sign in | underwriters sign in through it, and so do the check and the comparison |
 
 - The app keeps quotes in the database of an environment you declare in `haute.toml`, as
   your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and

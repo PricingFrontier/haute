@@ -266,16 +266,23 @@ def _wait(retry_after: str | None) -> float:
     return min(seconds, _MAX_BUSY_WAIT_SECONDS)
 
 
-def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget: _Budget) -> Side:
-    """*environment*'s app as the impact reaches it, signed in, its quotes open; refused,
-    naming the environment, when it cannot be."""
+def _token(environment: str, host: AppReader, state: AppState, budget: _Budget) -> str:
+    """The token the impact signs in to *environment*'s app with; refused, naming the
+    environment, for an app it cannot reach signed in."""
     if state.address is None or state.client_id is None:
         raise ImpactError(
-            f"{environment}'s app takes no requests at a public address signed in through "
-            "Microsoft Entra ID: the impact prices quotes through it."
+            f"{environment}'s app takes no requests at an address outside its environment, "
+            "signed in through Microsoft Entra ID: the impact prices quotes through it."
         )
     budget.check()
-    signed = {"Authorization": f"Bearer {host.token(state.client_id)}"}
+    return host.token(state.client_id)
+
+
+def _side(environment: str, state: AppState, token: str, get: Fetch, budget: _Budget) -> Side:
+    """*environment*'s app as the impact reaches it, signed in with *token*, its quotes open;
+    refused, naming the environment, when it cannot be."""
+    assert state.address is not None
+    signed = {"Authorization": f"Bearer {token}"}
     base = f"https://{state.address}"
     release = budget.ask(lambda: get(f"{base}/api/app/release", signed))
     if release.status != 200:
@@ -302,7 +309,7 @@ def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget
     return Side(
         environment=environment,
         address=state.address,
-        token=signed["Authorization"].removeprefix("Bearer "),
+        token=token,
         release=body["id"],
         form_revision=body["form_revision"],
         form=document,
@@ -511,7 +518,14 @@ def _measure(
     budget.check()
     production_state = baseline.state()
     budget.check()
-    staging = _side("staging", candidate, candidate.state(), get, budget)
+    staging_state = candidate.state()
+    # Every token the run needs, before either app is asked anything: a sign-in can ask for a
+    # token it does not hold yet only in its first minutes (a federated service connection's),
+    # and an app's answers, asked again while it is busy, can outlast them.
+    staging_token = _token("staging", candidate, staging_state, budget)
+    compared = production_state.recorded is not None
+    production_token = _token("prod", baseline, production_state, budget) if compared else None
+    staging = _side("staging", staging_state, staging_token, get, budget)
     run.candidate = Released("staging", staging.release, staging.commit)
     say(f"  ✓ staging runs release {staging.release}")
     if RELEASE_TAG not in production_state.tag_names:
@@ -524,7 +538,8 @@ def _measure(
             + ", ".join(RECORD_TAGS.values())
             + " tags together, so restore them or roll prod out again."
         )
-    production = _side("prod", baseline, production_state, get, budget)
+    assert production_token is not None
+    production = _side("prod", production_state, production_token, get, budget)
     run.baseline = Released("prod", production.release, production.commit)
     say(f"  ✓ prod runs release {production.release}")
     if production.release == staging.release:

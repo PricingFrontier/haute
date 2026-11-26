@@ -2246,7 +2246,69 @@ def test_ci_pages_list_the_secrets_each_targets_jobs_read(provider: str) -> None
     assert set(_CI_SECRET_TABLE_LABELS) == set(TARGETS)
     text = CI_PAGES[provider].read_text(encoding="utf-8")
     for target, label in _CI_SECRET_TABLE_LABELS.items():
-        assert _secret_table_names(text, label) == ci_secret_names(target), (provider, target)
+        names = ci_secret_names(target, provider)
+        if names:
+            assert _secret_table_names(text, label) == names, (provider, target)
+            continue
+        # Its jobs read no secret: the page gives no table, and says how they sign in.
+        heading = rf"^\*\*For {re.escape(label)}:\*\*"
+        assert re.search(rf"{heading}\n\n\|", text, re.MULTILINE) is None, (provider, target)
+        said = re.search(rf"{heading} (.*)$", text, re.MULTILINE)
+        assert said is not None and "service connection" in said.group(1), (provider, target)
+
+
+@pytest.mark.parametrize("provider", sorted(CI_PAGES))
+def test_ci_pages_show_the_runner_setting_as_haute_toml_reads_it(
+    provider: str, tmp_path: Path
+) -> None:
+    """Each page's ``runner`` example, read as haute.toml reads it, puts the provider's jobs
+    on the runner it names."""
+    from haute._scaffold import ci_files
+    from haute.deploy._config import DeployConfig
+
+    text = CI_PAGES[provider].read_text(encoding="utf-8")
+    shown = re.search(r"```toml\n(\[ci\]\n(?:(?!```).*\n)*?runner = .*\n)```", text)
+    assert shown is not None, provider
+    (tmp_path / "rating").mkdir()
+    (tmp_path / "rating" / "main.py").write_text("", encoding="utf-8")
+    toml = haute_toml("motor-pricing", "databricks", provider).replace(
+        f'[ci]\nprovider = "{provider}"\n', shown.group(1)
+    )
+    (tmp_path / "haute.toml").write_text(toml, encoding="utf-8")
+    config = DeployConfig.from_project(tmp_path).ci
+
+    assert (config.provider, config.runner) == (provider, "pricing-linux")
+    generated = "\n".join(ci_files("databricks", provider, runner=config.runner).values())
+    assert '"pricing-linux"' in generated and "ubuntu-latest" not in generated
+
+
+def test_the_azure_devops_page_shows_the_service_connection_as_haute_toml_reads_it(
+    tmp_path: Path,
+) -> None:
+    from haute._scaffold import workbench_ci_files
+    from haute.deploy._config import DeployConfig
+
+    text = CI_PAGES["azure-devops"].read_text(encoding="utf-8")
+    block = r"```toml\n(\[ci\]\n(?:(?!```).*\n)*?service_connection = .*\n)```"
+    shown = re.search(block, text)
+    assert shown is not None
+    (tmp_path / "rating").mkdir()
+    (tmp_path / "rating" / "main.py").write_text("", encoding="utf-8")
+    toml = haute_toml("motor-pricing", "azure-container-apps", "azure-devops").replace(
+        '[ci]\nprovider = "azure-devops"\nservice_connection = "haute-azure"\n', shown.group(1)
+    )
+    (tmp_path / "haute.toml").write_text(toml, encoding="utf-8")
+    connection = DeployConfig.from_project(tmp_path).ci.service_connection
+
+    assert connection == "pricing-azure"
+    pipeline = workbench_ci_files(
+        "azure-container-apps", "azure-devops", store=None, service_connection=connection
+    )["azure-pipelines.yml"]
+    assert f'azureSubscription: "{connection}"' in pipeline
+    # The page names the default as haute init writes it, and each role the identity needs.
+    assert "Name it `haute-azure`" in text
+    for role in ("AcrPush", "Reader", "Container Apps Contributor"):
+        assert f"| {role} |" in text
 
 
 @pytest.mark.parametrize("provider", ["gitlab", "azure-devops"])
