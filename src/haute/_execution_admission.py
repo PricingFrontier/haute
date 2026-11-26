@@ -9,6 +9,7 @@ import weakref
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from itertools import count
+from typing import NamedTuple
 
 from haute import _host_memory
 from haute._env import optional_int_env
@@ -210,7 +211,23 @@ _IN_FLIGHT_WAIT_SLICE_SECONDS = 0.25
 # A refusal names at most this many distinct holders; the byte totals stay exact.
 _MAX_REPORTED_IN_FLIGHT_OPERATIONS = 8
 _IN_FLIGHT_COUNTER = count(1)
-_IN_FLIGHT_RESERVATIONS: dict[int, tuple[ExecutionProfile, int, str]] = {}
+
+
+class _InFlightReservation(NamedTuple):
+    """One in-flight reservation: profile, bytes, operation and the job it was admitted for."""
+
+    profile: ExecutionProfile
+    amount: int
+    operation: str
+    job_id: str | None
+
+    @property
+    def holder(self) -> str:
+        """The ``"profile:operation"`` name refusals report and ``wait_out_holders`` match."""
+        return f"{self.profile.value}:{self.operation}"
+
+
+_IN_FLIGHT_RESERVATIONS: dict[int, _InFlightReservation] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,6 +767,7 @@ def _admit_once(
     admission_release = _reserve_in_flight_budget(
         operation=operation,
         profile=profile,
+        job_id=job_id,
         budget=budget,
         settings=settings,
         reservation_bytes=reservation_bytes,
@@ -834,7 +852,9 @@ def admit_growth_grant(
         grant = terms.grant
         rss_at_admission = terms.rss_at_admission
         reservation_id = next(_IN_FLIGHT_COUNTER)
-        _IN_FLIGHT_RESERVATIONS[reservation_id] = (profile, grant, operation)
+        _IN_FLIGHT_RESERVATIONS[reservation_id] = _InFlightReservation(
+            profile, grant, operation, job_id
+        )
 
     admission_release = _reservation_release(reservation_id)
     try:
@@ -883,7 +903,7 @@ class _GrowthGrantTerms:
     limit: _ResolvedMemoryLimit
     process_rss_limit_bytes: int | None
     reserved: int
-    holders: tuple[tuple[ExecutionProfile, int, str], ...]
+    holders: tuple[_InFlightReservation, ...]
     rss_room: int | None
     grant: int
 
@@ -905,14 +925,9 @@ class _GrowthGrantTerms:
             process_rss_limit_bytes=self.process_rss_limit_bytes,
             in_flight_reserved_bytes=self.reserved,
             in_flight_limit_bytes=self.usable,
-            in_flight_operations=tuple(
-                sorted(
-                    {
-                        f"{held_profile.value}:{held_operation}"
-                        for held_profile, _amount, held_operation in self.holders
-                    }
-                )
-            )[:_MAX_REPORTED_IN_FLIGHT_OPERATIONS],
+            in_flight_operations=tuple(sorted({held.holder for held in self.holders}))[
+                :_MAX_REPORTED_IN_FLIGHT_OPERATIONS
+            ],
         )
 
 
@@ -943,7 +958,7 @@ def _growth_grant_terms(
             reason="memory_sampler_unavailable",
         )
     holders = tuple(_IN_FLIGHT_RESERVATIONS.values())
-    reserved = sum(amount for _profile, amount, _operation in holders)
+    reserved = sum(held.amount for held in holders)
     rss_room = (
         None if process_rss_limit_bytes is None else process_rss_limit_bytes - rss_at_admission
     )
@@ -1024,8 +1039,7 @@ def _wait_for_holders_to_release(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not any(
-                f"{held_profile.value}:{held_operation}" in waitable
-                for held_profile, _amount, held_operation in _IN_FLIGHT_RESERVATIONS.values()
+                held.holder in waitable for held in _IN_FLIGHT_RESERVATIONS.values()
             ):
                 return
             _IN_FLIGHT_RELEASED.wait(min(remaining, _IN_FLIGHT_WAIT_SLICE_SECONDS))
@@ -1060,10 +1074,7 @@ def _refusal_is_transient(
         holders = list(_IN_FLIGHT_RESERVATIONS.values())
     if not holders:
         return reservation_bytes <= _in_flight_limit_bytes(budget, settings)
-    return all(
-        f"{held_profile.value}:{held_operation}" in waitable
-        for held_profile, _amount, held_operation in holders
-    )
+    return all(held.holder in waitable for held in holders)
 
 
 def _wait_out_in_flight_holders(
@@ -1087,16 +1098,13 @@ def _wait_out_in_flight_holders(
     with _IN_FLIGHT_LOCK:
         while True:
             holders = list(_IN_FLIGHT_RESERVATIONS.values())
-            reserved = sum(amount for _profile, amount, _operation in holders)
+            reserved = sum(held.amount for held in holders)
             remaining = deadline - time.monotonic()
             if (
                 not holders
                 or reserved + reservation_bytes <= limit_bytes
                 or remaining <= 0
-                or any(
-                    f"{held_profile.value}:{held_operation}" not in waitable
-                    for held_profile, _amount, held_operation in holders
-                )
+                or any(held.holder not in waitable for held in holders)
             ):
                 return
             _IN_FLIGHT_RELEASED.wait(min(remaining, _IN_FLIGHT_WAIT_SLICE_SECONDS))
@@ -1108,6 +1116,7 @@ def _reserve_in_flight_budget(
     *,
     operation: str,
     profile: ExecutionProfile,
+    job_id: str | None,
     budget: ExecutionBudget,
     settings: PipelineSettings,
     reservation_bytes: int,
@@ -1118,18 +1127,11 @@ def _reserve_in_flight_budget(
         return None
     limit_bytes = _in_flight_limit_bytes(budget, settings)
     with _IN_FLIGHT_LOCK:
-        reserved = sum(amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values())
+        reserved = sum(held.amount for held in _IN_FLIGHT_RESERVATIONS.values())
         if reserved + reservation_bytes > limit_bytes:
-            holders = tuple(
-                sorted(
-                    {
-                        f"{held_profile.value}:{held_operation}"
-                        for held_profile, _amount, held_operation in (
-                            _IN_FLIGHT_RESERVATIONS.values()
-                        )
-                    }
-                )
-            )[:_MAX_REPORTED_IN_FLIGHT_OPERATIONS]
+            holders = tuple(sorted({held.holder for held in _IN_FLIGHT_RESERVATIONS.values()}))[
+                :_MAX_REPORTED_IN_FLIGHT_OPERATIONS
+            ]
             raise ExecutionAdmissionError(
                 operation,
                 profile=profile,
@@ -1142,10 +1144,8 @@ def _reserve_in_flight_budget(
                 in_flight_operations=holders,
             )
         reservation_id = next(_IN_FLIGHT_COUNTER)
-        _IN_FLIGHT_RESERVATIONS[reservation_id] = (
-            profile,
-            reservation_bytes,
-            operation,
+        _IN_FLIGHT_RESERVATIONS[reservation_id] = _InFlightReservation(
+            profile, reservation_bytes, operation, job_id
         )
     return _reservation_release(reservation_id)
 

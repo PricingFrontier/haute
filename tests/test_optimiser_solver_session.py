@@ -287,14 +287,11 @@ class TestSessionSolve:
             if mode == "ratebook"
             else _online_graph(scored, frontier_ranges={"volume": {"min": 0.5, "max": 2.0}})
         )
-        status = _solve(client, graph)
+        job_id = _start(client, graph)
+        status = _poll(client, job_id)
         assert status["status"] == "completed", status.get("message")
-        job_id = next(
-            jid
-            for jid, job in _optimiser_service_store().list_jobs().items()
-            if job.get("status") == "completed" and job.get(RUNTIME_MODE_KEY) == "session"
-        )
         job = _job(job_id)
+        assert job.get(RUNTIME_MODE_KEY) == "session"
         assert isinstance(job.get(SESSION_KEY), SolverSession)
         native_types = ("QuoteGrid", "OnlineOptimiser", "RatebookOptimiser", "SolveResult")
         for key, value in job.items():

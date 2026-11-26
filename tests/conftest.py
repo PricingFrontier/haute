@@ -462,17 +462,79 @@ def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
 
 
 #: How long a test's own work may take to release its memory reservation after the test
-#: body returns (a job thread recording its outcome) before the reservation counts as left.
+#: body returns (work still stopping after a cancel, or a job the test did not wait for)
+#: before the reservation counts as left.
 _RESERVATION_RELEASE_GRACE_S = 5.0
+
+#: The outcomes recorded while the work may still be running: a route's cancel or timeout,
+#: or a later job's supersession. The work releases its memory when it has stopped.
+_STOP_REASONS = frozenset({"cancelled", "timed_out", "superseded"})
 
 
 @pytest.fixture(autouse=True)
-def _clear_execution_admission_reservations():
+def _outcomes_follow_their_release():
+    """A job records a completed or failed outcome only once its memory reservation is free.
+
+    A client that sees the outcome may start new work at once, which a reservation the
+    finished job still held would count against (background-jobs, "An outcome follows
+    its release"). Any outcome the store records for a running job while the job still
+    holds one fails the test that drove it, whichever job type wrote it. A stop is exempt,
+    and so is a correction of a completed record, which is not the work's outcome (later
+    work under the job's id, a point apply, may hold its own grant then). The reservation
+    fixture requests this one, so the check also covers work that ends while it waits.
+    It patches with its own ``MonkeyPatch``: taking the test's ``monkeypatch`` would set
+    that up first and so undo the test's patches only after that wait.
+    """
+    from haute.routes._job_store import JobStore
+    from tests._process_state import execution_admission_reservations_of
+
+    early: list[str] = []
+    real_transition = JobStore.transition_terminal
+    real_publish = JobStore.compare_and_publish_completion
+
+    def transition_terminal(
+        self: JobStore,
+        job_id: str,
+        *,
+        to: str,
+        expected_status: str = "running",
+        **kwargs: Any,
+    ) -> Any:
+        outcome = to not in _STOP_REASONS and expected_status == "running"
+        held = execution_admission_reservations_of(job_id) if outcome else ()
+        written = real_transition(self, job_id, to=to, expected_status=expected_status, **kwargs)
+        if written is not None and held:
+            early.append(f"{to!r} for job {job_id} while it held {', '.join(held)}")
+        return written
+
+    def compare_and_publish_completion(self: JobStore, job_id: str, **kwargs: Any) -> Any:
+        held = execution_admission_reservations_of(job_id)
+        published = real_publish(self, job_id, **kwargs)
+        if published is not None and held:
+            early.append(f"'completed' for job {job_id} while it held {', '.join(held)}")
+        return published
+
+    with pytest.MonkeyPatch.context() as patches:
+        patches.setattr(JobStore, "transition_terminal", transition_terminal)
+        patches.setattr(JobStore, "compare_and_publish_completion", compare_and_publish_completion)
+        yield
+    if early:
+        pytest.fail(
+            "A job recorded its outcome before releasing its memory: "
+            + "; ".join(early)
+            + ". Release the work's execution context first (JobLifecycle releasing=).",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _clear_execution_admission_reservations(_outcomes_follow_their_release: None):
     """Each test starts with no in-flight memory reservation and must end with none.
 
     A reservation a test leaves holds the process's memory budget into the tests after
     it, which are then refused as memory-limited; clearing it silently would hide that,
-    so the test that left it fails, naming it.
+    so the test that left it fails, naming it. It waits for the test's work with the
+    outcome check still in place, which it requests for that reason.
     """
     from tests._process_state import (
         clear_execution_admission_reservations,

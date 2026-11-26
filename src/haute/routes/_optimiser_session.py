@@ -7,9 +7,10 @@ drops its heavy state. The server never holds a native optimiser object.
 Every command runs the same sequence under :meth:`SolverSession.run_command`:
 take the session's command slot (one command at a time, nothing reserved while
 waiting), admit a growth grant sized from the memory free at that moment, run
-the command in the child under a cap of its charge plus that grant, publish the
-outcome on the parent side while still holding the slot, then release the
-reservation and the slot. The session is the job's ``solver_session`` heavy
+the command in the child under a cap of its charge plus that grant, release the
+reservation, publish the outcome on the parent side while still holding the
+slot, then release the slot. A client that sees the outcome finds none of the
+command's grant reserved. The session is the job's ``solver_session`` heavy
 value: dropping it (expiry, clearing, a failed job) releases it, and a release
 while a command runs is deferred until that command returns.
 
@@ -159,7 +160,7 @@ class SolverSession:
         cancellation_token: ExecutionCancellationToken | None = None,
         on_slot: Callable[[], None] | None = None,
     ) -> T:
-        """Run one command and publish its value while still holding the slot.
+        """Run one command and publish its value, its grant released, while still holding the slot.
 
         *on_slot* runs as soon as the slot is held, before anything is reserved
         or sent: a caller re-checks there whatever may have changed while it
@@ -272,7 +273,6 @@ class SolverSession:
                         kind="terminated", exit_code=None, memory_evidence="none", reason="expired"
                     )
                 )
-            return publish(value)
         finally:
             cap = self._worker.last_cap
             self.last_command = {
@@ -284,6 +284,8 @@ class SolverSession:
                 "charge_bytes_at_failure": None if cap is None else cap.charge_bytes,
             }
             context.release_admission()
+        # The child's growth is over, so the outcome follows its release.
+        return publish(value)
 
     def _command_failure(
         self, exc: WorkerError, *, operation: str, grant: int

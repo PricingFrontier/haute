@@ -1653,6 +1653,7 @@ class TestPreparationTerminalPaths:
         service._persist_preparation_refusal(
             job_id,
             RequestRefusedError("preparation exploded", status_code=500),
+            releasing=None,
         )
 
         job = store.require_job(job_id)

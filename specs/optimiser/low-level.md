@@ -477,7 +477,13 @@ Both call the shared `_finalize_solve_result`, which builds the API-facing
 frontier failure is recorded but does not fail the solve), persists the online apply-result
 artifact (online mode only: `_persist_apply_result_artifact` requires a per-quote Polars
 frame and raises `TypeError` otherwise; it frees the in-memory result dataframe as a side
-effect — see Artifact lifecycle below), and atomically transitions the job to `completed`.
+effect — see Artifact lifecycle below) before it claims the completion, ends the stage the
+solve runs in (`SolveContext.end_stage`: the solve thread's `optimiser_solver_solve`, so it is
+measured and checked under the grant), and then atomically transitions the job to `completed`,
+releasing the solve's admission (`SolveContext.execution_context`) first (background-jobs, "An
+outcome follows its release").
+A claim lost to a stop removes the artifacts it persisted. The solve thread's `finally` then
+records the context's execution metrics on the job.
 
 **The solve result contract (`OptimiserSolveResult`).** `mode` is `"online"` or `"ratebook"`
 and always present. Beside the totals, baselines, `effective_bounds` and λ (whose constraint
@@ -585,7 +591,9 @@ these as arguments and never recompute them.
   `admit_growth_grant(operation="frontier_auto_range", profile=OPTIMISER_SOLVE,
   wait_out_holders=ESTIMATE_HOLDERS, wait_seconds=ESTIMATE_WAIT_SECONDS)`, so it waits out a
   running input estimate inside the background job — and releases the grant on every exit, so a
-  failed job never leaves its memory reservation to garbage collection. An admission refusal is
+  failed job never leaves its memory reservation to garbage collection. Its completion and
+  failures are recorded with the grant released first (`releasing=`), so a client that sees the
+  ranges can start the solve against the memory the job gave back. An admission refusal is
   the job's `memory_limited`. In thread mode, or inside the worker, `_frontier_ranges` runs
   `_run_optimiser_input_stage` (`_execute_pipeline` under the setup seed plan with the solve's
   demand, then `_resolve_data_input_frame`), checks the schema and projects the quote id, the
@@ -1430,6 +1438,12 @@ whose message already names every problem and the remedy.
   `expired`; solves of other nodes past `HAUTE_OPTIMISER_RETAINED_SOLVES` slim the least
   recently used; a failed solve of the node releases nothing. `tests/test_optimiser_service_validation.py`
   forces two completions of one node to release in each order and keeps the later one's runtime.
+- `TestAnOutcomeFollowsItsRelease` in `tests/test_optimiser_solve_routes.py` holds each job's
+  work just after it records its outcome and polls the status route: a completed thread solve,
+  a completed session solve, a failed thread solve and a completed auto-range each find no
+  in-flight reservation the job holds when the client first sees the outcome, with no grace.
+  Against the order this replaced (outcome, then release) each fails every time. The thread
+  solve's `optimiser_solver_solve` stage ends before its grant is released.
 - `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
   preparation (thread and process mode): a non-solver `region` column configured as an analysis
   column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
@@ -2672,9 +2686,11 @@ runs each command through this sequence:
 3. **Send the command with `G`.** Before running it, the child re-applies its native cap as
    its current backend charge plus `G`.
 4. **Run** the command.
-5. **Publish on the parent side** while the slot is still held: the solve's completion or the
-   point's handle. Otherwise the result is discarded.
-6. **Release** the reservation, then the slot.
+5. **Release** the reservation: the child's growth is over.
+6. **Publish on the parent side** while the slot is still held: the solve's completion or the
+   point's handle. Otherwise the result is discarded. A client that sees the completion finds
+   none of the command's grant reserved.
+7. **Release** the slot.
 
 The cap installed for a command stays in place while the session is idle. It is never lifted.
 
@@ -2744,8 +2760,9 @@ The solve thread:
 2. runs setup;
 3. starts the session, with a bounded start that polls the job's cancellation reason;
 4. runs `build_and_solve`;
-5. publishes the completion, with `solver_session` and `runtime_mode`, through the same
-   `publish_completion` claim the in-process finalize uses;
+5. releases the command's grant, then publishes the completion, with `solver_session` and
+   `runtime_mode`, through the same `publish_completion` claim the in-process finalize uses (a
+   failure is recorded after `run_command` has released it);
 6. releases the solves the new one replaces (`_release_replaced_solves`, run after a published
    completion in both runtime modes).
 

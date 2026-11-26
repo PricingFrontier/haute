@@ -279,7 +279,9 @@ def _drive_preparation(
     real_release = ExecutionContext.release_admission
 
     def counted_release(self: ExecutionContext, *args: Any, **kwargs: Any) -> Any:
-        run.release_operations.append(self.operation)
+        # Releasing is idempotent: count the release that returns the reservation.
+        if not self.lease.released:
+            run.release_operations.append(self.operation)
         return real_release(self, *args, **kwargs)
 
     monkeypatch.setattr(ExecutionContext, "release_admission", counted_release)

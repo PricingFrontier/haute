@@ -293,7 +293,9 @@ def _train(
     release = ExecutionContext.release_admission
 
     def recording_release(self: ExecutionContext, *args: Any, **kwargs: Any) -> Any:
-        run.released.append(self.operation)
+        # Releasing is idempotent: record the release that returns the reservation.
+        if not self.lease.released:
+            run.released.append(self.operation)
         return release(self, *args, **kwargs)
 
     monkeypatch.setattr(_training_lifecycle, "create_training_parquet_path", recording_parquet_path)

@@ -70,6 +70,7 @@ from haute.routes._job_lifecycle import (
     JobLifecycle,
 )
 from haute.routes._job_store import (
+    JobSnapshot,
     JobStore,
 )
 from haute.routes._optimiser_adjustments import adjustment_report
@@ -1124,6 +1125,8 @@ def _finalize_solve_result(
     report_stage: Callable[[str, float], None] | None = None,
     apply_artifact_dir: str | None = None,
     frontier_history_dir: str | None = None,
+    releasing: ExecutionContext | None = None,
+    end_stage: Callable[[], None] | None = None,
 ) -> bool:
     """Build the result dict and update the job with the solve outcome.
 
@@ -1156,6 +1159,13 @@ def _finalize_solve_result(
     quote_analysis_handle:
         The setup-owned analysis table, adopted into ``artifact_handles`` by
         the completion that publishes this result.
+    releasing:
+        The solve's admitted context, released after the artifacts are
+        persisted and before the completion is published, so a client that sees
+        the completion finds none of the solve's memory reserved.
+    end_stage:
+        Ends the stage the solve runs in, after the artifacts are persisted and
+        before *releasing* is released.
     """
     diagnostics_errors: list[dict[str, str]] = []
     # Read through JobStore so concurrent eviction cannot race this snapshot.
@@ -1310,8 +1320,8 @@ def _finalize_solve_result(
             )
         )
 
-    def publish_completion_fields() -> Mapping[str, Any]:
-        """Persist durable artifacts only after this worker owns completion."""
+    def persist_completion_fields() -> dict[str, Any]:
+        """Persist the durable artifacts under the solve's grant; the completion's fields."""
         artifact_handles: dict[str, Any] = {}
         # The as-solved per-quote frame: the online apply frame, or price-contour's
         # canonical evaluation of the ratebook factor tables (OPT-V09C).
@@ -1379,16 +1389,25 @@ def _finalize_solve_result(
                 event=event,
             )
 
-    # Artifact persistence and the terminal record now share the store's one
-    # running-job claim. Cancellation either wins before the publisher runs or
-    # observes the complete artifact/result pair afterwards.
+    # The artifacts are written before the claim, so the store's lock waits on no
+    # file and the grant is released before the completion is visible. The claim
+    # then pairs them with the result in one swap: a stop that wins it first
+    # leaves the job without them, and they are removed below. A job a stop has
+    # already ended writes none.
+    updated_job: JobSnapshot | None = None
     try:
-        updated_job = JobLifecycle(store).publish_completion(
-            job_id,
-            publish=publish_completion_fields,
-            message="Completed",
-            elapsed_seconds=completion_elapsed,
-        )
+        current = store.get_job(job_id)
+        if current is None or current.get("status") == "running":
+            completion_fields = persist_completion_fields()
+            if end_stage is not None:
+                end_stage()
+            updated_job = JobLifecycle(store).publish_completion(
+                job_id,
+                publish=lambda: completion_fields,
+                message="Completed",
+                elapsed_seconds=completion_elapsed,
+                releasing=releasing,
+            )
     except BaseException:
         cleanup_uncommitted_handles()
         raise
@@ -1518,6 +1537,8 @@ def _solve_online(
         report_stage=ctx.report_stage,
         apply_artifact_dir=ctx.apply_artifact_dir,
         frontier_history_dir=ctx.frontier_history_dir,
+        releasing=ctx.execution_context,
+        end_stage=ctx.end_stage,
     )
 
 
@@ -1542,6 +1563,10 @@ class SolveContext:
     apply_artifact_dir: str | None = None
     # Likewise for the frontier points' convergence traces, when the solve sweeps.
     frontier_history_dir: str | None = None
+    # Ends the execution stage the solve runs in (the solve thread's): called once the
+    # completion's artifacts are written, so the stage is measured and checked under
+    # the grant that ``execution_context`` holds, before that grant is released.
+    end_stage: Callable[[], None] | None = None
 
 
 @require_solver_worker_context
@@ -1689,4 +1714,6 @@ def _solve_ratebook(
         report_stage=ctx.report_stage,
         apply_artifact_dir=ctx.apply_artifact_dir,
         frontier_history_dir=ctx.frontier_history_dir,
+        releasing=ctx.execution_context,
+        end_stage=ctx.end_stage,
     )

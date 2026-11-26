@@ -35,8 +35,8 @@ def held_execution_admission_reservations(*, within_seconds: float) -> tuple[str
             while admission._IN_FLIGHT_RESERVATIONS and (left := deadline - time.monotonic()) > 0:
                 admission._IN_FLIGHT_RELEASED.wait(timeout=left)
             return tuple(
-                f"{profile.value}:{operation} ({amount // 2**20} MiB)"
-                for profile, amount, operation in admission._IN_FLIGHT_RESERVATIONS.values()
+                f"{held.holder} ({held.amount // 2**20} MiB)"
+                for held in admission._IN_FLIGHT_RESERVATIONS.values()
             )
 
     if not settled(time.monotonic()):
@@ -44,6 +44,18 @@ def held_execution_admission_reservations(*, within_seconds: float) -> tuple[str
     # Outside the lock: a collected context's release takes it.
     gc.collect()
     return settled(time.monotonic() + within_seconds)
+
+
+def execution_admission_reservations_of(job_id: str) -> tuple[str, ...]:
+    """The in-flight reservations admitted for *job_id* that are held now, by holder."""
+    from haute import _execution_admission as admission
+
+    with admission._IN_FLIGHT_LOCK:
+        return tuple(
+            f"{held.holder} ({held.amount // 2**20} MiB)"
+            for held in admission._IN_FLIGHT_RESERVATIONS.values()
+            if held.job_id == job_id
+        )
 
 
 def clear_execution_admission_reservations() -> None:

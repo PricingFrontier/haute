@@ -1071,7 +1071,10 @@ batch-shaped profiles), `_reserve_in_flight_budget()` adds this run's
 `memory_limit_bytes` to a process-global running total under `_IN_FLIGHT_LOCK` and
 refuses if the total would exceed `available - os_reserve`; the returned
 `admission_release` callable (also wired to `weakref.finalize` on the context) removes
-the reservation exactly once and notifies `_IN_FLIGHT_RELEASED`. A caller may name
+the reservation exactly once and notifies `_IN_FLIGHT_RELEASED`. Each reservation
+(`_InFlightReservation`: profile, bytes, operation, `job_id`) records the job its admission
+was given, `None` for request-scoped work, so the test suite can tell a job that records its
+outcome while it still holds memory (background-jobs, "An outcome follows its release"). A caller may name
 short-lived holders in `wait_out_holders` (`"profile:operation"`): while every holder
 blocking its reservation is one of them, admission waits on `_IN_FLIGHT_RELEASED` up to
 `wait_seconds`, re-checking its cancellation token at least every
