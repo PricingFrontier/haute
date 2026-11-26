@@ -727,7 +727,10 @@ the lock is resolved for the target, so a Linux-only dependency such as `uvloop`
 Locking needs `uv` on the deploying host, which the generated CI installs.
 
 - **Container**: the bundle carries `requirements.lock` (the runtime), `haute.lock` (haute
-  alone: the bundled wheel by its digest, or the index release, hashed) and
+  alone: the index release, hashed, for a released haute; for one installed from a Git
+  repository, an archive or a local wheel, a wheel repacked from its installed files and
+  bundled, by its digest, since the index holds other code, or none, under that version
+  number, and the image must run the haute that validated the release) and
   `dependency_lock.json`, the record of what was resolved, for which Python and platform,
   with which resolver and from which index. The image installs both locks with
   `--no-deps --require-hashes`, so a changed file fails the build, and then checks itself
