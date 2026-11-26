@@ -53,6 +53,11 @@ SERVICE_PRINCIPAL_VARIABLES: tuple[str, ...] = (
     "AZURE_CLIENT_ID",
     "AZURE_CLIENT_SECRET",
 )
+#: The two ways a run signs in to Azure, as a refusal names them.
+_SIGN_IN_WAYS = (
+    f"set {', '.join(SERVICE_PRINCIPAL_VARIABLES)} to sign in as the CI service principal, or "
+    "sign in through the Azure CLI (az login, or on Azure DevOps a service connection's step)"
+)
 #: An image named by digest: a tag can be pointed at other bytes, a digest cannot.
 DIGEST_REFERENCE = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}")
 #: Azure's update and the new revision's provisioning, together.
@@ -303,11 +308,11 @@ def azure_sign_in() -> AzureSignIn:
             f"{every}, to sign in through the Azure CLI"
         )
     elif shutil.which("az") is None:
-        missing.append(
-            f"set {every} to sign in as the CI service principal, or sign in through the "
-            "Azure CLI (az login, or on Azure DevOps a service connection's step), which is "
-            "not on the path here"
-        )
+        missing.append(f"{_SIGN_IN_WAYS}, which is not on the path here")
+    elif not subscription:
+        # Nothing was given at all, a job whose secrets were never set: the whole sign-in
+        # is named with the subscription, whether or not the Azure CLI is signed in.
+        missing.append(_SIGN_IN_WAYS)
     if missing:
         raise RolloutError(
             "haute app rollout and haute app impact reach the apps on Azure: "
@@ -759,11 +764,19 @@ def _last_state(host: ContainerAppHost) -> str:
 
 @contextmanager
 def _azure(what: str) -> Iterator[None]:
-    """An Azure SDK failure while doing *what*, said as a :class:`RolloutError`."""
+    """An Azure SDK failure while doing *what*, said as a :class:`RolloutError`; the Azure
+    CLI having no sign-in to give, which a run finds only as it asks for its first token,
+    said naming both ways to sign in."""
     from azure.core.exceptions import AzureError
+    from azure.identity import CredentialUnavailableError
 
     try:
         yield
+    except CredentialUnavailableError as error:
+        raise RolloutError(
+            f"The run signs in to Azure through the Azure CLI, which gave it no sign-in "
+            f"({error.message}): {_SIGN_IN_WAYS}."
+        ) from error
     except AzureError as error:
         message = getattr(error, "message", None) or str(error)
         raise RolloutError(f"Azure could not {what}: {message}") from error

@@ -142,10 +142,11 @@ postgresql = [
 ]
 # A workbench project's CI rolling its underwriter app out on Azure Container Apps
 # (haute app rollout): the management SDK it updates the Container App through, and
-# azure-identity for the CI service principal.
+# azure-identity for CI's sign-in, a service principal's or the Azure CLI's (from 1.20,
+# where the Azure CLI's credential takes the subscription whose account it asks for).
 azure = [
     "azure-mgmt-appcontainers>=5.1.0,<6",
-    "azure-identity>=1.19.0,<2",
+    "azure-identity>=1.20.0,<2",
 ]
 [dependency-groups]
 # What the shared test setup (tests/conftest.py) and the pytest configuration

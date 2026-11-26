@@ -943,6 +943,21 @@ def test_none_of_the_three_signs_in_through_the_azure_cli(job: pytest.MonkeyPatc
     assert azure_sign_in() == AzureSignIn("subscription-1", None)
 
 
+def test_with_nothing_given_the_subscription_and_both_ways_to_sign_in_are_named(
+    job: pytest.MonkeyPatch,
+) -> None:
+    """A job whose secrets were never set, on a runner that has the Azure CLI: one refusal
+    names every variable, not the subscription alone."""
+    with pytest.raises(RolloutError) as refused:
+        azure_sign_in()
+
+    assert "set AZURE_SUBSCRIPTION_ID" in str(refused.value)
+    assert "set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET to sign in" in str(
+        refused.value
+    )
+    assert "az login" in str(refused.value)
+
+
 def test_none_of_the_three_and_no_azure_cli_is_refused_naming_both_ways(
     job: pytest.MonkeyPatch,
 ) -> None:
@@ -1056,8 +1071,15 @@ def test_an_azure_cli_that_is_not_signed_in_is_said_as_the_rollouts_failure(
         client=object(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(RolloutError, match="az login"):
+    with pytest.raises(RolloutError) as refused:
         host.token("app-client-id")
+
+    # Both ways are named: the variables a job forgot to give are the likelier cause.
+    assert "the Azure CLI, which gave it no sign-in" in str(refused.value)
+    assert "set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET to sign in" in str(
+        refused.value
+    )
+    assert "az login" in str(refused.value)
 
 
 def test_the_commit_is_the_one_checked_out_and_none_is_refused(tmp_path: Path) -> None:

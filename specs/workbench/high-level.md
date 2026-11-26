@@ -255,7 +255,11 @@ Out of scope:
   through the Azure CLI's own sign-in (`az`), which is what an Azure DevOps service
   connection's step gives it, and `az login` a person, each token asked of `az` for the
   account `AZURE_SUBSCRIPTION_ID`'s subscription is in, whatever `az`'s current one is. One or two of the three set is refused
-  naming those unset, and none set where no `az` is on the path is refused naming both ways;
+  naming those unset, and none set where no `az` is on the path is refused naming both ways.
+  A job given nothing at all, its secrets never set, is told the subscription and both
+  ways in one refusal, and an Azure CLI with no sign-in to give, which a run finds as it asks
+  for its first token, is refused naming both ways too, since the variables a job was not
+  given are the likelier cause;
   a sign-in the job gives is never set aside for the other when Azure refuses it. The
   project's IT team gives the identity CI signs in as (that service principal, or the
   service connection's) the Container Apps Contributor role on the
