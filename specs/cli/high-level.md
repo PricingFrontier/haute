@@ -255,7 +255,8 @@ Out of scope, owned elsewhere:
   it was.
 - `haute app rollout ENVIRONMENT (--image REFERENCE | --from ENVIRONMENT)` rolls a
   workbench project's hosted app, the Container App `[workbench.app.<ENVIRONMENT>]` names, to
-  an image by digest in a maintenance window, checks the release there (it runs, the host's
+  an image by digest, the old release serving until Azure finds the new one ready, checks the
+  release there (its own revision answers, the host's
   sign-in stands in front of it, and its quotes are open), puts the previous release back
   when the new one fails, and records the release that stays on the Container App as Azure
   tags; `--from` rolls to the release another environment's app runs, when it runs the commit

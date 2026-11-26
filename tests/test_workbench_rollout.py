@@ -4,11 +4,12 @@ Control flow 35), against a fake Container App and a fake app answering the chec
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -43,12 +44,16 @@ ADDRESS = "motor.example.azurecontainerapps.io"
 
 
 class FakeHost:
-    """A Container App in single revision mode running *image*: what the rollout reads and
-    changes, each change listed in ``calls``."""
+    """A Container App in single revision mode running *image*, as Azure runs one: a new
+    revision starts beside the one serving, which goes on taking the requests until the new
+    one is ready, ``ready_after`` reads of the app's state later, and Azure then stops the
+    old one itself. What the rollout reads and changes, each change listed in ``calls``."""
 
     def __init__(self, image: str = OLD, **state: Any) -> None:
         self.calls: list[tuple[str, ...]] = []
-        old = RevisionState("motor--old", image, True, "Provisioned", "Running")
+        old = RevisionState(
+            "motor--old", image, True, "Provisioned", "Running", f"motor--old.{ADDRESS}"
+        )
         self.revisions: dict[str, RevisionState] = {old.name: old}
         self.latest: str | None = old.name
         self.ready: str | None = old.name
@@ -67,17 +72,37 @@ class FakeHost:
         #: Images whose update Azure refuses, or does not finish in time.
         self.refuses: set[str] = set()
         self.token_refused = False
-        #: Revisions whose deactivation Azure applies, then answers with a failure.
-        self.deactivation_lost: set[str] = set()
+        #: How many reads of the app's state pass before a new revision is its latest ready
+        #: one: Azure calls a revision provisioned long before it serves.
+        self.ready_after = 1
+        self._becoming_ready: dict[str, int] = {}
+        #: The revision that served before Azure's last switch.
+        self.before: str | None = None
         #: Called after each change: a test's other writer.
         self.after: Any = None
         #: Called on each read of the app's state; and each set_image's timeout.
         self.on_state: Any = None
         self.timeouts: list[float] = []
 
+    def _switch(self) -> None:
+        """Azure's own switch: the latest revision, settled and ``ready_after`` reads in the
+        making, becomes the latest ready one, and Azure stops every other revision."""
+        name = self.latest
+        if name is None or name not in self._becoming_ready:
+            return
+        if self._becoming_ready[name] > 0:
+            self._becoming_ready[name] -= 1
+            return
+        del self._becoming_ready[name]
+        self.before, self.ready = self.ready, name
+        for other, revision in self.revisions.items():
+            if other != name:
+                self.revisions[other] = replace(revision, active=False)
+
     def state(self) -> AppState:
         if self.on_state is not None:
             self.on_state(self)
+        self._switch()
         return AppState(
             single_revision=self.settings["single_revision"],
             images=(self.image,) * self.settings["containers"],
@@ -99,8 +124,7 @@ class FakeHost:
     def deactivate(self, name: str) -> None:
         self.calls.append(("deactivate", name))
         self.revisions[name] = replace(self.revisions[name], active=False)
-        if name in self.deactivation_lost:
-            raise RolloutError(f"Azure's answer to stopping {name} was lost.")
+        self._becoming_ready.pop(name, None)
 
     def set_image(self, image: str, suffix: str, timeout: float) -> str:
         self.calls.append(("set_image", image, suffix))
@@ -109,12 +133,12 @@ class FakeHost:
             raise RolloutError("Azure refused the update.")
         name = f"motor--{suffix}"
         provisioning, running = self.settles.get(image, ("Provisioned", "Running"))
-        for other, revision in self.revisions.items():
-            self.revisions[other] = replace(revision, active=False)
-        self.revisions[name] = RevisionState(name, image, True, provisioning, running)
+        # The revision before it stays active, and serving, until this one is ready.
+        own = f"{name}.{self.settings['address']}"
+        self.revisions[name] = RevisionState(name, image, True, provisioning, running, own)
         self.latest, self.image = name, image
-        if provisioning == "Provisioned":
-            self.ready = name
+        if (provisioning, running) == ("Provisioned", "Running"):
+            self._becoming_ready[name] = self.ready_after
         if self.after is not None:
             self.after(self)
         return name
@@ -140,9 +164,20 @@ class FakeHost:
 
 @dataclass
 class FakeApp:
-    """The hosted app as the check sees it: what each request is answered with."""
+    """The hosted app as the check sees it: what each request is answered with, by the
+    revision Azure serves (the app's latest ready one), which ``/health`` names."""
 
     release: str = "rel-1"
+    #: The release each image is, where an app is rolled from one release to another.
+    releases: dict[str, str] = field(default_factory=dict)
+    #: The Container App at each address. Its own address is answered by the revision Azure
+    #: serves; a revision's own (``<revision>.<address>``) by that revision alone.
+    hosts: dict[str, FakeHost] = field(default_factory=dict)
+    #: How many more answers at the app's own address come from the revision that served
+    #: before Azure's switch, its routes following the switch.
+    lagging: int = 0
+    #: The revision that answered each request.
+    answered: list[str | None] = field(default_factory=list)
     health: list[HttpAnswer] = field(default_factory=list)
     forged: HttpAnswer = field(default_factory=lambda: HttpAnswer(401))
     signed: HttpAnswer | None = None
@@ -156,20 +191,38 @@ class FakeApp:
     )
     asked: list[tuple[str, dict[str, str]]] = field(default_factory=list)
 
+    def _answering(self, url: str) -> tuple[str | None, str]:
+        """The revision that answers a request for *url*, and the release it runs."""
+        asked = urlsplit(url).hostname or ""
+        if asked in self.hosts:
+            host = self.hosts[asked]
+            revision = host.ready
+            if self.lagging and host.before is not None:
+                self.lagging -= 1
+                revision = host.before
+        else:
+            [host] = [each for name, each in self.hosts.items() if asked.endswith(f".{name}")]
+            revision = asked.removesuffix(f".{host.settings['address']}")
+            assert revision in host.revisions, f"no revision at {asked}"
+        self.answered.append(revision)
+        image = host.revisions[revision].image if revision is not None else None
+        return revision, self.releases.get(image or "", self.release)
+
     def __call__(self, url: str, headers: Mapping[str, str]) -> HttpAnswer:
         self.asked.append((url, dict(headers)))
         signed_in = headers.get("Authorization") == "Bearer token-for-app-client-id"
+        revision, release = self._answering(url)
         if url.endswith("/health"):
             assert signed_in, "the health check is signed in"
             if self.health:
                 return self.health.pop(0)
-            return _ok({"status": "ok", "release": self.release})
+            return _ok({"status": "ok", "release": release, "revision": revision})
         if not signed_in:
             assert "X-MS-CLIENT-PRINCIPAL" in headers
             return self.forged
         if self.signed is not None:
             return self.signed
-        return _ok({"id": self.release, "quotes": self.quotes})
+        return _ok({"id": release, "quotes": self.quotes})
 
 
 def _ok(body: dict[str, Any]) -> HttpAnswer:
@@ -197,6 +250,8 @@ class FakeClock:
 
 def _roll(host: FakeHost, app: FakeApp, image: str = NEW, **options: Any) -> str:
     said: list[str] = []
+    if host.settings["address"] is not None:
+        app.hosts[host.settings["address"]] = host
     try:
         return rollout(
             host,
@@ -274,29 +329,189 @@ def test_an_app_with_no_room_for_the_records_tags_is_refused_changing_nothing() 
     assert host.calls == []
 
 
-# ── The maintenance window ────────────────────────────────────────────
+# ── The switch from one release to the next is Azure's ───────────────
 
 
-def test_the_old_release_stops_before_the_new_one_starts_and_the_release_is_recorded() -> None:
+def test_the_new_release_starts_beside_the_old_one_and_is_recorded_once_it_serves() -> None:
     host = FakeHost()
     app = FakeApp()
 
     release = _roll(host, app)
 
     assert release == "rel-1"
-    # Every active revision deactivated, then the image set on a revision of its own.
-    assert host.changes() == [
-        ("deactivate", "motor--old"),
-        ("set_image", NEW, "h261101120000000001"),
-    ]
+    # Nothing is stopped first: the image is set on a revision of its own, and that is all.
+    assert host.changes() == [("set_image", NEW, "h261101120000000001")]
     assert host.calls[-1] == ("record", NEW, "rel-1", COMMIT)
+    # Azure stopped the old revision itself, once the new one served.
+    assert [name for name, revision in host.revisions.items() if revision.active] == [host.latest]
+    assert "The revision motor--h261101120000000001 takes the app's requests" in " ".join(
+        host.said  # type: ignore[attr-defined]
+    )
     # The app's other tags are kept beside the record.
     assert host.tags["owner"] == "pricing"
     assert host.tags["haute-image"] == NEW
-    # The check: health and the signed-in release asked with the token, the forged
-    # principal asked without one.
-    asked = [(url.removeprefix(f"https://{ADDRESS}"), "Authorization" in h) for url, h in app.asked]
-    assert asked == [("/health", True), ("/api/app/release", False), ("/api/app/release", True)]
+    # The check: the revision's own address asked its health and its release signed in, and
+    # the forged principal without a token; then the app's own address asked its health.
+    own = f"https://{host.latest}.{ADDRESS}"
+    assert [(url, "Authorization" in headers) for url, headers in app.asked] == [
+        (f"{own}/health", True),
+        (f"{own}/api/app/release", False),
+        (f"{own}/api/app/release", True),
+        (f"https://{ADDRESS}/health", True),
+    ]
+
+
+def test_nothing_is_checked_until_azure_serves_the_new_revision() -> None:
+    """Azure calls a revision provisioned half a minute before it sends it a request: until
+    then the old revision answers, so nothing is asked of the app."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 4
+    app = FakeApp()
+
+    _roll(host, app, clock=ticks.clock())
+
+    # Every request of the check was answered by the revision the rollout made, and none
+    # was asked before Azure served it.
+    assert len(app.answered) == 4 and set(app.answered) == {host.latest}
+    assert ticks.t == 4 * rollouts.POLL_SECONDS
+
+
+def test_a_release_rolled_out_over_another_is_checked_by_its_own_revisions_answer() -> None:
+    """Rolling from one release to the next, the old revision can still answer as Azure's
+    routes follow its switch: its answers say nothing of the new release and are asked again,
+    never taken for the new one and never failed on."""
+    host = FakeHost()
+    app = FakeApp(releases={OLD: "rel-1", NEW: "rel-2"}, lagging=2)
+
+    assert _roll(host, app) == "rel-2"
+
+    # The revision's own address was answered by it alone; the app's own address by the
+    # old revision twice more, then by the new one.
+    assert app.answered == [host.latest] * 3 + ["motor--old", "motor--old", host.latest]
+    assert host.calls[-1] == ("record", NEW, "rel-2", COMMIT)
+    assert [call[0] for call in host.changes()] == ["set_image"]
+
+
+def test_two_revisions_of_one_release_are_told_apart_by_their_names() -> None:
+    """A release's id says what it prices, not which revision runs it: rolled out again on
+    another image, the old revision's answers name the same release and still do not pass
+    for the new one's."""
+    host = FakeHost()
+    app = FakeApp(releases={OLD: "rel-1", NEW: "rel-1"}, lagging=3)
+
+    assert _roll(host, app) == "rel-1"
+
+    assert app.answered[3:] == ["motor--old"] * 3 + [host.latest]
+
+
+def test_an_address_the_new_revision_never_answers_fails_the_rollout() -> None:
+    host = FakeHost()
+    app = FakeApp(lagging=10_000)
+
+    with pytest.raises(RolloutError, match="The app's own address was not answered") as failed:
+        _roll(host, app)
+
+    assert "from the revision motor--old" in str(failed.value)
+    assert f"The previous release ({OLD}) runs again" in str(failed.value)
+
+
+def test_an_app_is_updated_release_after_release() -> None:
+    """The process an app's users rely on: one release rolled out over another, again and
+    again, each recorded as the one that runs, one revision serving at the end of each."""
+    host = FakeHost()
+    images = [f"acr.example.io/pricing/motor@sha256:{n:064x}" for n in range(1, 7)]
+    app = FakeApp(
+        releases={OLD: "rel-0", **{image: f"rel-{n}" for n, image in enumerate(images, 1)}}
+    )
+    clock = FakeClock().clock()
+
+    for number, image in enumerate(images, 1):
+        assert _roll(host, app, image, clock=clock) == f"rel-{number}"
+
+        assert host.tags["haute-release"] == f"rel-{number}"
+        assert host.tags["haute-image"] == image
+        active = [name for name, revision in host.revisions.items() if revision.active]
+        assert active == [host.latest] and host.ready == host.latest
+        if number == 3:
+            # A release that fails between two that work: the one before it runs again,
+            # still the one recorded, and the next release rolls out over it as ever.
+            broken = "acr.example.io/pricing/motor@sha256:" + "b" * 64
+            host.settles[broken] = ("Provisioned", "Degraded")
+            with pytest.raises(RolloutError, match="runs again"):
+                _roll(host, app, broken, clock=clock)
+            assert host.tags["haute-image"] == image and host.image == image
+            active = [name for name, revision in host.revisions.items() if revision.active]
+            assert active == [host.latest] and host.ready == host.latest
+    # One update a release, and two for the failed one (it, then the release before it);
+    # nothing is ever stopped by the rollout.
+    assert [call[0] for call in host.changes()] == ["set_image"] * (len(images) + 2)
+
+
+def test_a_revision_that_is_never_ready_fails_with_the_old_one_still_serving() -> None:
+    host = FakeHost()
+    host.ready_after = 10_000
+    app = FakeApp()
+
+    with pytest.raises(RolloutError, match="was not ready to take the app's requests") as failed:
+        _roll(host, app)
+
+    assert "Azure still sends them to motor--old" in str(failed.value)
+    # No request was asked of the app, which the old revision served throughout.
+    assert app.asked == []
+    assert [call[:2] for call in host.changes()] == [("set_image", NEW), ("set_image", OLD)]
+
+
+def test_the_recovery_is_reported_only_once_azure_serves_the_previous_image_again() -> None:
+    """A recovery's revision is provisioned long before it serves, as a rollout's is: the
+    previous release is not said to run again until Azure sends it the requests."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 3
+    app = FakeApp(signed=HttpAnswer(403))
+
+    with pytest.raises(RolloutError, match="answered HTTP 403") as failed:
+        _roll(host, app, clock=ticks.clock())
+
+    assert f"The previous release ({OLD}) runs again" in str(failed.value)
+    # The rollout's revision served after three polls, and the recovery's after three more.
+    assert host.ready == host.latest and host.revisions[host.latest].image == OLD
+    assert ticks.t == 6 * rollouts.POLL_SECONDS
+    assert "Put the previous release back" in host.said[-1]  # type: ignore[attr-defined]
+    assert not any(call[0] == "deactivate" for call in host.calls)
+
+
+def test_the_revision_and_the_apps_address_share_one_deadline() -> None:
+    """Five minutes hold the whole check: what the revision's own address spends of them
+    the app's own address does not get again."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 0
+    app = FakeApp(health=[HttpAnswer(503)] * 20, lagging=10_000)
+
+    with pytest.raises(RolloutError, match="The app's own address was not answered"):
+        _roll(host, app, clock=ticks.clock())
+
+    waited = [ticks.t]
+    # Twenty polls on the revision's address, ten on the app's: the check gave up at five
+    # minutes in all, and the rest of the time is the recovery's.
+    health = [url for url, _ in app.asked if url.endswith("/health")]
+    assert len(health) == 21 + 11
+    assert waited[0] >= rollouts.HEALTH_TIMEOUT_SECONDS
+
+
+def test_a_re_run_is_held_to_the_revision_it_finds() -> None:
+    """A revision already on the image is checked as a rollout's is: by its own answers."""
+    host = FakeHost(image=NEW)
+    another = _ok({"status": "ok", "release": "rel-1", "revision": "motor--another"})
+    app = FakeApp(health=[another] * 40)
+
+    with pytest.raises(RolloutError, match="not answered by the revision motor--old") as failed:
+        _roll(host, app)
+
+    assert "from the revision motor--another" in str(failed.value)
+    assert "Nothing was changed" in str(failed.value)
+    assert host.calls == []
 
 
 def test_two_rollouts_in_one_second_get_two_suffixes() -> None:
@@ -360,6 +575,10 @@ def _rolled_back(host: FakeHost) -> None:
     assert sets[0][2] != sets[1][2]
     assert host.image == OLD
     assert not any(call[0] == "record" for call in host.calls)
+    # The failed revision is never stopped by the rollout: Azure stops it once the previous
+    # image's revision serves, and would start a stopped one again meanwhile.
+    assert not any(call[0] == "deactivate" for call in host.calls)
+    assert [name for name, revision in host.revisions.items() if revision.active] == [host.latest]
 
 
 @pytest.mark.parametrize(
@@ -367,8 +586,21 @@ def _rolled_back(host: FakeHost) -> None:
     [
         (("Failed", "Failed"), FakeApp(), "failed to provision"),
         (("Provisioned", "Degraded"), FakeApp(), "is degraded"),
-        (("Provisioning", "Processing"), FakeApp(), "was not provisioned within 600 seconds"),
-        (None, FakeApp(health=[HttpAnswer(503)] * 40), "did not answer its health check"),
+        (
+            ("Provisioning", "Processing"),
+            FakeApp(),
+            "was not ready to take the app's requests within 600 seconds",
+        ),
+        (
+            None,
+            FakeApp(health=[HttpAnswer(503)] * 40),
+            "The revision's health check was not answered by the revision",
+        ),
+        (
+            None,
+            FakeApp(health=[_ok({"status": "ok", "release": "rel-1"})] * 40),
+            "The revision's health check was not answered by the revision",
+        ),
         (None, FakeApp(health=[HttpAnswer(0, b"timed out")] * 40), "no answer: timed out"),
         (None, FakeApp(forged=_ok({"id": "rel-1"})), r"forged a signed-in principal \(HTTP 200\)"),
         (
@@ -391,6 +623,7 @@ def _rolled_back(host: FakeHost) -> None:
         "degraded",
         "provisioning-past-deadline",
         "health-never-answers",
+        "health-names-no-revision",
         "stalled-request",
         "forged-answered",
         "forged-redirected-elsewhere",
@@ -419,16 +652,17 @@ def test_a_redirect_to_the_hosts_sign_in_is_a_refusal() -> None:
     assert _roll(FakeHost(), app) == "rel-1"
 
 
-def test_an_update_refused_after_the_old_revision_stopped_puts_it_back() -> None:
+def test_an_update_azure_refuses_sets_the_previous_image_again() -> None:
     host = FakeHost()
     host.refuses.add(NEW)
 
     with pytest.raises(RolloutError, match="Azure refused the update") as failed:
         _roll(host, FakeApp())
 
-    # No new revision was made: the one the rollout started from is still the latest.
-    assert host.changes()[0] == ("deactivate", "motor--old")
-    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
+    # No new revision was made, and nothing was stopped: the previous release served
+    # throughout. Its image is set again all the same, since an update Azure answered late
+    # may still land.
+    assert [call[:2] for call in host.changes()] == [("set_image", NEW), ("set_image", OLD)]
     assert host.image == OLD
     assert "runs again" in str(failed.value)
 
@@ -462,7 +696,7 @@ def test_quotes_closed_by_a_store_mismatch_stay_recorded_and_fail_naming_each_di
     assert closed.value.differences == tuple(differences)
     assert all(each in str(closed.value) for each in differences)
     # The release stays, recorded; nothing is rolled back.
-    assert [call[0] for call in host.changes()] == ["deactivate", "set_image"]
+    assert [call[0] for call in host.changes()] == ["set_image"]
     assert host.calls[-1] == ("record", NEW, "rel-1", COMMIT)
     assert host.image == NEW
 
@@ -499,30 +733,28 @@ def test_the_release_is_not_recorded_over_another_change() -> None:
             "motor--theirs", NEW, True, "Provisioned", "Running"
         )
 
-    original = host.set_image
+    answer: Callable[[str, Mapping[str, str]], HttpAnswer] = app
 
-    def set_then_replaced(image: str, suffix: str, timeout: float) -> str:
-        made = original(image, suffix, timeout)
-        # The revision provisions and checks fine; another rollout lands before the record.
-        host.after = another_rollout
-        return made
+    def checked_then_replaced(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        # The revision serves and checks fine; another rollout lands before the record.
+        answered = answer(url, headers)
+        if url.endswith("/api/app/release") and "Authorization" in headers:
+            another_rollout(host)
+        return answered
 
-    host.set_image = set_then_replaced  # type: ignore[method-assign]
-    host.revision = _then(host.revision, lambda: host.after and host.after(host))  # type: ignore[method-assign]
-
+    app.hosts[ADDRESS] = host
     with pytest.raises(RolloutError, match="before the release was recorded"):
-        _roll(host, app)
+        rollout(
+            host,
+            environment="staging",
+            image=NEW,
+            commit=COMMIT,
+            say=lambda _: None,
+            get=checked_then_replaced,
+            clock=FakeClock().clock(),
+        )
 
     assert not any(call[0] == "record" for call in host.calls)
-
-
-def _then(read: Any, side: Any) -> Any:
-    def wrapped(name: str) -> RevisionState:
-        answer = read(name)
-        side()
-        return answer
-
-    return wrapped
 
 
 def test_azure_never_takes_another_writers_revision_for_its_own(azure: Any) -> None:
@@ -630,20 +862,7 @@ def test_a_failure_puts_back_the_image_the_active_revision_served() -> None:
     assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
 
 
-def test_a_stop_azure_applied_but_lost_the_answer_to_is_put_back() -> None:
-    host = FakeHost()
-    host.deactivation_lost.add("motor--old")
-
-    with pytest.raises(RolloutError, match="was lost") as failed:
-        _roll(host, FakeApp())
-
-    # Nothing new was made: the previous image runs again on a revision of its own.
-    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [OLD]
-    assert host.image == OLD and host.revisions[host.latest].active
-    assert "runs again" in str(failed.value)
-
-
-def test_a_revision_provisioned_past_the_deadline_fails_and_is_rolled_back() -> None:
+def test_a_revision_ready_past_the_deadline_fails_and_is_rolled_back() -> None:
     ticks = FakeClock()
     host = FakeHost()
 
@@ -654,7 +873,7 @@ def test_a_revision_provisioned_past_the_deadline_fails_and_is_rolled_back() -> 
 
     host.after = slow
 
-    with pytest.raises(RolloutError, match="not provisioned within 600 seconds"):
+    with pytest.raises(RolloutError, match="not ready to take the app's requests within 600"):
         _roll(host, FakeApp(), clock=ticks.clock())
 
     assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
@@ -668,9 +887,45 @@ def test_with_no_revision_serving_a_failed_one_is_left_stopped() -> None:
     with pytest.raises(RolloutError, match="No revision served before it") as failed:
         _roll(host, FakeApp())
 
-    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW]
+    # No image to go back to: the failed revision is stopped, which holds since no revision
+    # follows it, and nothing else is set.
+    assert [call[:2] for call in host.changes()] == [
+        ("set_image", NEW),
+        ("deactivate", "motor--h261101120000000001"),
+    ]
     assert not any(revision.active for revision in host.revisions.values())
     assert "failed to provision" in str(failed.value)
+    assert "so nothing runs: the failed revision is stopped" in str(failed.value)
+
+
+def test_with_no_revision_serving_and_none_made_nothing_is_changed() -> None:
+    host = FakeHost()
+    host.revisions["motor--old"] = replace(host.revisions["motor--old"], active=False)
+    host.refuses.add(NEW)
+
+    with pytest.raises(RolloutError, match="Azure refused the update") as failed:
+        _roll(host, FakeApp())
+
+    assert "No revision served before it, and none was made: nothing was changed" in str(
+        failed.value
+    )
+    assert [call[:2] for call in host.changes()] == [("set_image", NEW)]
+
+
+def test_a_revision_address_the_rollout_cannot_reach_is_named() -> None:
+    """Inside a company's network a revision's own address needs resolving and reaching as
+    the app's does: a machine that cannot is told which address, not only that time passed."""
+    host = FakeHost()
+    app = FakeApp(health=[HttpAnswer(0, b"getaddrinfo failed")] * 40)
+
+    with pytest.raises(RolloutError, match="no answer: getaddrinfo failed") as failed:
+        _roll(host, app)
+
+    assert (
+        "The machine that runs the rollout must reach "
+        f"https://motor--h261101120000000001.{ADDRESS}" in str(failed.value)
+    )
+    assert f"The previous release ({OLD}) runs again" in str(failed.value)
 
 
 @pytest.mark.parametrize(
@@ -1090,10 +1345,22 @@ def test_the_commit_is_the_one_checked_out_and_none_is_refused(tmp_path: Path) -
     assert head_commit(tmp_path) == git_run(tmp_path, "rev-parse", "HEAD")
 
 
-def test_the_hosted_check_answers_the_release_it_finds() -> None:
-    app = FakeApp(release="rel-9")
+def test_the_hosted_check_answers_the_release_its_revision_runs() -> None:
+    host = FakeHost()
+    app = FakeApp(release="rel-9", hosts={ADDRESS: host})
+    clock = FakeClock().clock()
+    serving = host.revisions["motor--old"]
 
-    assert hosted_check(app, ADDRESS, "token-for-app-client-id", FakeClock().clock()) == "rel-9"
+    assert hosted_check(app, ADDRESS, "token-for-app-client-id", clock, revision=serving) == "rel-9"
+
+    # A revision the app's address is not answered by never passes on another's answers.
+    other = replace(serving, name="motor--other")
+    with pytest.raises(RolloutError, match="not answered by the revision motor--other") as failed:
+        hosted_check(app, ADDRESS, "token-for-app-client-id", clock, revision=other)
+    assert "HTTP 200 from the revision motor--old" in str(failed.value)
+    # And one Azure names no address for cannot be asked at all.
+    with pytest.raises(RolloutError, match="names no address for the revision motor--old"):
+        hosted_check(app, ADDRESS, "token", clock, revision=replace(serving, address=None))
 
 
 # ── AzureContainerApps, held to the SDK ───────────────────────────────
@@ -1189,6 +1456,7 @@ class _Sdk:
                         active=True,
                         provisioning_state="Provisioned",
                         running_state="Running",
+                        fqdn=f"{revision}.{ADDRESS}",
                         template=models.Template(
                             containers=[models.Container(name="app", image=NEW)]
                         ),
@@ -1268,8 +1536,9 @@ def test_azure_reads_the_state_the_rollout_needs(azure: Any) -> None:
         tag_names=frozenset({"owner"}),
         recorded=None,
     )
+    # A revision's own address is Azure's: the hosted check asks the revision there.
     assert host.revision("motor--new") == RevisionState(
-        "motor--new", NEW, True, "Provisioned", "Running"
+        "motor--new", NEW, True, "Provisioned", "Running", f"motor--new.{ADDRESS}"
     )
 
 
@@ -1479,15 +1748,21 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Pat
     return tmp_path
 
 
-def _hosts(monkeypatch: pytest.MonkeyPatch, **hosts: FakeHost) -> None:
+def _hosts(monkeypatch: pytest.MonkeyPatch, app: FakeApp | None = None, **hosts: FakeHost) -> None:
+    """Each environment's Container App, at an address of its own, and the app that answers."""
+
     def make(environment: AppEnvironment, sign_in: AzureSignIn) -> FakeHost:
         assert sign_in.subscription == "value-of-azure_subscription_id"
         assert sign_in.service_principal is not None
         assert sign_in.service_principal.client_secret == "value-of-azure_client_secret"
         return hosts[environment.name]
 
+    app = FakeApp() if app is None else app
+    for name, host in hosts.items():
+        host.settings["address"] = f"{name}.{ADDRESS}"
+        app.hosts[host.settings["address"]] = host
     monkeypatch.setattr(rollouts, "AzureContainerApps", make)
-    monkeypatch.setattr(rollouts, "fetch", FakeApp())
+    monkeypatch.setattr(rollouts, "fetch", app)
 
 
 def test_the_cli_rolls_staging_out_and_prints_the_release_last(
@@ -1501,7 +1776,8 @@ def test_the_cli_rolls_staging_out_and_prints_the_release_last(
     result = runner.invoke(cli, ["app", "rollout", "staging", "--image", NEW])
 
     assert result.exit_code == 0, result.output
-    assert "Stopped the revision motor--old" in result.output
+    assert "Stopped the revision" not in result.output
+    assert "takes the app's requests" in result.output
     assert result.output.rstrip().splitlines()[-1] == "rel-1"
     assert staging.tags["haute-commit"] == git_run(project, "rev-parse", "HEAD")
 
@@ -1529,19 +1805,15 @@ def test_the_cli_fails_on_closed_quotes_naming_each_difference(
 ) -> None:
     from haute.cli import cli
 
-    _hosts(monkeypatch, staging=FakeHost())
-    monkeypatch.setattr(
-        rollouts,
-        "fetch",
-        FakeApp(
-            quotes={
-                "open": False,
-                "error_code": "quote_store_mismatch",
-                "message": "the tables do not fit",
-                "differences": ["policy: missing column age"],
-            }
-        ),
+    closed = FakeApp(
+        quotes={
+            "open": False,
+            "error_code": "quote_store_mismatch",
+            "message": "the tables do not fit",
+            "differences": ["policy: missing column age"],
+        }
     )
+    _hosts(monkeypatch, closed, staging=FakeHost())
 
     result = runner.invoke(cli, ["app", "rollout", "staging", "--image", NEW])
 

@@ -383,6 +383,14 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "AZURE_SUBSCRIPTION_ID",
         "os.environ.get",
     ),
+    # The name Azure Container Apps gives each container of the revision it runs as, which
+    # the underwriter app answers in /health so that a rollout knows which revision answered.
+    (
+        "src/haute/_workbench_app.py",
+        "<module>.create_app",
+        "CONTAINER_APP_REVISION",
+        "os.environ.get",
+    ),
     (
         "src/haute/assistant/_config.py",
         "<module>._databricks_host_from_environment",

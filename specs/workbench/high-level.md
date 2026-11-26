@@ -276,29 +276,50 @@ Out of scope:
   refused when the record is missing or malformed, names another commit than the one checked
   out, or names an image SOURCE's app is not running.
 
-  A rollout takes a maintenance window: every active revision is deactivated, so the old
-  release stops, then the container's image is set to the new one with a revision suffix of
-  its own (the time and a random part, so no two rollouts share one), so a new revision always
-  starts, and traffic is never split between two releases.
-  Azure's update and the new revision's provisioning together have ten minutes; a revision
+  A rollout leaves the switch from one release to the next to Azure, as single revision mode
+  makes it, so that an app can be updated release after release with its underwriters never
+  without it. The container's image is set to the new one with a revision suffix of its own
+  (the time and a random part, so no two rollouts share one), so a new revision always
+  starts, beside the old one. Nothing is stopped first: Azure goes on sending every request
+  to the old revision until the new one is ready, then sends every request to the new one
+  and stops the old one itself, so requests are never split between two releases, and a new
+  revision that never becomes ready never takes one. (Stopping the old revision first does not
+  hold on Azure: as the new revision is made, Azure starts the old one again to serve until
+  the new one is ready.) The rollout waits until Azure names the new revision the app's latest
+  ready one, which is when it takes the requests: a revision Azure calls provisioned is not
+  serving yet. Azure's update and that wait together have ten minutes; a revision
   that fails to provision, or whose running state is failed or degraded, fails. An app whose
   latest revision is active and provisioned on the image already is not rolled again: a re-run
   checks it and records it, and changes nothing when its running state is failed or degraded
   or the check fails. The hosted check then
-  holds the app to the release, each request given thirty seconds: `/health`, signed in as the
-  service principal, answers within five minutes naming its release; a request for
-  `/api/app/release` that forges, unsigned, a whole principal the app itself would accept is
-  refused by the host, with 401, 403 or a redirect to its sign-in, which shows the host's
-  authentication stands in front of the app; and the same request signed in answers the
-  release `/health` named and finds its quotes open. A new revision that fails to start or
-  fails a check is replaced by the previous release, the image the app's serving revision
-  served (Azure's latest ready one) set again with a suffix of its own, within ten minutes more, and the run fails naming
+  holds the new revision to its release, each request given thirty seconds and every one sent
+  to the revision's own address, which Azure gives each revision beside the app's under its
+  Container Apps environment's domain and where that revision alone answers, so that no
+  answer can come from the revision before it: `/health`, signed in as the service principal,
+  is asked until it answers naming the revision and its release, within five minutes (the app
+  says in `/health` which revision of its host it runs as, on Azure Container Apps the
+  `CONTAINER_APP_REVISION` Azure gives each container; an answer that names another revision,
+  or none, is never taken for it); a request for `/api/app/release` that forges, unsigned, a
+  whole principal the app itself would accept is refused by the host, with 401, 403 or a
+  redirect to its sign-in, which shows the host's authentication stands in front of that
+  revision; and the same request signed in answers the release `/health` named and finds its
+  quotes open. The app's own address, the one its underwriters use, is then asked for
+  `/health` until the new revision answers it, within the same five minutes, since Azure's
+  routes follow its switch; two revisions of one release, whose id says what it prices and
+  not which image runs it, are told apart by the revision's name. The machine that runs the
+  rollout so reaches each revision's address as well as the app's, and a check nothing
+  answered names the address it could not reach. A new revision that fails to become ready or
+  fails a check is replaced by the previous release: the image the app's serving revision
+  served (Azure's latest ready one) is set again with a suffix of its own and waited on as a
+  rollout's is, within ten minutes more, Azure moving the requests to it and stopping the
+  failed revision, and the run fails naming
   what failed and that it rolled back; an app with no revision serving before is left with the
   failed revision deactivated. A release whose quotes are closed because the environment's tables do not fit
   its form stays, its quotes closed, the run failing naming each difference: the people who
   own the database change the tables in SQL, and the app opens its quotes once they fit, with
-  no new run. A failure before the new revision exists, Azure refusing the update after the
-  old revision stopped, say, puts the previous release back the same way. The rollout undoes
+  no new run. A failure before the new revision exists, Azure refusing the update, say, finds
+  the previous release still serving, and sets its image again all the same, since an update
+  Azure answered late may still land. The rollout undoes
   and records only its own revision or the one it started from: when another change has made
   a third revision the app's latest, the run fails saying so and leaves the app as it is. That
   guard sees only a change made before it looks, since Azure takes no conditional update of a
@@ -2324,7 +2345,9 @@ Out of scope:
   its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
   and a pricing asked for while every place is held is refused at once (503, `Retry-After`
   saying when to try again) rather than queued behind them to time out too. `GET /api/app/release` and `GET /api/app/form` serve the release and the
-  form; `GET /health` answers without sign-in, for the host's probes. Every other route
+  form; `GET /health` answers without sign-in, for the host's probes, with the release's id
+  and, on Azure Container Apps, the revision the app runs as (Azure's `CONTAINER_APP_REVISION`),
+  which a rollout reads to know which revision answered. Every other route
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each
   request, which the host strips from what a client sends, and refuses a request without

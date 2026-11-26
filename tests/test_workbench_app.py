@@ -327,6 +327,42 @@ def test_the_health_check_answers_without_sign_in(release: Any) -> None:
     assert answered.json() == {"status": "ok", "release": read_release(directory)[0].id}
 
 
+def test_the_health_check_names_the_revision_azure_runs_the_app_as(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rollout asks the app's health until the revision it made answers, since the revision
+    before it answers until Azure's switch: on Azure Container Apps the app says which one
+    it runs as, read once as the app is made."""
+    directory = release()
+    monkeypatch.setenv("CONTAINER_APP_REVISION", " motor--h261101120000000001 ")
+    client = _client(directory)
+    # A revision's name never changes while it runs: what is read later is not asked.
+    monkeypatch.setenv("CONTAINER_APP_REVISION", "motor--another")
+
+    assert client.get("/health").json() == {
+        "status": "ok",
+        "release": read_release(directory)[0].id,
+        "revision": "motor--h261101120000000001",
+    }
+
+
+@pytest.mark.parametrize("host", ["azure-container-apps", None])
+def test_the_health_check_names_no_revision_where_the_host_gives_none(
+    release: Any, monkeypatch: pytest.MonkeyPatch, host: str | None
+) -> None:
+    directory = release(host=host)
+    if host is None:
+        # Another host's variable is not this app's revision.
+        monkeypatch.setenv("CONTAINER_APP_REVISION", "motor--elsewhere")
+    else:
+        monkeypatch.delenv("CONTAINER_APP_REVISION", raising=False)
+
+    assert _client(directory).get("/health").json() == {
+        "status": "ok",
+        "release": read_release(directory)[0].id,
+    }
+
+
 def test_the_rollouts_forged_principal_is_one_the_app_accepts(release: Any) -> None:
     """``haute app rollout``'s check sends a whole principal, unsigned, which a host's sign-in
     must refuse: the app itself accepts it when it reaches it unchanged, its roles read under

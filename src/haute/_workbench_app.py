@@ -112,6 +112,9 @@ PRICING_WORKERS = 4
 PRICING_WORKERS_ENV = "HAUTE_APP_PRICING_WORKERS"
 #: The seconds a pricing refused as busy is told to wait before it is asked for again.
 BUSY_RETRY_SECONDS = 5
+#: The variable Azure Container Apps gives each container the name of the revision it runs
+#: as in, which ``/health`` answers so that a rollout knows which revision answered it.
+REVISION_ENV = "CONTAINER_APP_REVISION"
 #: The principal Azure's built-in authentication sets on every request it lets through, and
 #: strips from what a client sends.
 EASY_AUTH_NAME = "x-ms-client-principal-name"
@@ -882,9 +885,16 @@ def create_app(
         # it is signed in. Added last, the check runs first.
         app.add_middleware(LocalTrustedHostMiddleware, allowed_hosts=DEFAULT_TRUSTED_HOSTS)
 
+    # The revision of its host this app runs as, where the host names one: a rollout asks
+    # /health until the revision it made answers, since the one before answers until then.
+    revision = (
+        os.environ.get(REVISION_ENV, "").strip() if release.host == "azure-container-apps" else ""
+    )
+
     @app.get("/health")
     async def health() -> dict[str, str]:
-        return {"status": "ok", "release": release.id}
+        answer = {"status": "ok", "release": release.id}
+        return {**answer, "revision": revision} if revision else answer
 
     @app.get("/api/app/release", response_model=WorkbenchAppReleaseResponse)
     async def get_release(request: Request) -> WorkbenchAppReleaseResponse:

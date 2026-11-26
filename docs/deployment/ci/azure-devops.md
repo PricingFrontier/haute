@@ -287,7 +287,7 @@ You need your own pool when the registry, the hosted apps or anything else the p
 - Permission to install packages unattended (`sudo apt-get`), for the libraries SQL Server's driver loads
 - Your project's Python version in the agent's tool cache, where the `UsePythonVersion` task looks for it
 - The Azure CLI, when the pipeline [signs in to Azure](#signing-in-to-azure)
-- Outbound access to the Python package index (PyPI), your base image's registry, Microsoft's container registry (the test database's image), the Debian package mirrors, your own registry and Azure, and in a workbench project to each hosted app's address
+- Outbound access to the Python package index (PyPI), your base image's registry, Microsoft's container registry (the test database's image), the Debian package mirrors, your own registry and Azure, and in a workbench project to each hosted app's address and the other names under its Container Apps environment's domain, where a rollout asks the new release itself (for an environment inside your network, the wildcard record of its private DNS zone)
 
 Haute has no settings for an internal package mirror or a proxy.
 
