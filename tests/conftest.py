@@ -346,6 +346,28 @@ def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MLFLOW_DISABLE_TELEMETRY", "true")
 
 
+@pytest.fixture(autouse=True)
+def _no_background_git_maintenance() -> Iterator[None]:
+    """Keep git from writing into a test's repository after the command that wrote it.
+
+    Git ends a commit, merge or fetch by starting ``git maintenance run --auto`` as a
+    detached process, which takes ``.git/objects/maintenance.lock`` after the command has
+    returned. A test that copies or removes the repository then races it: a save-record
+    snapshot listed the lock and found it gone mid-copy. Command-scope config reaches
+    every git process a test starts, its own and haute's, which inherit the environment.
+    Git clears it for the receiving side of a local push, so a bare remote still runs its
+    own maintenance after a push.
+
+    The fixture owns its patcher: a test that undoes its own ``monkeypatch`` part-way
+    and goes on running git keeps the setting.
+    """
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setenv("GIT_CONFIG_COUNT", "1")
+        patcher.setenv("GIT_CONFIG_KEY_0", "maintenance.auto")
+        patcher.setenv("GIT_CONFIG_VALUE_0", "false")
+        yield
+
+
 # The CI lane that runs a route slice the way production runs it sets this.
 _LANE_INTERACTIVE_MODE_ENV = "HAUTE_TEST_INTERACTIVE_EXECUTION_MODE"
 

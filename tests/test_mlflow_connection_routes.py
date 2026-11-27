@@ -136,20 +136,26 @@ class TestDestinations:
         import threading
         import time
 
+        from haute.routes.mlflow import _PROBE_TIMEOUT_SECONDS
+
         _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
-        barrier = threading.Barrier(2, timeout=5)
+        # Each probe passes the barrier only while the other is in flight. Probed one
+        # after the other, the first would wait out its whole budget there and fail, so
+        # two passing probes prove they ran at once, sharing one budget. No wall-clock
+        # bound: how long the request takes measures the machine, not the route.
+        barrier = threading.Barrier(2, timeout=_PROBE_TIMEOUT_SECONDS)
 
         def slow_probe(uri: str) -> None:
-            barrier.wait()  # both probes must be in flight at once or this times out
+            barrier.wait()
             time.sleep(0.2)
 
-        started = time.perf_counter()
         with patch("haute.routes.mlflow._search_experiments_probe", side_effect=slow_probe):
             body = client.get("/api/mlflow/destinations?probe=true").json()
-        assert time.perf_counter() - started < 1.0
-        assert all(d["ok"] for d in body["destinations"][:2])
+        databricks, server, _local = body["destinations"]
+        assert databricks["probed"] is True and databricks["ok"] is True
+        assert server["probed"] is True and server["ok"] is True
 
     def test_malformed_toml_marks_toml_backed_entries(self, client, project_root: Path) -> None:
         _write_mlflow_section(project_root, 'mode = "local"\n')
