@@ -17,6 +17,8 @@ def test_a_commit_starts_no_background_maintenance(
     (tmp_path / "repo").mkdir()
     repo = init_repo(tmp_path / "repo")
     trace = tmp_path / "git-trace.txt"
+    # A test that undoes its own patches part-way still commits without maintenance.
+    monkeypatch.undo()
     monkeypatch.setenv("GIT_TRACE", str(trace))
 
     git_run(repo, "commit", "--allow-empty", "-m", "a save")

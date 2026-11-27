@@ -347,7 +347,7 @@ def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_background_git_maintenance(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_background_git_maintenance() -> Iterator[None]:
     """Keep git from writing into a test's repository after the command that wrote it.
 
     Git ends a commit, merge or fetch by starting ``git maintenance run --auto`` as a
@@ -357,10 +357,15 @@ def _no_background_git_maintenance(monkeypatch: pytest.MonkeyPatch) -> None:
     every git process a test starts, its own and haute's, which inherit the environment.
     Git clears it for the receiving side of a local push, so a bare remote still runs its
     own maintenance after a push.
+
+    The fixture owns its patcher: a test that undoes its own ``monkeypatch`` part-way
+    and goes on running git keeps the setting.
     """
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "maintenance.auto")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setenv("GIT_CONFIG_COUNT", "1")
+        patcher.setenv("GIT_CONFIG_KEY_0", "maintenance.auto")
+        patcher.setenv("GIT_CONFIG_VALUE_0", "false")
+        yield
 
 
 # The CI lane that runs a route slice the way production runs it sets this.
