@@ -1797,26 +1797,25 @@ no longer has; and `InputSource` in
     change; `_wait_serving` then polls every `POLL_SECONDS`, within the
     deadline, the revision and the app's `state()` until its `ready_revision`, Azure's latest
     ready revision, the one it sends requests to, is the revision made and the revision is not
-    reported unhealthy (a `Failed` provisioning, or a `Failed` or `Degraded` running state):
+    reported unhealthy (a `Failed` provisioning, or a `Failed`, `Degraded` or
+    `ActivationFailed` running state):
     `Provisioned` alone is not serving (measured on Azure: provisioned 9 seconds after the
     update, latest ready 38, the old revision stopped by Azure 30 seconds later). An
     unhealthy report is not a failure of its own, and never a pass: Azure reports a healthy
     revision so while it restarts a container (seen on the rehearsal: `Failed`/`Failed` ten
     seconds after a liveness restart, `Provisioned`/`RunningAtMaxScale` fourteen seconds
-    later), so the wait goes on. A running state of `ActivationFailed` is another
-    matter and fails the wait at once, naming the states and the revision Azure still
-    serves: it is Azure's own word that it gave up starting the revision, which then has no
-    replica (seen on the one rehearsal of a release that could not start: `Activating` for
-    five minutes, then `ActivationFailed` to the end; a restarting container was never
-    reported so). Otherwise only the end of the deadline fails it, naming the states
+    later), so the wait goes on. `ActivationFailed` is held the same way: Azure reports
+    it of a revision whose first replica did not start (seen on the one rehearsal of a
+    release that could not start: `Activating` for five minutes, then `ActivationFailed` to
+    the end) and documents it as that, not as final, so one observation of it ends nothing.
+    Only the end of the deadline fails the wait, naming the states
     last read and the revision Azure still serves, or, when the revision is the latest ready
     one and still reported unhealthy, that (nothing is read once the deadline has passed,
     unless nothing was read yet: `host.limit`'s bound ends with it, and a read
     `AzureContainerApps` refused would lose those states; a reading whose two reads the
     bound cut apart, the second refused or failed once the deadline passed, is left out
     the same way, and the last whole one stands); a release that cannot start is therefore reported
-    when Azure gives up on it, or at the deadline when Azure reports nothing of the kind, the
-    one before it serving until then, and a revision that became the
+    at the deadline, the one before it serving until then, and a revision that became the
     latest ready one and stays reported unhealthy takes the app's requests until then (Azure
     having stopped the one before it), which is the price of not reading one report as a
     verdict. `hosted_check(fetch, address, token, revision=...)`
@@ -3774,8 +3773,9 @@ no longer has; and `InputSource` in
   revision never deactivated, or, with no image to go back to, its own revision deactivated
   and nothing changed when it made none, and a rollback that fails naming the app's state; a revision reported
   failed for a read and running again after rolled out, put back and re-run all the same,
-  one Azure gave up starting (`ActivationFailed`) failing at once and not at the deadline,
-  in a rollout, in a re-run and as the recovery's own revision,
+  one reported as failed to activate waited on like any not ready (then running: rolled
+  out, never checked while so reported; so to the deadline: failed there saying so, in a
+  rollout and in a re-run),
   one failed to the deadline on a host that refuses a read once its bound is spent still
   failing with the states last read, as does one whose last reading the bound cut apart,
   reads taking time; a re-run bounding the host for its wait and lifting the bound before

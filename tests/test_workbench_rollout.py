@@ -745,53 +745,70 @@ def test_a_re_run_bounds_azure_to_its_wait_as_a_rollout_does() -> None:
     assert failing.limits == [600, None]
 
 
-def test_a_revision_azure_gave_up_starting_fails_at_once_not_at_the_deadline() -> None:
-    """Azure reports a release that cannot start as activating while its startup probe has
-    tries left, then as having failed to activate, and starts no replica of it again: the
-    rollout does not wait out its ten minutes on that."""
+def test_a_revision_reported_as_failed_to_activate_is_waited_on_like_any_not_ready() -> None:
+    """Azure calls a revision whose first replica did not start one that failed to activate,
+    and does not say the state is final: it is not ready yet, never taken for ready, and the
+    wait goes on to a revision that then runs."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 0
+    host.reports[NEW] = [("Provisioned", "ActivationFailed")] * 3
+    app = FakeApp(hosts={ADDRESS: host})
+    asked_at: list[float] = []
+
+    def get(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        asked_at.append(ticks.t)
+        return app(url, headers)
+
+    release = rollout(
+        host,
+        environment="staging",
+        image=NEW,
+        commit=COMMIT,
+        say=lambda _: None,
+        get=get,
+        clock=ticks.clock(),
+    )
+
+    assert release == "rel-1"
+    # Azure named it latest ready throughout: nothing was asked of it while it was reported
+    # as failed to activate.
+    assert min(asked_at) == 3 * rollouts.POLL_SECONDS
+    assert [call[0] for call in host.changes()] == ["set_image"]
+
+
+def test_a_revision_that_failed_to_activate_to_the_deadline_fails_there_saying_so() -> None:
+    """What Azure reported of a release that could not start, on the rehearsal: activating
+    for five minutes, then failed to activate, to the end."""
     ticks = FakeClock()
     host = FakeHost()
     host.settles[NEW] = ("Provisioned", "ActivationFailed")
-    host.reports[NEW] = [("Provisioned", "Activating")] * 4
+    host.reports[NEW] = [("Provisioned", "Activating")] * 30
     app = FakeApp()
 
-    with pytest.raises(RolloutError, match="did not start: Azure gave up on it") as failed:
+    with pytest.raises(RolloutError, match="was not ready to take the app's requests") as failed:
         _roll(host, app, clock=ticks.clock())
 
     message = str(failed.value)
-    assert "(provisioning Provisioned, running ActivationFailed)" in message
-    assert "still sends the app's requests to motor--old" in message
-    # Failed on the read that said so, four polls in, with the recovery's wait after it:
-    # far short of the ten minutes. Nothing was asked of the app.
-    assert ticks.t < 10 * rollouts.POLL_SECONDS
+    assert "within 600 seconds (provisioning Provisioned, running ActivationFailed)" in message
+    assert "Azure still sends them to motor--old" in message
+    assert ticks.t >= rollouts.ROLLOUT_TIMEOUT_SECONDS
     assert app.asked == []
     assert f"The previous release ({OLD}) runs again" in message
 
 
-def test_a_re_run_of_a_revision_azure_gave_up_starting_fails_at_once() -> None:
-    ticks = FakeClock()
+def test_a_re_run_of_a_revision_that_failed_to_activate_fails_at_the_deadline() -> None:
     host = FakeHost(image=NEW)
     host.revisions["motor--old"] = replace(host.revisions["motor--old"], running="ActivationFailed")
 
-    with pytest.raises(RolloutError, match="did not start: Azure gave up on it") as failed:
-        _roll(host, FakeApp(), clock=ticks.clock())
+    with pytest.raises(
+        RolloutError, match="still reported it unhealthy after 600 seconds"
+    ) as failed:
+        _roll(host, FakeApp())
 
+    assert "running ActivationFailed" in str(failed.value)
     assert "Nothing was changed" in str(failed.value)
-    assert ticks.t == 0
     assert host.calls == []
-
-
-def test_a_recovery_whose_own_revision_azure_gave_up_starting_says_it_failed_too() -> None:
-    host = FakeHost()
-    # The previous image itself no longer starts: the recovery's revision is given up on.
-    host.settles[OLD] = ("Provisioned", "ActivationFailed")
-
-    with pytest.raises(RolloutError, match="answered HTTP 403") as failed:
-        _roll(host, FakeApp(signed=HttpAnswer(403)))
-
-    message = str(failed.value)
-    assert f"Putting the previous release ({OLD}) back failed too" in message
-    assert "did not start: Azure gave up on it" in message
 
 
 def test_the_recovery_waits_out_a_restart_of_its_own_revision() -> None:
