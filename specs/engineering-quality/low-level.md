@@ -83,6 +83,7 @@
 | `scripts/extract_polars_io.py` | Extracts the Polars I/O argument schema by introspection, and with `--diff` reports installed-versus-committed drift as a non-failing Markdown freshness summary. |
 | `scripts/init_smoke.py` | Builds/installs or consumes a wheel in a fresh environment, initialises a project, serves it headlessly, exercises an authenticated endpoint, and shuts it down; `kill_process_tree` fells a launcher and its children (`taskkill /T` on Windows), which the browser e2e server reuses. |
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
+| `scripts/package_install_smoke.py` | The one package install smoke, run by CI's `package-smoke` job, the Release workflow's `build` job and `docs/CI_MIRROR.md`: installs the one wheel and the one sdist in `--dist`, each into a fresh environment with `--compile-bytecode` as pip installs by default, then runs `scripts/package_smoke_check.py` and `haute --help` with that environment's interpreter. |
 | `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations, each model engine's installed version against the range the wheel's own requirements declare for the platform (`_assert_within_declared_range`), so a cap bump needs no edit here. |
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
@@ -187,9 +188,10 @@
   `pytest.mark.flaky` in its exact fingerprint budget (zero at present). The
   generated Markdown groups live site counts by signal and lists each mutation
   target separately, so a reviewer can act without reading the scanner's
-  implementation. Its full-corpus regeneration assertion has a 180-second
-  per-test ceiling so the sharded coverage lane retains bounded failure while
-  allowing for instrumentation and runner contention. The Playwright CI retry
+  implementation. Its full-corpus regeneration assertion, like every repository
+  scan, runs under the 180-second scan budget (below), so the sharded coverage
+  lane retains bounded failure while allowing for instrumentation and runner
+  contention. The Playwright CI retry
   allowance is pinned to exactly 2 by a direct assertion against
   `frontend/playwright.config.ts`.
 - **Performance report schema 4** contains top-level `environment`, `workload`,
@@ -603,7 +605,10 @@
   not complete, preserving one authoritative pass/fail check.
 - Pytest's strict settings fail unknown markers/configuration and unexpected
   xpasses. `pytest-timeout` arguments in CI stop overlong tests rather than
-  leaving a job indefinitely running.
+  leaving a job indefinitely running. CI's `--timeout=60` holds every test but
+  a repository scan: `tests/conftest.py` gives each `meta` test that names no
+  timeout of its own the scan budget `REPOSITORY_SCAN_TIMEOUT_SECONDS` (180 s),
+  since a scan's time grows with the repository and the runner.
 - `scripts/check_critical_coverage.py` reports missing/under-threshold entries and
   `scripts/check_changed_coverage.py` reports exact missing changed lines/arcs;
   frontend `check-critical-coverage.mjs` does the corresponding validation for
@@ -653,7 +658,8 @@
   - `tests/test_schemas.py` — response models sharing fields through a common base (preview node results, MLflow log responses).
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
 - `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph, and its process stop: the whole tree on Windows, `terminate()` elsewhere.
-- `tests/test_meta_marker_coverage.py` — every test that scans the repository's files (walks it through `source_files`, or runs a full-corpus debt or write-sandbox scan, itself or through a helper in its module) carries the `meta` marker, so the compatibility lanes leave it to the coverage lane; a test that builds the tree it walks is not a scan, and `BEHAVIOURAL_WALKS` names each walk that belongs to the behaviour under test, an unneeded entry failing.
+- `tests/test_meta_marker_coverage.py` — every test that scans the repository's files (walks it through `source_files`, or runs a full-corpus debt or write-sandbox scan, itself or through a helper in its module) carries the `meta` marker, so the compatibility lanes leave it to the coverage lane; a test that builds the tree it walks is not a scan, and `BEHAVIOURAL_WALKS` names each walk that belongs to the behaviour under test, an unneeded entry failing; and every `meta` test carries a timeout, the scan budget unless it names its own.
+- `tests/test_package_install_smoke.py` — the install smoke installs the wheel and the sdist each into its own environment with every module compiled as pip does, runs the package smoke check and `haute --help` with that environment's executables, fails when the check fails, refuses a folder without exactly one wheel and one sdist, and is the only way a workflow installs and smoke-checks a built distribution.
 - `tests/test_package_smoke_check.py` — the package smoke's engine ranges come from the installed wheel's requirements: the installed engines are inside them, and a version past a cap or an undeclared distribution is refused.
 - `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
 - `tests/test_pipeline_source_file.py` — a graph's source file filled from `haute.toml`, preamble utility imports resolved against the pipeline directory, the pipeline directory derived from the source file, and the preview route filling in the source file; the data input's config-path handling is in `tests/test_executor_builders.py` and the parser's refusal of a missing or unreadable node config in `tests/test_parser_fail_loudly.py`.

@@ -556,11 +556,8 @@ def allowlist_drift(
 
 
 @pytest.mark.meta
-@pytest.mark.timeout(180)
 def test_write_apis_derive_from_scratch_fixture() -> None:
-    # The full-corpus AST scan is slow and load-sensitive under `-n 4` +
-    # coverage, so scan once and give the test headroom beyond the default
-    # pytest-timeout.
+    # The full-corpus AST scan is slow, so one scan serves both checks.
     new_sites, stale = allowlist_drift(scan_tests(), LINT_ALLOWLIST)
 
     new_lines = "\n".join(

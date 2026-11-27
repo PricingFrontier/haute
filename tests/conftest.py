@@ -1347,6 +1347,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     _ci_shards.add_options(parser)
 
 
+#: How long a repository scan (a ``meta`` test) may run. A scan reads the whole
+#: repository, so its time grows with the repository and the runner: under coverage
+#: tracing, with four workers sharing a slow CI runner, the heaviest took 50-85 s, past
+#: the 60 s per-test timeout CI passes (``--timeout=60``), which stays for every other
+#: test, where it catches a hang.
+REPOSITORY_SCAN_TIMEOUT_SECONDS = 180
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Give every repository scan the scan budget, unless it names its own timeout."""
+    for item in items:
+        if item.get_closest_marker("meta") and not item.get_closest_marker("timeout"):
+            item.add_marker(pytest.mark.timeout(REPOSITORY_SCAN_TIMEOUT_SECONDS))
+
+
 def pytest_configure(config: pytest.Config) -> None:
     # Every process registers the shard selection, xdist workers included:
     # workers are the processes that collect.
