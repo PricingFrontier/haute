@@ -30,7 +30,7 @@
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
 | `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts` and `frontend/vite.app.config.ts`. |
 | `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for the internal engineering reference documents and dated audit records that remain under `docs/`. |
-| `.github/workflows/release.yml` | Manual-dispatch Release workflow (optional dry run): `check` refuses to run outside `main`, requires `main`'s push CI run for the commit to have succeeded, reads PyPI's release list and runs `scripts/check_release_version.py`, and refuses a version that is already tagged; `build` makes the frontend-inclusive wheel and sdist, checks their file names carry the version, and runs the package smoke check on clean installs of each; `publish` uploads them through PyPI trusted publishing in the `pypi` environment, skipping files PyPI already has so a re-run completes a partial upload; `verify` polls PyPI's JSON for the version until `scripts/verify_pypi_release.py` confirms exactly the built files are served; `github-release` then tags the commit and creates the GitHub release with generated notes and both files. The tag lookup accepts only `git ls-remote --exit-code` exit 2 as untagged. |
+| `.github/workflows/release.yml` | Manual-dispatch Release workflow (optional dry run): `check` refuses to run outside `main`, requires `main`'s push CI run for the commit to have succeeded, reads PyPI's release list and runs `scripts/check_release_version.py`, and refuses a version that is already tagged; `build` makes the frontend-inclusive wheel and sdist, checks their file names carry the version, and runs `scripts/package_install_smoke.py` on them, the install smoke CI's `package-smoke` job runs; `publish` uploads them through PyPI trusted publishing in the `pypi` environment, skipping files PyPI already has so a re-run completes a partial upload; `verify` polls PyPI's JSON for the version until `scripts/verify_pypi_release.py` confirms exactly the built files are served; `github-release` then tags the commit and creates the GitHub release with generated notes and both files. The tag lookup accepts only `git ls-remote --exit-code` exit 2 as untagged. |
 | `scripts/verify_pypi_release.py` | Compares the SHA-256 of every built file with PyPI's JSON for the released version and reports each built file PyPI lacks, each file whose digest differs, and each file PyPI lists that the run did not build; exits non-zero on any difference or an empty build. |
 | `scripts/check_release_version.py` | Reads `[project] version` from `pyproject.toml` and refuses it unless it is `X.Y.Z`, absent from PyPI's releases, and newer than every `X.Y.Z` release there; on success writes `version=` to the given GitHub output file, and on failure prints a `::error::` annotation saying how to bump the version. |
 | `.github/workflows/docs.yml` | Builds public docs strictly and deploys the resulting `site/` artifact to GitHub Pages after `main` pushes affecting `docs/**` or `mkdocs.yml`, or on manual dispatch. |
@@ -245,8 +245,10 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `haute.assistant._assets.validate_example_bundles(execute_fast=True)` entry
   point. It uses only installed resources, validates closed manifests and
   content hashes, parses every valid bundle, and executes the `fast` tier's
-  production graph, trace, and no-write dry-run checks when declared. CI installs
-  the wheel and the sdist with `--compile-bytecode`, as pip installs by default and
+  production graph, trace, and no-write dry-run checks when declared.
+  `scripts/package_install_smoke.py`, the one install smoke CI's `package-smoke` job
+  and the Release workflow's `build` job both run, installs the wheel and the sdist
+  with `--compile-bytecode`, as pip installs by default and
   as the hosted editor installs at each start, and the check fails unless the
   installed examples hold compiled modules, every teaching example loads through
   `read_reference`, and a file written into an installed bundle is refused naming it.

@@ -41,7 +41,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `perf` | push+PR | **Yes** | `uv run python scripts/run_perf_suite.py --output-dir .cache/perf` |
 | `ci.yml` | `optional-deps-smoke` | push+PR | **Yes** | core install with the test harness alone (`uv sync --locked --no-default-groups --group test-harness`) → a step asserting core MLflow is present and the Databricks SQL connector absent → `uv run --no-sync pytest tests/test_optional_dependency_matrix.py -q` |
 | `ci.yml` | `optional-deps-present-smoke` | push+PR | **Yes** | `uv sync --group dev --locked` → `pytest tests/test_optional_dependency_extras.py -q` |
-| `ci.yml` | `package-smoke` | push+PR | **Yes** | `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → install wheel into fresh venv → `package_smoke_check.py` + `haute --help`; repeat for sdist |
+| `ci.yml` | `package-smoke` | push+PR | **Yes** | `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → `scripts/package_install_smoke.py`: wheel, then sdist, each into a fresh venv, compiled → `package_smoke_check.py` + `haute --help` |
 | `ci.yml` | `platform-smoke` (×2: windows-latest, macos-latest) | push+PR | **Yes** | `pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py tests/test_write_sandbox_guard.py tests/test_data_io_roundtrips.py -q` |
 | `ci.yml` | `docs-build` | push+PR | **Yes** | `uv sync --group dev --locked` → `uv run mkdocs build --strict` |
 | `ci.yml` | `mutation-config-smoke` | push+PR | **Yes** | `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci` |
@@ -147,21 +147,16 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    `uv run pytest tests/test_optional_dependency_extras.py -q` (dev group
    present; safe in the normal `.venv`).
 10. **`package-smoke`** ← **THE GAP THAT CATCHES A DEPENDENCY YANK.** Build the
-   artifacts and install each into a throwaway venv, exactly as CI does (clean
-   stale build dirs first, or the `*.whl` glob matches multiple files on rerun):
+   artifacts and install each into a throwaway venv with
+   `scripts/package_install_smoke.py`, the script CI's `package-smoke` job and the
+   Release workflow's `build` job both run (clean the build dir first: the script
+   refuses a folder holding more than one wheel or sdist):
    ```bash
-   rm -rf dist-smoke .pkg-wheel .pkg-sdist
+   rm -rf dist-smoke
    HAUTE_BUILD_FRONTEND=1 uv build --out-dir dist-smoke --sdist --wheel
-   uv venv .pkg-wheel --python 3.12
-   uv pip install --python .pkg-wheel/bin/python dist-smoke/*.whl
-   ./.pkg-wheel/bin/python scripts/package_smoke_check.py
-   ./.pkg-wheel/bin/haute --help >/dev/null
-   uv venv .pkg-sdist --python 3.12
-   uv pip install --python .pkg-sdist/bin/python dist-smoke/*.tar.gz
-   ./.pkg-sdist/bin/python scripts/package_smoke_check.py
-   ./.pkg-sdist/bin/haute --help >/dev/null
+   uv run --no-project python scripts/package_install_smoke.py --dist dist-smoke --python 3.12
    ```
-   The `uv pip install …whl` step does a **fresh resolve of haute's published
+   The script's install of the wheel does a **fresh resolve of haute's published
    `[project] dependencies` against live PyPI, with no lockfile** — which is
    precisely why it (and only it) surfaces a yanked-transitive failure (e.g. a
    pinned `polars==X` whose `polars-runtime-32==X` got yanked). Running this
@@ -430,10 +425,9 @@ uv pip install --python .venv-coreonly/bin/python pytest pytest-asyncio httpx
 .venv-coreonly/bin/python -m pytest tests/test_optional_dependency_matrix.py -q
 
 # --- D. Package build + fresh-install (THE dependency-yank gate) ---
-rm -rf dist-smoke .pkg-wheel .pkg-sdist        # clean, or the *.whl/*.tar.gz globs match stale files
+rm -rf dist-smoke        # clean: the script refuses more than one wheel or sdist
 HAUTE_BUILD_FRONTEND=1 uv build --out-dir dist-smoke --sdist --wheel
-uv venv .pkg-wheel --python 3.12 && uv pip install --python .pkg-wheel/bin/python dist-smoke/*.whl && ./.pkg-wheel/bin/python scripts/package_smoke_check.py && ./.pkg-wheel/bin/haute --help >/dev/null
-uv venv .pkg-sdist --python 3.12 && uv pip install --python .pkg-sdist/bin/python dist-smoke/*.tar.gz && ./.pkg-sdist/bin/python scripts/package_smoke_check.py && ./.pkg-sdist/bin/haute --help >/dev/null
+uv run --no-project python scripts/package_install_smoke.py --dist dist-smoke --python 3.12
 # Resolves macOS-arm64 wheels locally; CI resolves linux-x86-64. Catches both-arch yanks, NOT a
 # linux-only missing wheel — Docker is the only local mirror for that (Deficiencies).
 

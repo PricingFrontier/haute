@@ -629,20 +629,9 @@ jobs:
       - run: uv sync --group dev --locked
       - run: HAUTE_BUILD_FRONTEND=1 uv build --out-dir dist-smoke --sdist --wheel
 
-      - name: Wheel install smoke
-        run: |
-          uv venv .pkg-wheel --python 3.12
-          # Compiled as pip compiles by default: the assistant's examples load beside the caches.
-          uv pip install --compile-bytecode --python .pkg-wheel/bin/python dist-smoke/*.whl
-          ./.pkg-wheel/bin/python scripts/package_smoke_check.py
-          ./.pkg-wheel/bin/haute --help >/dev/null
-
-      - name: Sdist install smoke
-        run: |
-          uv venv .pkg-sdist --python 3.12
-          uv pip install --compile-bytecode --python .pkg-sdist/bin/python dist-smoke/*.tar.gz
-          ./.pkg-sdist/bin/python scripts/package_smoke_check.py
-          ./.pkg-sdist/bin/haute --help >/dev/null
+      # The package smoke the Release workflow's build job runs, defined once in the script.
+      - name: Wheel and sdist install smoke
+        run: uv run --no-project python scripts/package_install_smoke.py --dist dist-smoke
 
   platform-smoke:
     runs-on: ${{ matrix.os }}
