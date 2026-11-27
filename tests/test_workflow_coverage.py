@@ -1009,11 +1009,7 @@ def _valid_ledger(root: Path) -> dict[str, Any]:
     }
 
 
-@pytest.mark.timeout(180)
 def test_workflow_coverage_ledger_is_valid() -> None:
-    # A whole-repository static scan, like the debt and write-sandbox lints:
-    # it parses every test module and every frontend test file, so it does not
-    # fit the suite's per-test budget for unit tests.
     root = Path(__file__).resolve().parents[1]
     ledger_path = root / "tests" / "workflow_coverage.toml"
     data = load_ledger(ledger_path)

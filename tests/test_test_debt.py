@@ -648,11 +648,7 @@ def test_playwright_ci_retry_budget_is_pinned() -> None:
 
 
 @pytest.mark.meta
-@pytest.mark.timeout(180)
 def test_test_health_summary_matches_regeneration() -> None:
-    # This regenerates from full backend/frontend source scans. Coverage
-    # tracing plus four-way shard contention can legitimately exceed the
-    # suite's 60-second default, so keep a larger but still bounded ceiling.
     checked_in = _TEST_HEALTH_SUMMARY_PATH.read_text(encoding="utf-8")
     regenerated = _test_health_summary()
     assert checked_in == regenerated, (

@@ -4,7 +4,8 @@ A test that walks the repository's own files, or runs the full-corpus debt and
 write-sandbox scans, reads files rather than exercising behaviour: its result
 cannot differ by interpreter, and when it fails it fails identically on every
 compatibility shard. The ``meta`` marker keeps such tests out of the
-compatibility lanes (``-m "not perf and not meta and not index"`` in .github/workflows/ci.yml);
+compatibility lanes (``-m "not perf and not meta and not index"`` in .github/workflows/ci.yml)
+and gives each the scan budget instead of the per-test timeout (tests/conftest.py);
 this module holds every one to carrying it.
 
 A scan is a call of the shared repository walker ``source_files`` or of a
@@ -22,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from tests._source_files import REPO_ROOT, source_files
+from tests.conftest import REPOSITORY_SCAN_TIMEOUT_SECONDS
 
 pytestmark = pytest.mark.meta
 
@@ -129,6 +131,17 @@ def unmarked_scans(path: Path, source: str, exempt: frozenset[str] = frozenset()
 
     visit(tree.body, "", False)
     return found
+
+
+def test_every_repository_scan_runs_under_the_scan_budget(request: pytest.FixtureRequest) -> None:
+    budgets = {
+        item.nodeid: item.get_closest_marker("timeout")
+        for item in request.session.items
+        if item.get_closest_marker("meta")
+    }
+
+    assert budgets[request.node.nodeid].args == (REPOSITORY_SCAN_TIMEOUT_SECONDS,)
+    assert [nodeid for nodeid, marker in budgets.items() if marker is None] == []
 
 
 def test_every_repository_scan_carries_the_meta_marker() -> None:
