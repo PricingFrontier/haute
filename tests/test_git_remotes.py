@@ -1154,7 +1154,21 @@ class TestRemotesAndPush:
         push_working_pair("origin", repo, cwd=repo)
         released = _git(repo, "rev-parse", "version/1.0^{commit}")
         ours = _git(repo, "rev-parse", "version/1.0")
-        _git(bare, "tag", "-f", "-a", "version/1.0", "-m", "annotated again", released)
+        # The bare repository has no identity of its own, and a clean runner has none either.
+        _git(
+            bare,
+            "-c",
+            "user.name=Other",
+            "-c",
+            "user.email=other@example.com",
+            "tag",
+            "-f",
+            "-a",
+            "version/1.0",
+            "-m",
+            "annotated again",
+            released,
+        )
         theirs = _git(bare, "rev-parse", "version/1.0")
         assert theirs != ours
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
