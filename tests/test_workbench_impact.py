@@ -381,33 +381,103 @@ def test_a_busy_app_is_asked_again_after_a_capped_wait() -> None:
     assert report.quotes[0].outcome == "moved"
 
 
+#: What an app starting from nothing can be asked and not answer: nothing at all, as the
+#: request times out, or a 5xx its host gives while it pulls and starts the container.
+_NOT_STARTED = [
+    HttpAnswer(0, b"The read operation timed out"),
+    HttpAnswer(500),
+    HttpAnswer(502),
+    _refused(503, "busy"),
+    HttpAnswer(504),
+]
+
+
+@pytest.mark.parametrize("unanswered", _NOT_STARTED, ids=lambda answer: str(answer.status))
 @pytest.mark.parametrize("which", ["prod", "staging"])
-def test_an_app_that_gives_no_answer_at_first_is_asked_again_until_it_does(which: str) -> None:
+def test_an_app_that_is_starting_is_asked_again_until_it_answers(
+    which: str, unanswered: HttpAnswer
+) -> None:
     """An app its host has scaled to nothing starts as it is asked, and takes longer than one
-    request has: its first request is asked again, and the run then compares as ever."""
+    request has: its first request is asked again, a 503 more times than a busy app's is
+    mid-run, and the run then compares as ever."""
     apps = _apps(count=2)
-    starting = HttpAnswer(0, b"The read operation timed out")
-    getattr(apps, which).queued["/api/app/release"] = [starting] * 3
+    getattr(apps, which).queued["/api/app/release"] = [unanswered] * (impacts.BUSY_TRIES + 3)
     clock = FakeClock()
 
     report = _run(apps, clock=clock)
 
     assert (report.verdict, report.passed) == ("compared", True)
     assert [quote.outcome for quote in report.quotes] == ["moved"] * 2
-    assert clock.slept == [rollouts.POLL_SECONDS] * 3
+    assert clock.slept == [rollouts.POLL_SECONDS] * (impacts.BUSY_TRIES + 3)
 
 
-def test_an_app_that_never_answers_is_refused_after_its_time_to_start() -> None:
+@pytest.mark.parametrize(
+    ("unanswered", "said"),
+    [
+        (HttpAnswer(0, b"timed out"), "no answer: timed out"),
+        (HttpAnswer(502), "HTTP 502"),
+        (_refused(503, "busy"), "HTTP 503: busy"),
+    ],
+    ids=["no-answer", "502", "503"],
+)
+@pytest.mark.parametrize("request_seconds", [0.0, 30.0], ids=["instant", "thirty-seconds"])
+def test_an_app_that_never_answers_is_refused_after_its_time_to_start(
+    unanswered: HttpAnswer, said: str, request_seconds: float
+) -> None:
     apps = _apps(count=2)
-    apps.prod.queued["/api/app/release"] = [HttpAnswer(0, b"timed out")] * 100
+    apps.prod.queued["/api/app/release"] = [unanswered] * 100
+    clock = FakeClock()
+    begun: list[float] = []
+
+    def get(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        if PROD in url:
+            begun.append(clock.t)
+            clock.t += request_seconds
+        return apps.get(url, headers)
+
+    report = impact(
+        FakeHost(PROD),
+        FakeHost(STAGING),
+        sample=100,
+        say=lambda _: None,
+        get=get,
+        send=apps.send,
+        clock=clock.clock(),
+    )
+
+    assert (report.verdict, report.passed) == ("stopped", False)
+    assert f"prod's app answered {said}, asked for 300 seconds" in str(report.why)
+    assert not report.quotes
+    # No request began once the five minutes had passed, however long each took; the last
+    # one, begun within them, could finish.
+    assert len(begun) > impacts.BUSY_TRIES
+    assert max(begun) < impacts.START_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [
+        (_refused(401, "Sign in"), "HTTP 401: Sign in"),
+        (HttpAnswer(302, b"", "/.auth/login/aad"), "HTTP 302"),
+        (_refused(404, "no such route"), "HTTP 404: no such route"),
+    ],
+    ids=["sign-in-refused", "sign-in-redirect", "not-found"],
+)
+def test_an_answer_of_the_apps_at_first_contact_is_taken_at_once(
+    answer: HttpAnswer, said: str
+) -> None:
+    """A sign-in refused or a redirect is the app's own answer, starting or not: it is not
+    asked again."""
+    apps = _apps(count=2)
+    apps.prod.queued["/api/app/release"] = [answer]
     clock = FakeClock()
 
     report = _run(apps, clock=clock)
 
     assert (report.verdict, report.passed) == ("stopped", False)
-    assert "prod's app answered no answer: timed out, asked for 300 seconds" in str(report.why)
-    assert sum(clock.slept) == impacts.START_TIMEOUT_SECONDS
-    assert not report.quotes
+    assert f"prod's app answered {said}." in str(report.why)
+    assert "asked for" not in str(report.why)
+    assert clock.slept == []
 
 
 def test_the_runs_deadline_passing_as_an_app_starts_stops_it_as_out_of_time() -> None:

@@ -371,8 +371,10 @@ Out of scope:
   nothing starts as it is asked, and its first answer can take longer than a request has
   (seen on the rehearsal: forty-three seconds before Azure had so much as started the
   container of a production app left idle): the first request to each app is asked again
-  while no server answers, for five minutes at most, and only then is the app one that
-  cannot be reached. Once an app has answered, a request it leaves unanswered stops the run
+  while it gets no answer or a 5xx (Azure answers 502 or 503 while it pulls and starts a
+  container), no request beginning once five minutes have passed, and only then is the app
+  one that cannot be reached. A sign-in refused, a redirect or any other answer of the
+  app's is taken at once. Once an app has answered, a request it leaves unanswered stops the run
   as before. When production has no
   `haute-release` tag it has never been rolled out: there is no baseline, production is not
   reached, and the candidate answers only for the test quotes `haute app build` scored in the

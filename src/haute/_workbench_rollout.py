@@ -594,7 +594,7 @@ def _asked(
                 f"{HEALTH_TIMEOUT_SECONDS} seconds (last answer: {_said(last)})."
             )
         last = get(url, headers)
-        if last.status != 0 and not 500 <= last.status < 600:
+        if not unanswered(last):
             return last
         clock.sleep(POLL_SECONDS)
 
@@ -709,6 +709,14 @@ def _json(answer: HttpAnswer) -> dict[str, Any]:
     except (UnicodeDecodeError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def unanswered(answer: HttpAnswer) -> bool:
+    """Whether *answer* is no answer of the app's: no server answered, or the answer is a
+    5xx, which a host between gives while it starts or restarts a container. It says nothing
+    of the app, so a request that must be answered is asked again; the hosted check's rule,
+    and the impact's for an app's first contact."""
+    return answer.status == 0 or 500 <= answer.status < 600
 
 
 def _said(answer: HttpAnswer) -> str:

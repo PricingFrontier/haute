@@ -45,8 +45,9 @@ from haute._workbench_rollout import (
 
 #: The whole run, every request and wait included.
 IMPACT_TIMEOUT_SECONDS = 600
-#: How long an app's first answer of a run is asked for while no server answers: an app its
-#: host has scaled to nothing starts as it is asked, and takes longer than one request has.
+#: How long an app's first answer of a run is asked for while it goes unanswered: an app
+#: its host has scaled to nothing starts as it is asked, and takes longer than one request
+#: has, its host answering nothing, or a 502 or 503, meanwhile.
 START_TIMEOUT_SECONDS = 300
 #: The quotes priced unless ``--sample`` says otherwise, and the most it takes.
 DEFAULT_SAMPLE = 100
@@ -286,15 +287,24 @@ def _token(environment: str, host: AppReader, state: AppState, budget: _Budget) 
 
 def _first_answer(call: Callable[[], HttpAnswer], budget: _Budget) -> HttpAnswer:
     """An app's first answer of the run. An app its host has scaled to nothing starts as it
-    is asked, and the request can time out before it has: while no server answers, the app
-    is asked again every :data:`rollouts.POLL_SECONDS`, for :data:`START_TIMEOUT_SECONDS` at
-    most and within the run's deadline. Any answer is the app's and is answered as it
-    comes; a request left unanswered once an app has answered is not asked again, and
-    stops the run."""
+    is asked, and the request can time out before it has, or be answered a 502 or 503 by the
+    host meanwhile: while it goes unanswered (:func:`rollouts.unanswered`, the hosted check's
+    rule: no answer, or a 5xx), the app is asked again every :data:`rollouts.POLL_SECONDS`.
+
+    No request begins once :data:`START_TIMEOUT_SECONDS` have passed, nor once the run's
+    deadline has; one begun before may finish. An app still unanswered then is answered
+    with its last answer, for the caller to refuse. Any other answer, a sign-in refused or a
+    redirect included, is the app's and is answered as it comes. This is the start alone: a
+    request left unanswered once an app has answered is not asked again, and stops the run.
+    """
     until = budget.clock.now() + START_TIMEOUT_SECONDS
+    answer: HttpAnswer | None = None
     while True:
-        answer = budget.ask(call)
-        if answer.status != 0 or budget.clock.now() >= until:
+        budget.check()
+        if answer is not None and budget.clock.now() >= until:
+            return answer
+        answer = call()
+        if not rollouts.unanswered(answer):
             return answer
         budget.wait(rollouts.POLL_SECONDS)
 
@@ -307,7 +317,9 @@ def _side(environment: str, state: AppState, token: str, get: Fetch, budget: _Bu
     base = f"https://{state.address}"
     release = _first_answer(lambda: get(f"{base}/api/app/release", signed), budget)
     if release.status != 200:
-        asked = f", asked for {START_TIMEOUT_SECONDS} seconds" if release.status == 0 else ""
+        asked = (
+            f", asked for {START_TIMEOUT_SECONDS} seconds" if rollouts.unanswered(release) else ""
+        )
         raise ImpactError(
             f"Signed in as the CI service principal, {environment}'s app answered "
             f"{_reason(release)}{asked}."
