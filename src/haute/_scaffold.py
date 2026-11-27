@@ -2064,15 +2064,18 @@ def _app_publish_notice(host: str) -> str:
     )
 
 
+#: The publish, its output shown as it runs and kept in ``publish.log``, whose last line is
+#: the image by digest; and the staging rollout to that image. One script on GitHub and
+#: GitLab, a step each on Azure DevOps (:func:`_azure_devops_app_yml`): defined once, so no
+#: provider's release reads the digest or names the rollout another way.
+_PUBLISH_LINE = f"{_APP_PUBLISH} | tee publish.log"
+_STAGE_LINES = ('image="$(tail -n 1 publish.log)"', f'{_APP_ROLLOUT} staging --image "$image"')
+
+
 def _publish_and_stage_script(indent: str) -> str:
     """Shell lines, indented, that publish the app's image and roll staging out to the image by
     digest the publish prints last, its output shown as it runs and kept in ``publish.log``."""
-    lines = [
-        "set -eo pipefail",
-        f"{_APP_PUBLISH} | tee publish.log",
-        'image="$(tail -n 1 publish.log)"',
-        f'{_APP_ROLLOUT} staging --image "$image"',
-    ]
+    lines = ["set -eo pipefail", _PUBLISH_LINE, *_STAGE_LINES]
     return "\n".join(indent + line for line in lines)
 
 
@@ -2301,7 +2304,7 @@ def _azure_devops_app_yml(host: str, store: str | None, connection: str) -> str:
     publish = _azure_cli_step(
         "Publish the app's image",
         connection,
-        [*_registry_login_lines(host, "azure-devops"), f"{_APP_PUBLISH} | tee publish.log"],
+        [*_registry_login_lines(host, "azure-devops"), _PUBLISH_LINE],
         step,
     )
     stage = _azure_cli_step(
@@ -2310,8 +2313,7 @@ def _azure_devops_app_yml(host: str, store: str | None, connection: str) -> str:
         [
             "set -eo pipefail",
             *_AZURE_CLI_SUBSCRIPTION,
-            'image="$(tail -n 1 publish.log)"',
-            f'{_APP_ROLLOUT} staging --image "$image"',
+            *_STAGE_LINES,
         ],
         step,
     )

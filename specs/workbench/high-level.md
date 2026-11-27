@@ -334,7 +334,8 @@ Out of scope:
   takes to move them back: single revision mode gives no way to check a revision before
   Azure sends it the requests; an app with no revision serving before is left with the
   failed revision deactivated. A release whose quotes are closed because the environment's tables do not fit
-  its form stays, its quotes closed, the run failing naming each difference: the people who
+  its form stays, its quotes closed, once the app's own address has answered as its
+  revision like any release that stays, the run failing naming each difference: the people who
   own the database change the tables in SQL, and the app opens its quotes once they fit, with
   no new run. A failure before the new revision exists, Azure refusing the update, say, finds
   the previous release still serving, and sets its image again all the same, since an update

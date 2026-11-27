@@ -2052,6 +2052,14 @@ class TestAzureDevOpsSignsInThroughAServiceConnection:
             "Roll production out",
         ]
         assert {task["inputs"]["azureSubscription"] for task in tasks} == {"pricing azure (prod)"}
+        # And no other step reaches Azure: every step of every job is walked, so a plain
+        # script that called the Azure CLI or a Haute command that signs in would be found.
+        for stage in yaml.safe_load(text)["stages"]:
+            for job in stage["jobs"]:
+                for step in job.get("steps") or job["strategy"]["runOnce"]["deploy"]["steps"]:
+                    script = str(step.get("script") or step.get("bash") or "")
+                    for reaching in ("az ", "app build --push", "app rollout", "app impact"):
+                        assert reaching not in script, (step.get("displayName"), reaching)
         # No secret reaches the pipeline: no group, no secret variable and no login with one.
         for held in ("haute-credentials", "AZURE_CLIENT", "AZURE_TENANT", "docker login", "env:"):
             assert held not in text.split("# ── Publish")[1], held

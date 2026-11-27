@@ -476,15 +476,23 @@ def _wait_serving(
     revision still reported unhealthy, that. Answers the revision.
 
     Nothing is read once the deadline has passed, unless nothing was read yet: the host's
-    bound ends with it and refuses a request asked after, which would lose the states the
-    failure is there to say.
+    bound ends with it and refuses a request asked after. A reading the bound cut short, one
+    of its two reads refused or failed as the deadline passed, is left out too. Either way
+    the last whole reading stands, with the states the failure is there to say.
     """
     revision: RevisionState | None = None
     serving: str | None = None
     while True:
         if revision is None or clock.now() < deadline:
-            revision = host.revision(name)
-            serving = host.state().ready_revision
+            try:
+                read = host.revision(name)
+                sent = host.state().ready_revision
+            except RolloutError:
+                if revision is None or clock.now() < deadline:
+                    raise
+            else:
+                revision, serving = read, sent
+        assert revision is not None
         unhealthy = (
             revision.provisioning in _FAILED_PROVISIONING or revision.running in _FAILED_RUNNING
         )
@@ -600,7 +608,9 @@ def hosted_check(
     switch. One deadline holds for the whole check: no request of it starts once the
     deadline has passed, and one started before it may finish under its own bound. The
     forged request and the signed one are asked again within it while they go unanswered
-    (:func:`_asked`); an answer of the app's is judged at once.
+    (:func:`_asked`); an answer of the app's is judged at once. Quotes closed by a store
+    mismatch are said only after the app's address has answered as the revision, like a
+    release that passes: both stay, and both are recorded.
     """
     own = revision.address
     if own is None:
@@ -649,18 +659,23 @@ def hosted_check(
     quotes = body.get("quotes")
     if not isinstance(quotes, dict):
         raise RolloutError("The app's release answered no state of its quotes.")
+    closed: QuotesClosedError | None = None
     if quotes.get("open") is not True:
         message = str(quotes.get("message") or "no reason given")
-        if quotes.get("error_code") == STORE_MISMATCH:
-            differences = tuple(str(each) for each in quotes.get("differences") or ())
-            raise QuotesClosedError(
-                f"Release {release} runs with its quotes closed: {message}"
-                + "".join(f"\n  - {each}" for each in differences),
-                release,
-                differences,
-            )
-        raise RolloutError(f"The app's quotes are closed: {message}")
+        if quotes.get("error_code") != STORE_MISMATCH:
+            raise RolloutError(f"The app's quotes are closed: {message}")
+        differences = tuple(str(each) for each in quotes.get("differences") or ())
+        closed = QuotesClosedError(
+            f"Release {release} runs with its quotes closed: {message}"
+            + "".join(f"\n  - {each}" for each in differences),
+            release,
+            differences,
+        )
+    # A release that stays, its quotes open or closed by a mismatch, is one the app's own
+    # address answers as: proved before either is said.
     _answered(get, address, signed, revision.name, deadline, clock, "The app's own address")
+    if closed is not None:
+        raise closed
     return release
 
 
@@ -834,20 +849,20 @@ def _recheck(run: _Run, latest: RevisionState, image: str, commit: str) -> str:
     nothing."""
     run.say(f"  ✓ {run.environment} already runs {image}: checking it, changing nothing")
     unchanged = f"Nothing was changed: {run.environment} runs as it did."
+    # The wait has a rollout's deadline, and the host its bound, so no read outlasts it.
+    deadline = run.clock.now() + ROLLOUT_TIMEOUT_SECONDS
+    run.host.limit(ROLLOUT_TIMEOUT_SECONDS)
     try:
-        serving = _wait_serving(
-            run.host,
-            latest.name,
-            run.clock.now() + ROLLOUT_TIMEOUT_SECONDS,
-            run.clock,
-            ROLLOUT_TIMEOUT_SECONDS,
-        )
+        serving = _wait_serving(run.host, latest.name, deadline, run.clock, ROLLOUT_TIMEOUT_SECONDS)
         release = run.check(serving)
     except QuotesClosedError as closed:
+        run.host.limit(None)
         run.record(latest.name, Recorded(image, closed.release, commit))
         raise
     except RolloutError as failure:
+        run.host.limit(None)
         raise RolloutError(f"{failure} {unchanged}") from failure
+    run.host.limit(None)
     run.record(latest.name, Recorded(image, release, commit))
     return release
 
