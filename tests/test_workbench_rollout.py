@@ -72,6 +72,11 @@ class FakeHost:
         #: Images whose update Azure refuses, or does not finish in time.
         self.refuses: set[str] = set()
         self.token_refused = False
+        #: What Azure reports first of a revision, one (provisioning, running) a read, before
+        #: what it settled as: a container restarting is reported failed for a while. Keyed
+        #: by the image of a revision an update makes, or by the name of one that exists.
+        self.reports: dict[str, list[tuple[str, str]]] = {}
+        self._made: set[str] = set()
         #: How many reads of the app's state pass before a new revision is its latest ready
         #: one: Azure calls a revision provisioned long before it serves.
         self.ready_after = 1
@@ -116,7 +121,12 @@ class FakeHost:
         )
 
     def revision(self, name: str) -> RevisionState:
-        return self.revisions[name]
+        revision = self.revisions[name]
+        first = self.reports.get((revision.image if name in self._made else name) or "")
+        if first:
+            provisioning, running = first.pop(0)
+            return replace(revision, provisioning=provisioning, running=running)
+        return revision
 
     def limit(self, seconds: float | None) -> None:
         self.limits.append(seconds)
@@ -136,6 +146,7 @@ class FakeHost:
         # The revision before it stays active, and serving, until this one is ready.
         own = f"{name}.{self.settings['address']}"
         self.revisions[name] = RevisionState(name, image, True, provisioning, running, own)
+        self._made.add(name)
         self.latest, self.image = name, image
         if (provisioning, running) == ("Provisioned", "Running"):
             self._becoming_ready[name] = self.ready_after
@@ -181,6 +192,10 @@ class FakeApp:
     health: list[HttpAnswer] = field(default_factory=list)
     forged: HttpAnswer = field(default_factory=lambda: HttpAnswer(401))
     signed: HttpAnswer | None = None
+    #: What the forged and the signed-in request are answered first, in order, before the
+    #: answers above: a host restarting a container answers 503, or not at all.
+    forged_first: list[HttpAnswer] = field(default_factory=list)
+    signed_first: list[HttpAnswer] = field(default_factory=list)
     quotes: dict[str, Any] = field(
         default_factory=lambda: {
             "open": True,
@@ -219,7 +234,9 @@ class FakeApp:
             return _ok({"status": "ok", "release": release, "revision": revision})
         if not signed_in:
             assert "X-MS-CLIENT-PRINCIPAL" in headers
-            return self.forged
+            return self.forged_first.pop(0) if self.forged_first else self.forged
+        if self.signed_first:
+            return self.signed_first.pop(0)
         if self.signed is not None:
             return self.signed
         return _ok({"id": release, "quotes": self.quotes})
@@ -560,6 +577,213 @@ def test_a_re_run_is_held_to_the_revision_it_finds() -> None:
     assert host.calls == []
 
 
+# ── A transient is waited out, never taken for a verdict ──────────────
+
+
+def _forged(app: FakeApp) -> list[str]:
+    return [url for url, headers in app.asked if "X-MS-CLIENT-PRINCIPAL" in headers]
+
+
+def _signed_release(app: FakeApp) -> list[str]:
+    return [
+        url
+        for url, headers in app.asked
+        if url.endswith("/api/app/release") and "Authorization" in headers
+    ]
+
+
+def test_a_revision_reported_failed_while_a_container_restarts_is_waited_on() -> None:
+    """Azure reports a healthy revision failed for the seconds it restarts one of its
+    containers, as it does when a health probe of its own did not complete, and running again
+    after: the report alone fails nothing."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.reports[NEW] = [("Failed", "Failed")] * 2
+
+    assert _roll(host, FakeApp(), clock=ticks.clock()) == "rel-1"
+
+    assert [call[0] for call in host.changes()] == ["set_image"]
+    assert host.calls[-1] == ("record", NEW, "rel-1", COMMIT)
+    assert ticks.t == 2 * rollouts.POLL_SECONDS
+
+
+def test_a_revision_reported_failed_is_never_checked_though_azure_calls_it_ready() -> None:
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 0
+    host.reports[NEW] = [("Failed", "Failed")] * 3
+    app = FakeApp(hosts={ADDRESS: host})
+    asked_at: list[float] = []
+
+    def get(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        asked_at.append(ticks.t)
+        return app(url, headers)
+
+    release = rollout(
+        host,
+        environment="staging",
+        image=NEW,
+        commit=COMMIT,
+        say=lambda _: None,
+        get=get,
+        clock=ticks.clock(),
+    )
+
+    assert release == "rel-1"
+    # Azure named it the latest ready revision at once: nothing was asked of it until it was
+    # reported running again, three polls later.
+    assert min(asked_at) == 3 * rollouts.POLL_SECONDS
+
+
+def test_a_revision_still_reported_failed_at_the_deadline_fails_saying_what_azure_reports() -> None:
+    host = FakeHost()
+    host.ready_after = 0
+    host.reports[NEW] = [("Failed", "Failed")] * 10_000
+    app = FakeApp()
+
+    with pytest.raises(RolloutError, match="takes the app's requests, but Azure still") as failed:
+        _roll(host, app)
+
+    message = str(failed.value)
+    assert "unhealthy after 600 seconds (provisioning Failed, running Failed)" in message
+    # It was never checked, and the release before it runs again.
+    assert app.asked == []
+    assert f"The previous release ({OLD}) runs again" in message
+
+
+def test_the_recovery_waits_out_a_restart_of_its_own_revision() -> None:
+    host = FakeHost()
+    # The revision the recovery makes, on the previous image, is reported failed for two
+    # reads: the recovery is not said to have failed too.
+    host.reports[OLD] = [("Failed", "Failed")] * 2
+
+    with pytest.raises(RolloutError, match="answered HTTP 403") as failed:
+        _roll(host, FakeApp(signed=HttpAnswer(403)))
+
+    assert f"The previous release ({OLD}) runs again" in str(failed.value)
+    assert "failed too" not in str(failed.value)
+    assert host.ready == host.latest and host.revisions[host.latest].image == OLD
+
+
+def test_a_re_run_waits_out_a_restart_of_the_revision_it_finds() -> None:
+    host = FakeHost(image=NEW)
+    # Read as provisioned when the re-run is decided, then mid-restart for two reads.
+    host.reports["motor--old"] = [("Provisioned", "Running")] + [("Failed", "Failed")] * 2
+
+    assert _roll(host, FakeApp()) == "rel-1"
+
+    assert host.calls == [("record", NEW, "rel-1", COMMIT)]
+
+
+def test_a_dropped_forged_request_is_asked_again_and_the_rollout_completes() -> None:
+    """One request a host restarting a container did not answer, or answered 503, says
+    nothing of the app, and does not put a good release back."""
+    host = FakeHost()
+    app = FakeApp(forged_first=[HttpAnswer(0, b"connection reset"), HttpAnswer(503)])
+
+    assert _roll(host, app) == "rel-1"
+
+    assert len(_forged(app)) == 3
+    assert host.calls[-1] == ("record", NEW, "rel-1", COMMIT)
+
+
+def test_a_forged_request_never_answered_fails_as_an_app_that_gave_no_answer() -> None:
+    host = FakeHost()
+    app = FakeApp(forged=HttpAnswer(0, b"connection reset"))
+
+    with pytest.raises(RolloutError, match="gave no answer to the request that forges") as failed:
+        _roll(host, app)
+
+    message = str(failed.value)
+    assert "within the hosted check's 300 seconds" in message
+    assert "last answer: no answer: connection reset" in message
+    # Never said as an app that took the forged principal.
+    assert "answered a request that forged" not in message
+    assert f"The previous release ({OLD}) runs again" in message
+
+
+def test_a_forged_request_let_through_fails_at_once_whatever_came_before() -> None:
+    host = FakeHost()
+    app = FakeApp(forged_first=[HttpAnswer(503)], forged=_ok({"id": "rel-1"}))
+
+    with pytest.raises(RolloutError, match=r"forged a signed-in principal \(HTTP 200\)"):
+        _roll(host, app)
+
+    assert len(_forged(app)) == 2
+
+
+def test_a_forged_request_let_through_is_never_asked_again() -> None:
+    host = FakeHost()
+    # The host would refuse the next one: it is not asked.
+    app = FakeApp(forged_first=[_ok({"id": "rel-1"})])
+
+    with pytest.raises(RolloutError, match=r"forged a signed-in principal \(HTTP 200\)"):
+        _roll(host, app)
+
+    assert len(_forged(app)) == 1
+
+
+def test_a_signed_in_request_answered_503_is_asked_again() -> None:
+    host = FakeHost()
+    app = FakeApp(signed_first=[HttpAnswer(503), HttpAnswer(0, b"timed out")])
+
+    assert _roll(host, app) == "rel-1"
+
+    assert len(_signed_release(app)) == 3
+
+
+def test_a_signed_in_request_never_answered_fails_without_the_sign_in_advice() -> None:
+    host = FakeHost()
+    app = FakeApp(signed=HttpAnswer(503))
+
+    with pytest.raises(RolloutError, match="gave no answer to the signed-in request") as failed:
+        _roll(host, app)
+
+    message = str(failed.value)
+    assert "last answer: HTTP 503" in message
+    assert "your IT team" not in message
+    assert f"The previous release ({OLD}) runs again" in message
+
+
+def test_a_signed_in_request_refused_fails_on_its_first_answer() -> None:
+    host = FakeHost()
+    app = FakeApp(signed=HttpAnswer(401))
+
+    with pytest.raises(RolloutError, match="answered HTTP 401"):
+        _roll(host, app)
+
+    assert len(_signed_release(app)) == 1
+
+
+def test_a_request_asked_again_is_not_started_once_the_checks_time_is_spent() -> None:
+    """Asking again takes time as waiting does: the last attempt starts within the check's
+    five minutes, and none after them."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 0
+    app = FakeApp(forged=HttpAnswer(503), hosts={ADDRESS: host})
+    started: list[float] = []
+
+    def taking_time(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        started.append(ticks.t)
+        ticks.t += 25.0
+        return app(url, headers)
+
+    with pytest.raises(RolloutError, match="gave no answer to the request that forges"):
+        rollout(
+            host,
+            environment="staging",
+            image=NEW,
+            commit=COMMIT,
+            say=lambda _: None,
+            get=taking_time,
+            clock=ticks.clock(),
+        )
+
+    assert len(_forged(app)) > 1
+    assert max(started) < rollouts.HEALTH_TIMEOUT_SECONDS
+
+
 def test_two_rollouts_in_one_second_get_two_suffixes() -> None:
     clock = FakeClock().clock()
     host = FakeHost()
@@ -585,7 +809,12 @@ def test_a_re_run_on_the_image_rolls_nothing_and_records_it() -> None:
 @pytest.mark.parametrize(
     ("running", "app", "message"),
     [
-        ("Degraded", FakeApp(), "is degraded"),
+        (
+            "Degraded",
+            FakeApp(),
+            r"still reported it unhealthy after 600 seconds \(provisioning Provisioned, "
+            r"running Degraded\)",
+        ),
         ("Running", FakeApp(signed=HttpAnswer(401)), "answered HTTP 401"),
     ],
     ids=["degraded", "check-fails"],
@@ -630,8 +859,16 @@ def _rolled_back(host: FakeHost) -> None:
 @pytest.mark.parametrize(
     ("settles", "app", "message"),
     [
-        (("Failed", "Failed"), FakeApp(), "failed to provision"),
-        (("Provisioned", "Degraded"), FakeApp(), "is degraded"),
+        (
+            ("Failed", "Failed"),
+            FakeApp(),
+            r"within 600 seconds \(provisioning Failed, running Failed\)",
+        ),
+        (
+            ("Provisioned", "Degraded"),
+            FakeApp(),
+            r"within 600 seconds \(provisioning Provisioned, running Degraded\)",
+        ),
         (
             ("Provisioning", "Processing"),
             FakeApp(),
@@ -886,7 +1123,7 @@ def test_a_failure_puts_back_the_serving_revision_not_another_active_one() -> No
     host.revisions = {leaving.name: leaving, **host.revisions}
     host.settles[NEW] = ("Failed", "Failed")
 
-    with pytest.raises(RolloutError, match="failed to provision"):
+    with pytest.raises(RolloutError, match="provisioning Failed, running Failed"):
         _roll(host, FakeApp())
 
     assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
@@ -902,7 +1139,7 @@ def test_a_failure_puts_back_the_image_the_active_revision_served() -> None:
     host.image = "acr.example.io/pricing/motor@sha256:" + "b" * 64
     host.settles[NEW] = ("Failed", "Failed")
 
-    with pytest.raises(RolloutError, match="failed to provision"):
+    with pytest.raises(RolloutError, match="provisioning Failed, running Failed"):
         _roll(host, FakeApp())
 
     assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
@@ -940,7 +1177,7 @@ def test_with_no_revision_serving_a_failed_one_is_left_stopped() -> None:
         ("deactivate", "motor--h261101120000000001"),
     ]
     assert not any(revision.active for revision in host.revisions.values())
-    assert "failed to provision" in str(failed.value)
+    assert "provisioning Failed, running Failed" in str(failed.value)
     assert "so nothing runs: the failed revision is stopped" in str(failed.value)
 
 
@@ -1011,7 +1248,9 @@ def test_only_a_redirect_to_the_hosts_sign_in_is_a_refusal(location: str, refuse
 def test_the_recovery_keeps_one_deadline_through_its_ownership_read() -> None:
     ticks = FakeClock()
     host = FakeHost()
-    host.settles[NEW] = ("Failed", "Failed")
+    # An update Azure refuses fails the rollout with no wait of its own, so the second read
+    # of the app's state is the recovery's.
+    host.refuses.add(NEW)
     reads = []
 
     def slow_read(read: FakeHost) -> None:
@@ -1044,7 +1283,7 @@ def test_a_recovery_that_fails_names_both_failures_and_why_the_state_is_unknown(
         _roll(host, FakeApp())
 
     message = str(failed.value)
-    assert "failed to provision" in message
+    assert "provisioning Failed, running Failed" in message
     assert "Putting the previous release" in message and "Azure refused the update" in message
     assert "could not be read afterwards: Azure could not read the app: throttled" in message
 

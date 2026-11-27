@@ -20,9 +20,9 @@ exports from the app; and test quotes analysts keep and price again.
 `WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
 in the Workbench view's Allowed field.
 
-`WB-49` and `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
-it was confirmed by running the code or read from the source; none was run against a
-hosted app or a server database.
+`WB-50` comes from the 9 November 2026 codebase review. Its entry says whether it was
+confirmed by running the code or read from the source; it was not run against a hosted app
+or a server database.
 
 `WB-51` and `WB-52` were reproduced on 10 November 2026 through the editor's routes. Both
 come from leads the October reviews left unverified.
@@ -56,7 +56,6 @@ without stopping Mark final.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Planned | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
 | WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
@@ -360,32 +359,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-49 — The hosted check retries its probes
-**Why:** Read from the source. After a rollout, the hosted check polls the
-app's health with retries, then sends two more requests once each: one
-forging a signed-in principal, which the app must refuse, and one signed in,
-which must be answered. A request that gets no answer, or a 5xx, counts as
-"not refused", so a single dropped request raises "The app answered a
-request that forged a signed-in principal (no answer: ...)" and the rollout
-puts the previous release back. Failing closed is right; the wording is
-wrong for a request that was never answered, and one dropped packet undoes a
-good release.
-
-**Plan:** Retry a probe that got no answer or a 5xx within the health
-check's deadline. Word a probe that never got an answer as that, separately
-from one the app answered wrongly.
-
-**Acceptance:** With the first forged-principal request dropped and the
-second refused, the rollout completes. With every attempt unanswered, the
-rollout rolls back and says the app did not answer, not that it accepted a
-forged principal.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_rollout.py::hosted_check`;
-`src/haute/_workbench_rollout.py::_refused`;
-`src/haute/_workbench_rollout.py::rollout`.
 
 ### WB-50 — A save that cannot land is refused before pricing
 **Why:** Read from the source. Saving a quote reads the quote, prices the

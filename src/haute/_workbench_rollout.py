@@ -463,26 +463,37 @@ def _suffix(clock: Clock) -> str:
 def _wait_serving(
     host: ContainerAppHost, name: str, deadline: float, clock: Clock, budget: int
 ) -> RevisionState:
-    """Wait until Azure sends the app's requests to revision *name*: until it is the app's
-    latest ready revision. A revision Azure calls provisioned is not serving yet: in single
-    revision mode the one before it takes every request until this one is ready (measured:
-    provisioned 9 seconds after the update, latest ready after 38). Fails one whose
-    provisioning failed or whose running state is failed or degraded, or the *deadline*
-    (*budget* seconds), naming the revision Azure still serves. Answers the revision."""
+    """Wait until Azure sends the app's requests to revision *name* and reports it healthy:
+    until it is the app's latest ready revision, its provisioning not failed and its running
+    state neither failed nor degraded. A revision Azure calls provisioned is not serving
+    yet: in single revision mode the one before it takes every request until this one is
+    ready (measured: provisioned 9 seconds after the update, latest ready after 38).
+
+    Only the *deadline* (*budget* seconds) fails the wait. A failed or degraded report is not
+    ready yet, never a verdict and never a pass: Azure reports a healthy revision so for the
+    seconds it restarts one of its containers, and running again after. The failure names
+    the states last read and the revision Azure still serves, or, for the latest ready
+    revision still reported unhealthy, that. Answers the revision.
+    """
     while True:
         revision = host.revision(name)
-        if revision.provisioning in _FAILED_PROVISIONING:
-            raise RolloutError(f"The revision {name} failed to provision.")
-        if revision.running in _FAILED_RUNNING:
-            raise RolloutError(f"The revision {name} is {revision.running.lower()}.")
+        unhealthy = (
+            revision.provisioning in _FAILED_PROVISIONING or revision.running in _FAILED_RUNNING
+        )
         serving = host.state().ready_revision
         if clock.now() >= deadline:
+            reported = f"provisioning {revision.provisioning}, running {revision.running}"
+            if serving == name and unhealthy:
+                raise RolloutError(
+                    f"The revision {name} takes the app's requests, but Azure still reported "
+                    f"it unhealthy after {budget} seconds ({reported})."
+                )
             raise RolloutError(
                 f"The revision {name} was not ready to take the app's requests within "
-                f"{budget} seconds (provisioning {revision.provisioning}, running "
-                f"{revision.running}): Azure still sends them to {serving or 'no revision'}."
+                f"{budget} seconds ({reported}): Azure still sends them to "
+                f"{serving or 'no revision'}."
             )
-        if serving == name:
+        if serving == name and not unhealthy:
             return revision
         clock.sleep(POLL_SECONDS)
 
@@ -533,6 +544,40 @@ def _spent(what: str) -> str:
     return f"{what}: the hosted check's {HEALTH_TIMEOUT_SECONDS} seconds were spent before it."
 
 
+def _asked(
+    get: Fetch,
+    url: str,
+    headers: Mapping[str, str],
+    deadline: float,
+    clock: Clock,
+    unsent: str,
+    what: str,
+) -> HttpAnswer:
+    """The app's answer to one request of the hosted check. While no server answers, or the
+    answer is a 5xx, the request is asked again every :data:`POLL_SECONDS`: a host
+    restarting a container answers so for a moment, which says nothing of the app, and one
+    dropped request must not put a good release back. Any other answer is the app's and is
+    answered as it comes, for the caller to judge, whatever came before it.
+
+    No request starts once the *deadline* has passed. *unsent* is the failure of a request
+    never sent; one sent and never answered fails naming *what* was asked and the last
+    answer, as an app that gave no answer and never as one that answered wrongly.
+    """
+    last: HttpAnswer | None = None
+    while True:
+        if clock.now() >= deadline:
+            if last is None:
+                raise RolloutError(_spent(unsent))
+            raise RolloutError(
+                f"The app gave no answer to {what} within the hosted check's "
+                f"{HEALTH_TIMEOUT_SECONDS} seconds (last answer: {_said(last)})."
+            )
+        last = get(url, headers)
+        if last.status != 0 and not 500 <= last.status < 600:
+            return last
+        clock.sleep(POLL_SECONDS)
+
+
 def hosted_check(
     get: Fetch, address: str, token: str, clock: Clock = _CLOCK, *, revision: RevisionState
 ) -> str:
@@ -546,7 +591,9 @@ def hosted_check(
     the same release with its quotes open. The app's own address, the one its underwriters
     use, is then asked until that revision answers it, since Azure's routes follow its
     switch. One deadline holds for the whole check: no request of it starts once the
-    deadline has passed, and one started before it may finish under its own bound.
+    deadline has passed, and one started before it may finish under its own bound. The
+    forged request and the signed one are asked again within it while they go unanswered
+    (:func:`_asked`); an answer of the app's is judged at once.
     """
     own = revision.address
     if own is None:
@@ -559,17 +606,29 @@ def hosted_check(
     release = _answered(
         get, own, signed, revision.name, deadline, clock, "The revision's health check"
     )
-    if clock.now() >= deadline:
-        raise RolloutError(_spent("The forged principal was not sent"))
-    forged = get(f"https://{own}/api/app/release", forged_principal())
+    forged = _asked(
+        get,
+        f"https://{own}/api/app/release",
+        forged_principal(),
+        deadline,
+        clock,
+        "The forged principal was not sent",
+        "the request that forges a signed-in principal",
+    )
     if not _refused(forged, own, address):
         raise RolloutError(
             "The app answered a request that forged a signed-in principal "
             f"({_said(forged)}): its host's built-in authentication must stand in front of it."
         )
-    if clock.now() >= deadline:
-        raise RolloutError(_spent("The signed-in release was not asked"))
-    answer = get(f"https://{own}/api/app/release", signed)
+    answer = _asked(
+        get,
+        f"https://{own}/api/app/release",
+        signed,
+        deadline,
+        clock,
+        "The signed-in release was not asked",
+        "the signed-in request for its release",
+    )
     if answer.status != 200:
         raise RolloutError(
             f"Signed in as the CI service principal, the app answered {_said(answer)}: your IT "
@@ -764,13 +823,19 @@ def rollout(
 
 def _recheck(run: _Run, latest: RevisionState, image: str, commit: str) -> str:
     """A re-run: the app's latest revision already runs *image*, so nothing is rolled; it is
-    checked and recorded, and a failure undoes nothing."""
+    waited on as a rollout's revision is, checked and recorded, and a failure undoes
+    nothing."""
     run.say(f"  ✓ {run.environment} already runs {image}: checking it, changing nothing")
     unchanged = f"Nothing was changed: {run.environment} runs as it did."
-    if latest.running in _FAILED_RUNNING:
-        raise RolloutError(f"The revision {latest.name} is {latest.running.lower()}. {unchanged}")
     try:
-        release = run.check(latest)
+        serving = _wait_serving(
+            run.host,
+            latest.name,
+            run.clock.now() + ROLLOUT_TIMEOUT_SECONDS,
+            run.clock,
+            ROLLOUT_TIMEOUT_SECONDS,
+        )
+        release = run.check(serving)
     except QuotesClosedError as closed:
         run.record(latest.name, Recorded(image, closed.release, commit))
         raise

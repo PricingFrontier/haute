@@ -1768,8 +1768,10 @@ no longer has; and `InputSource` in
     longer than `TAG_VALUE_LIMIT` (256) characters and an app whose tags, with the record's
     three added, would pass `TAG_LIMIT` (50), then asks `host.token(client_id)`, refused when
     Azure gives none. When the latest revision is active, provisioned and on the image, nothing
-    is rolled: a failed or degraded running state fails the run, and so does the check, with
-    nothing undone. Otherwise the image the app serves is kept as the one to go back to: its
+    is rolled (`_recheck`): the revision is waited on with `_wait_serving` as a rollout's is,
+    then checked, and a failed wait or check fails the run with nothing undone. The test is
+    one read of the revision: one on the image caught restarting, not reported `Provisioned`,
+    is rolled to a new revision of the same image. Otherwise the image the app serves is kept as the one to go back to: its
     serving revision's, Azure's latest ready revision while it is active (not its template's,
     which a failed update of Azure's own can leave naming an image no revision serves, nor
     another active revision's on its way out, which takes no traffic; none when the latest
@@ -1792,12 +1794,21 @@ no longer has; and `InputSource` in
     `LROPoller.wait` no longer than what is left, and the revision Azure answers refused unless
     its name ends with the suffix, since the resource Azure answers may already hold another
     change; `_wait_serving` then polls every `POLL_SECONDS`, within the
-    deadline, the revision (a `Failed` provisioning, or a `Failed` or `Degraded` running state,
-    failing it) and the app's `state()` until its `ready_revision`, Azure's latest ready
-    revision, the one it sends requests to, is the revision made: `Provisioned` alone is not
-    serving (measured on Azure: provisioned 9 seconds after the update, latest ready 38, the
-    old revision stopped by Azure 30 seconds later), and the end of the deadline fails it,
-    naming the revision Azure still serves. `hosted_check(fetch, address, token, revision=...)`
+    deadline, the revision and the app's `state()` until its `ready_revision`, Azure's latest
+    ready revision, the one it sends requests to, is the revision made and the revision is not
+    reported unhealthy (a `Failed` provisioning, or a `Failed` or `Degraded` running state):
+    `Provisioned` alone is not serving (measured on Azure: provisioned 9 seconds after the
+    update, latest ready 38, the old revision stopped by Azure 30 seconds later). An
+    unhealthy report is not a failure of its own, and never a pass: Azure reports a healthy
+    revision so while it restarts a container (seen on the rehearsal: `Failed`/`Failed` ten
+    seconds after a liveness restart, `Provisioned`/`RunningAtMaxScale` fourteen seconds
+    later), so the wait goes on. Only the end of the deadline fails it, naming the states
+    last read and the revision Azure still serves, or, when the revision is the latest ready
+    one and still reported unhealthy, that; a release that cannot start is therefore reported
+    at the deadline, the one before it serving until then, and a revision that became the
+    latest ready one and stays reported unhealthy takes the app's requests until then (Azure
+    having stopped the one before it), which is the price of not reading one report as a
+    verdict. `hosted_check(fetch, address, token, revision=...)`
     takes the `RevisionState` `_wait_serving` answers and sends every request of the check to
     the revision's own `address` (Azure's `fqdn` for it, where that revision alone answers
     whichever one the app's address is answered by; a revision Azure names none for is
@@ -1815,7 +1826,14 @@ no longer has; and `InputSource` in
     `/.auth/login` or under it on the revision's address or the app's (or relative), or
     `login.microsoftonline.com` itself, over https; and sends it again with
     `Authorization: Bearer`, which must answer 200 for the release `/health` named (any other
-    status, or another release, failing at once) with `quotes.open`. `_answered` then polls
+    answered status, or another release, failing at once) with `quotes.open`. Each of the two
+    goes through `_asked`: asked again every `POLL_SECONDS`, within the same deadline, while
+    no server answers (status 0) or the answer is a 5xx, which a host restarting a container
+    gives for a moment and which says nothing of the app. Any other answer is the app's and
+    is judged as it comes, whatever came before it: a forged request not refused fails at
+    once, never asked again, and so does a signed one answered anything but 200. When the
+    deadline ends the asking, the failure says the app gave no answer, with the last one,
+    never that it answered a forged principal or refused the sign-in. `_answered` then polls
     `GET /health` at the app's own address, the one its underwriters use, until that revision
     answers it, within the same deadline, since Azure's routes follow its switch. The
     deadline holds the whole check: no request of it starts once the deadline has passed
@@ -3730,16 +3748,26 @@ no longer has; and `InputSource` in
   sign-in, by host, path or scheme, no
   refusal; `fetch` against a loopback server stalling, cutting a body short, and cutting an
   error's body short); a re-run of an active,
-  provisioned revision on the image rolling nothing, its failed check and a degraded revision
-  each undoing nothing; an inactive revision on the image rolled again to a new revision; the
+  provisioned revision on the image rolling nothing, its failed check and a revision degraded
+  to the end of the wait each undoing nothing; an inactive revision on the image rolled again to a new revision; the
   update refused before a new revision exists setting the previous image again; an image reference past 256 characters and an app with no room for
   the record's tags refused before anything changes; an update or a
-  provisioning past its deadline, a failed provisioning, a degraded revision, a `/health`
+  provisioning past its deadline, a provisioning failed or a revision degraded to the end of
+  the deadline, a `/health`
   that never answers, a stalled request, a forged principal answered 200 or redirected
-  elsewhere than the sign-in, a signed-in request refused, another release and quotes closed
+  elsewhere than the sign-in, a signed-in request refused, a forged or a signed request
+  never answered, another release and quotes closed
   for another reason, each rolled back to the previous image on a revision of its own, the failed
   revision never deactivated, or, with no image to go back to, its own revision deactivated
-  and nothing changed when it made none, and a rollback that fails naming the app's state; quotes closed by a
+  and nothing changed when it made none, and a rollback that fails naming the app's state; a revision reported
+  failed for a read and running again after rolled out, put back and re-run all the same,
+  and one reported failed while Azure names it latest ready never checked; the forged and
+  the signed request asked again while unanswered or answered a 5xx, the clock moving as
+  they are asked: the first dropped and the second refused completing the rollout, every
+  attempt unanswered failing as an app that gave no answer and never as one that took a
+  forged principal or refused the sign-in, a forged request let through after a 5xx failing
+  at once and one let through first never asked again, a signed request answered 503 and
+  then its release passing and one refused failing on its first answer; quotes closed by a
   store mismatch left running, recorded and failed naming each difference; another revision
   made latest before the guard looks, never undone nor recorded over; and the record set,
   the app's other tags kept, only after a rollout that stays. The forged principal is held against the real app's middleware, which

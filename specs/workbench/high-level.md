@@ -287,11 +287,20 @@ Out of scope:
   hold on Azure: as the new revision is made, Azure starts the old one again to serve until
   the new one is ready.) The rollout waits until Azure names the new revision the app's latest
   ready one, which is when it takes the requests: a revision Azure calls provisioned is not
-  serving yet. Azure's update and that wait together have ten minutes; a revision
-  that fails to provision, or whose running state is failed or degraded, fails. An app whose
-  latest revision is active and provisioned on the image already is not rolled again: a re-run
-  checks it and records it, and changes nothing when its running state is failed or degraded
-  or the check fails. The hosted check then
+  serving yet. Azure's update and that wait together have ten minutes, and only their end
+  fails the wait. A revision Azure reports failed or degraded is not ready yet, and is never
+  taken for ready while it is so reported, but the report alone fails nothing: Azure reports
+  a healthy revision failed for the seconds it restarts one of its containers, as it does
+  when a health probe of its own did not complete, and running again after. One still
+  reported so when the ten minutes end fails, saying what Azure reports. The cost is stated:
+  a release that cannot start is reported after the ten minutes, not at once, the release
+  before it serving throughout; and a revision Azure made ready and then reports unhealthy
+  to the end has taken the app's requests until then, since Azure stops the revision before
+  it once it has switched. An app whose latest revision is active and provisioned on
+  the image already is not rolled again: a re-run waits on it the same way, checks it and
+  records it, and changes nothing when the wait or the check fails. (That test is one
+  reading: a revision of the image caught mid-restart, not reported provisioned, gets a new
+  revision of the same image.) The hosted check then
   holds the new revision to its release, each request given thirty seconds and every one sent
   to the revision's own address, which Azure gives each revision beside the app's under its
   Container Apps environment's domain and where that revision alone answers, so that no
@@ -303,7 +312,13 @@ Out of scope:
   whole principal the app itself would accept is refused by the host, with 401, 403 or a
   redirect to its sign-in, which shows the host's authentication stands in front of that
   revision; and the same request signed in answers the release `/health` named and finds its
-  quotes open. The app's own address, the one its underwriters use, is then asked for
+  quotes open. Either request is asked again, within the same five minutes, while it gets no
+  answer or a 5xx: a host restarting a container answers so for a moment, which says nothing
+  of the app, and one dropped request does not put a good release back. An answer of the
+  app's is judged as it comes, whatever came before it: a forged request the host let
+  through fails at once, as does a signed-in one answered anything but the release. Requests
+  that were never answered fail saying the app gave no answer, not that it took a forged
+  principal or refused the sign-in. The app's own address, the one its underwriters use, is then asked for
   `/health` until the new revision answers it, within the same five minutes, since Azure's
   routes follow its switch (no request of the check starts once the five minutes have
   passed, and one started within them may finish); two revisions of one release, whose id says what it prices and
