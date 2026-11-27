@@ -727,6 +727,52 @@ def test_the_page_is_the_apps_own_built_page(release: Any, tmp_path: Path) -> No
     assert client.get("/assets/app.js").status_code == 401
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "/quotes/new",
+        "/quotes/new?from=Q-1&option=1&as=renewal",
+        "/quotes/Q-1/1",
+        "/quotes/Q-1/1/edit",
+        "/quotes/Q%2F1/2/edit",
+        "/quotes",
+        "/somewhere/the/page/does/not/know",
+    ],
+)
+def test_every_address_but_the_apis_opens_the_page(
+    release: Any, tmp_path: Path, address: str
+) -> None:
+    """The page moved to `/quotes/{reference}/{option}/edit` while a quote was edited, and
+    the app kept a list of pages without it: a reload there answered a JSON 404. No list is
+    kept now, so an address the page moves to cannot be one the app does not serve."""
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "app.html").write_text("<div id=app></div>", encoding="utf-8")
+    client = _client(release(), static_dir=static)
+
+    opened = client.get(address, headers=SIGNED_IN)
+
+    assert opened.status_code == 200, opened.text
+    assert opened.text == "<div id=app></div>"
+    assert client.get(address).status_code == 401
+
+
+@pytest.mark.parametrize("address", ["/api/app/no-such-route", "/api/elsewhere", "/api"])
+def test_an_api_address_no_route_takes_is_not_the_page(
+    release: Any, tmp_path: Path, address: str
+) -> None:
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "app.html").write_text("<div id=app></div>", encoding="utf-8")
+    client = _client(release(), static_dir=static)
+
+    missing = client.get(address, headers=SIGNED_IN)
+
+    assert missing.status_code == 404
+    assert missing.headers["content-type"].startswith("application/json")
+    assert client.get("/assets/no-such-file.js", headers=SIGNED_IN).status_code == 404
+
+
 # ── Building a project's release ──────────────────────────────────────────
 
 
