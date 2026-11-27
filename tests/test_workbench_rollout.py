@@ -1251,14 +1251,46 @@ def test_a_re_run_with_a_mismatch_at_an_address_another_revision_answers_records
     assert host.calls == []
 
 
-def test_a_re_run_that_finds_a_mismatch_records_it_with_the_hosts_bound_lifted() -> None:
-    host = FakeHost(image=NEW)
+@pytest.mark.parametrize("mismatch", [False, True], ids=["quotes-open", "store-mismatch"])
+@pytest.mark.parametrize("re_run", [False, True], ids=["rollout", "re-run"])
+def test_the_release_is_recorded_with_the_hosts_bound_lifted(re_run: bool, mismatch: bool) -> None:
+    """The host's bound holds the wait, and the record is set after the check, which can
+    outlast it: the bound is lifted first, or Azure would refuse the record's own read. Here
+    the host refuses a read once its bound is spent, as Azure's adapter does, and the
+    check's last request ends long after the ten minutes."""
+    ticks = FakeClock()
+    host = FakeHost(image=NEW if re_run else OLD)
+    host.now = lambda: ticks.t
+    app = FakeApp(hosts={ADDRESS: host})
+    if mismatch:
+        app.quotes = dict(_MISMATCH)
 
-    with pytest.raises(QuotesClosedError):
-        _roll(host, FakeApp(quotes=dict(_MISMATCH)))
+    def outlasting_the_bound(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        if url == f"https://{ADDRESS}/health":
+            # Begun within the check's deadline, answered after the host's bound has ended.
+            ticks.t += rollouts.ROLLOUT_TIMEOUT_SECONDS + 100
+        return app(url, headers)
 
-    assert host.calls == [("record", NEW, "rel-1", COMMIT)]
-    assert host.limits == [600, None]
+    def roll() -> str:
+        return rollout(
+            host,
+            environment="staging",
+            image=NEW,
+            commit=COMMIT,
+            say=lambda _: None,
+            get=outlasting_the_bound,
+            clock=ticks.clock(),
+        )
+
+    if mismatch:
+        with pytest.raises(QuotesClosedError):
+            roll()
+    else:
+        assert roll() == "rel-1"
+
+    assert ticks.t > rollouts.ROLLOUT_TIMEOUT_SECONDS
+    assert host.calls[-1] == ("record", NEW, "rel-1", COMMIT)
+    assert host.limits[-1] is None
 
 
 def test_another_change_made_latest_before_the_guard_looks_is_never_undone() -> None:
