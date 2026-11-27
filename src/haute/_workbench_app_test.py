@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as escaped
 
 from haute._quote_store import SignIn, StoreLocation, offline_plan, render_sql, store_url
@@ -31,7 +31,10 @@ from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import provider_of
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import ExcelCellsExport, ExportWidget, FormSpec
-from haute._workbench_rollout import HttpAnswer, fetch, post
+from haute._workbench_rollout import _CLOCK, Clock, HttpAnswer, fetch, post
+
+if TYPE_CHECKING:
+    from sqlalchemy import Connection, Engine
 
 #: Who the app signs in every request of the run as.
 PRINCIPAL = "app-test@haute.invalid"
@@ -39,6 +42,11 @@ PRINCIPAL = "app-test@haute.invalid"
 ENVIRONMENT = "app-test"
 #: How long the app is given to start answering, in seconds.
 START_SECONDS = 30.0
+#: How long a server engine is given to take the run's first connection, and how often it
+#: is asked again, in seconds: a database inside a CI job's service container can still be
+#: starting when the job's steps run, and no provider holds them until it answers.
+SERVER_READY_SECONDS = 120.0
+SERVER_POLL_SECONDS = 2.0
 #: How long one request of the run may take, in seconds: a pricing's own bound and more.
 REQUEST_SECONDS = 90.0
 #: A workbook's first bytes: a zip's.
@@ -114,11 +122,38 @@ def sqlite_store(release_dir: Path) -> Iterator[StoreLocation]:
         yield _made(StoreLocation(ENVIRONMENT, store_url(Path(folder) / "quotes.sqlite")), form)
 
 
+def _reached(admin: Engine, clock: Clock = _CLOCK) -> Connection:
+    """A connection of *admin* to its server, asked for again every
+    :data:`SERVER_POLL_SECONDS` while the server refuses it or never answers
+    (:func:`haute._quote_store._store.unreached`), for :data:`SERVER_READY_SECONDS`: then
+    the last refusal is the run's failure. A starting server refuses a login as a wrong
+    one is refused, so each is waited on alike; any other error is raised at once."""
+    from haute._quote_store._store import unreached
+
+    deadline = clock.now() + SERVER_READY_SECONDS
+    while True:
+        try:
+            return admin.connect()
+        except Exception as refusal:
+            # Only a server that refuses the connection or never answers is waited on, and
+            # only to the deadline; anything else is raised on as it is.
+            if unreached(refusal):
+                if clock.now() < deadline:
+                    clock.sleep(SERVER_POLL_SECONDS)
+                    continue
+                raise AppTestError(
+                    "The server did not take the run's connection within "
+                    f"{int(SERVER_READY_SECONDS)} seconds: {refusal}"
+                ) from refusal
+            raise
+
+
 @contextlib.contextmanager
 def server_store(url: str, sign_in: SignIn, release_dir: Path) -> Iterator[StoreLocation]:
     """A database of the run's own made on the server *url* names, a database its login may
     make and drop databases from (SQL Server's ``master`` or PostgreSQL's ``postgres``),
-    holding the tables of the form the release in *release_dir* ships, dropped after."""
+    holding the tables of the form the release in *release_dir* ships, dropped after. The
+    server is waited for while it is still starting (:func:`_reached`)."""
     from sqlalchemy import text
     from sqlalchemy.engine import make_url
 
@@ -131,7 +166,7 @@ def server_store(url: str, sign_in: SignIn, release_dir: Path) -> Iterator[Store
     name = f"haute_app_test_{uuid.uuid4().hex[:12]}"
     admin = make_engine(url, sign_in=sign_in).execution_options(isolation_level="AUTOCOMMIT")
     try:
-        with admin.connect() as connection:
+        with _reached(admin) as connection:
             connection.execute(text(f"CREATE DATABASE {name}"))
         try:
             made = make_url(url).set(database=name).render_as_string(hide_password=False)

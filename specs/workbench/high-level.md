@@ -124,11 +124,14 @@ Out of scope:
   on the one database answered, each signed in to by the hosted app's managed identity, which
   on `postgresql` also names `username_env`, `HAUTE_STORE_USERNAME`, the role the identity is
   mapped to), `[deploy.container]` (the app image's base image, on the project's Python, its
-  registry and port) and no endpoint settings, a blank form folder and `connections.toml` (a
+  registry and port) and no endpoint settings, `[ci]` (the repository's `provider`, and for
+  Azure DevOps `service_connection`, `haute-azure`, the service connection its pipeline signs
+  in to Azure through), a blank form folder and `connections.toml` (a
   `[dev]`, `[staging]` and `[prod]` connection on that database with its server and database
   left empty for the analyst to fill in and the analyst's sign-in, each naming its own
   variables, `HAUTE_<ENVIRONMENT>_USERNAME` and the like, which `.env.example` names beside
-  the host's credentials, as `haute ci update` writes it again), `haute[sqlserver,azure]` or
+  the host's credentials, where the provider's jobs read any (Azure DevOps' read none), as
+  `haute ci update` writes it again), `haute[sqlserver,azure]` or
   `haute[postgresql,azure]` as the project's dependency when it lists no `haute`, and those
   extras added to a `haute` it lists without them (the release
   installs the database's driver, which `haute app build` refuses to build without, and
@@ -181,13 +184,37 @@ Out of scope:
   ask for: GitHub's `release-production.yml`, run from the Actions tab for a commit of the
   default branch (its head unless another is given), GitLab's manual `deploy-production` job
   and Azure DevOps' `DeployProduction` stage, a deployment under its `production`
-  environment, triggered by hand whatever approvals it has, each run `haute app rollout prod
+  environment, triggered by hand whatever approvals it has (a stage started by hand
+  names no stage it depends on, which Azure DevOps refuses beside it: a condition holds
+  it to runs of main), each run `haute app rollout prod
   --from staging`, which rolls production to the release staging runs, refusing when staging
   runs another commit than the one being promoted. Each job that rolls out is given the
   host's credentials and time for a build, a rollout, a recovery and the impact (an hour for
   the publish job, forty-five minutes for production), and the jobs that roll one environment out never
   run at once (GitHub's concurrency group, GitLab's resource group, Azure DevOps' one
   pipeline run at a time on the environment's exclusive lock, which IT sets on it).
+  The host's credentials are, on GitHub and GitLab, the repository's secrets: the CI service
+  principal's `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and
+  `AZURE_SUBSCRIPTION_ID`. On Azure DevOps the pipeline holds no secret and reads no variable
+  group: it signs in to Azure through the Azure Resource Manager service connection
+  `[ci] service_connection` names (`haute-azure` as `haute init` writes it), whichever way IT
+  made the connection, with a secret or with workload identity federation. Each step that
+  reaches Azure is an `AzureCLI@2` task under that connection, signed in as it starts: one
+  logs in to the registry (`az acr login`, given the registry's whole login server, which
+  the Azure CLI reads its name from) and runs `haute app build --push`, one runs the
+  staging rollout, one the impact, and the production stage's one the production rollout,
+  the last three taking the subscription the connection signs in to (`az account show`) as
+  `AZURE_SUBSCRIPTION_ID`. They are separate steps because a federated connection's
+  sign-in can ask for a token it does not hold yet only in its first minutes: each command
+  asks for every token it needs as it starts (Rolling the hosted app out, below), within
+  seconds of its step's sign-in. `haute ci update` refuses an Azure DevOps project whose
+  `[ci] service_connection` is empty. The jobs run on GitHub's and Azure DevOps' hosted
+  Ubuntu, and untagged on GitLab, unless
+  `[ci] runner` names where they run, a self-hosted runner's label on GitHub, a runner tag on
+  GitLab, an agent pool on Azure DevOps, whose whole contract is pipeline-config's
+  ([pipeline-config](../pipeline-config/high-level.md)): Ubuntu or Debian with Docker and
+  packages installed unattended, and on Azure DevOps the Azure CLI and the project's Python
+  where `UsePythonVersion` finds it.
   An export template's change starting the release waits on templates
   ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - **Testing the packaged app.** `haute app test [RELEASE]` (`.haute/app/release` unless
@@ -197,7 +224,11 @@ Out of scope:
   engine, on a SQLite file in a folder of the run's own, or, with `--server-url`
   (`HAUTE_APP_TEST_URL`), on a database the run makes on that server (its `master` or
   `postgres` database, signed in with `HAUTE_APP_TEST_USER` and `HAUTE_APP_TEST_PASSWORD`,
-  a login that may make and drop databases) and drops after. Its store must open as a
+  a login that may make and drop databases) and drops after. A server that does not take
+  the run's first connection, a service container still starting, is asked again, every two
+  seconds for up to two minutes, before the run fails with its last refusal: no provider
+  holds a job's steps until a database inside its service container answers, so the run
+  waits itself. Its store must open as a
   hosted app's does (the store's check). Then, through the app's own routes, each of the
   project's test quotes (`[test_quotes] dir`) is put on the sheets as opening it in
   Preview puts it there, made a quote, priced under the identity the app gave it, saved
@@ -213,43 +244,105 @@ Out of scope:
   anything it refuses a project whose app host is not `azure-container-apps`, an environment
   the table does not name or whose `resource_group` or `container_app` is empty, an image
   named other than by digest (`<repository>@sha256:<64 hex digits>`, since a tag can be
-  pointed at other bytes), a checkout whose commit git cannot name, any of `AZURE_TENANT_ID`,
-  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` unset (each named), and
+  pointed at other bytes), a checkout whose commit git cannot name, `AZURE_SUBSCRIPTION_ID`
+  unset, a sign-in to Azure it is not given whole (below), and
   an app that does not keep one revision active at a time (single revision mode), run one
-  container, take requests at a public address and sign requests in through Microsoft Entra
+  container, take requests at an address outside its Container Apps environment (external
+  ingress) and sign requests in through Microsoft Entra
   ID, an app with no room for the record (below: Azure takes 50 tags on a resource and 256
   characters in a tag's value, so an image reference longer than that is refused too), or one
-  for which the service principal those variables name cannot get a token. The
-  project's IT team gives that service principal the Container Apps Contributor role on the
-  apps (beside AcrPush on the registry) and lets it sign in to them through Azure's built-in
-  authentication, which takes a token for the app registration's client ID. `--image` names
+  its sign-in cannot get a token for. It signs in to Azure one of two ways, by what the job
+  gives it: as the service principal `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+  `AZURE_CLIENT_SECRET` name, when all three are set; or, when none of the three is set,
+  through the Azure CLI's own sign-in (`az`), which is what an Azure DevOps service
+  connection's step gives it, and `az login` a person, each token asked of `az` for the
+  account `AZURE_SUBSCRIPTION_ID`'s subscription is in, whatever `az`'s current one is. One or two of the three set is refused
+  naming those unset, and none set where no `az` is on the path is refused naming both ways.
+  A job given nothing at all, its secrets never set, is told the subscription and both
+  ways in one refusal, and an Azure CLI with no sign-in to give, which a run finds as it asks
+  for its first token, is refused naming both ways too, since the variables a job was not
+  given are the likelier cause;
+  a sign-in the job gives is never set aside for the other when Azure refuses it. The
+  project's IT team gives the identity CI signs in as (that service principal, or the
+  service connection's) the Container Apps Contributor role on the
+  apps (beside AcrPush on the registry, and for a service connection's identity Reader on it
+  too: the Azure CLI's login reads the registry's address from Azure, and without that read a
+  registry whose address carries a domain name label cannot be logged in to) and lets it
+  sign in to them through Azure's built-in
+  authentication, which takes a token for the app registration's client ID. The address is
+  the app's own, as Azure names it: whether the internet reaches it or only the company's
+  network is IT's choice, and the jobs run where it is reached (`[ci] runner`). `--image` names
   the image; `--from SOURCE` takes the release SOURCE's app runs, as its record (below) says,
   refused when the record is missing or malformed, names another commit than the one checked
   out, or names an image SOURCE's app is not running.
 
-  A rollout takes a maintenance window: every active revision is deactivated, so the old
-  release stops, then the container's image is set to the new one with a revision suffix of
-  its own (the time and a random part, so no two rollouts share one), so a new revision always
-  starts, and traffic is never split between two releases.
-  Azure's update and the new revision's provisioning together have ten minutes; a revision
-  that fails to provision, or whose running state is failed or degraded, fails. An app whose
-  latest revision is active and provisioned on the image already is not rolled again: a re-run
-  checks it and records it, and changes nothing when its running state is failed or degraded
-  or the check fails. The hosted check then
-  holds the app to the release, each request given thirty seconds: `/health`, signed in as the
-  service principal, answers within five minutes naming its release; a request for
-  `/api/app/release` that forges, unsigned, a whole principal the app itself would accept is
-  refused by the host, with 401, 403 or a redirect to its sign-in, which shows the host's
-  authentication stands in front of the app; and the same request signed in answers the
-  release `/health` named and finds its quotes open. A new revision that fails to start or
-  fails a check is replaced by the previous release, the image the app's serving revision
-  served (Azure's latest ready one) set again with a suffix of its own, within ten minutes more, and the run fails naming
-  what failed and that it rolled back; an app with no revision serving before is left with the
+  A rollout leaves the switch from one release to the next to Azure, as single revision mode
+  makes it, so that an app can be updated release after release without being taken down
+  for it. The container's image is set to the new one with a revision suffix of its own
+  (the time and a random part, so no two rollouts share one), so a new revision always
+  starts, beside the old one. Nothing is stopped first: Azure goes on sending every request
+  to the old revision until the new one is ready, then sends every request to the new one
+  and stops the old one itself, so requests are never split between two releases, and a new
+  revision that never becomes ready never takes one. (Stopping the old revision first does not
+  hold on Azure: as the new revision is made, Azure starts the old one again to serve until
+  the new one is ready.) The rollout waits until Azure names the new revision the app's latest
+  ready one, which is when it takes the requests: a revision Azure calls provisioned is not
+  serving yet. Azure's update and that wait together have ten minutes, and only their end
+  fails the wait. A revision Azure reports failed, degraded or failed to activate is not ready yet, and is never
+  taken for ready while it is so reported, but the report alone fails nothing: Azure reports
+  a healthy revision failed for the seconds it restarts one of its containers, as it does
+  when a health probe of its own did not complete, and running again after. One still
+  reported so when the ten minutes end fails, saying what Azure reports. The cost is stated:
+  a release that cannot start is reported after the ten minutes, not at once, the release
+  before it serving throughout (on the rehearsal of one, Azure reported it activating for
+  five minutes, the tries its startup probe has, then as failed to activate to the end; the
+  wait does not end on that report, which Azure documents as a first replica that did not
+  start and not as final); and a revision Azure made ready and then reports unhealthy
+  to the end has taken the app's requests until then, since Azure stops the revision before
+  it once it has switched. An app whose latest revision is active and provisioned on
+  the image already is not rolled again: a re-run waits on it the same way, checks it and
+  records it, and changes nothing when the wait or the check fails. (That test is one
+  reading: a revision of the image caught mid-restart, not reported provisioned, gets a new
+  revision of the same image.) The hosted check then
+  holds the new revision to its release, each request given thirty seconds and every one sent
+  to the revision's own address, which Azure gives each revision beside the app's under its
+  Container Apps environment's domain and where that revision alone answers, so that no
+  answer can come from the revision before it: `/health`, signed in as the service principal,
+  is asked until it answers naming the revision and its release, within five minutes (the app
+  says in `/health` which revision of its host it runs as, on Azure Container Apps the
+  `CONTAINER_APP_REVISION` Azure gives each container; an answer that names another revision,
+  or none, is never taken for it); a request for `/api/app/release` that forges, unsigned, a
+  whole principal the app itself would accept is refused by the host, with 401, 403 or a
+  redirect to its sign-in, which shows the host's authentication stands in front of that
+  revision; and the same request signed in answers the release `/health` named and finds its
+  quotes open. Either request is asked again, within the same five minutes, while it gets no
+  answer or a 5xx: a host restarting a container answers so for a moment, which says nothing
+  of the app, and one dropped request does not put a good release back. An answer of the
+  app's is judged as it comes, whatever came before it: a forged request the host let
+  through fails at once, as does a signed-in one answered anything but the release. Requests
+  that were never answered fail saying the app gave no answer, not that it took a forged
+  principal or refused the sign-in. The app's own address, the one its underwriters use, is then asked for
+  `/health` until the new revision answers it, within the same five minutes, since Azure's
+  routes follow its switch (no request of the check starts once the five minutes have
+  passed, and one started within them may finish); two revisions of one release, whose id says what it prices and
+  not which image runs it, are told apart by the revision's name. The machine that runs the
+  rollout so reaches each revision's address as well as the app's, and a check nothing
+  answered names the address it could not reach. A new revision that fails to become ready or
+  fails a check is replaced by the previous release: the image the app's serving revision
+  served (Azure's latest ready one) is set again with a suffix of its own and waited on as a
+  rollout's is, within ten minutes more, Azure moving the requests to it and stopping the
+  failed revision, and the run fails naming
+  what failed and that it rolled back. A revision that fails a check has taken the app's
+  requests meanwhile, for as long as the check ran (five minutes at most) and the time Azure
+  takes to move them back: single revision mode gives no way to check a revision before
+  Azure sends it the requests; an app with no revision serving before is left with the
   failed revision deactivated. A release whose quotes are closed because the environment's tables do not fit
-  its form stays, its quotes closed, the run failing naming each difference: the people who
+  its form stays, its quotes closed, once the app's own address has answered as its
+  revision like any release that stays, the run failing naming each difference: the people who
   own the database change the tables in SQL, and the app opens its quotes once they fit, with
-  no new run. A failure before the new revision exists, Azure refusing the update after the
-  old revision stopped, say, puts the previous release back the same way. The rollout undoes
+  no new run. A failure before the new revision exists, Azure refusing the update, say, finds
+  the previous release still serving, and sets its image again all the same, since an update
+  Azure answered late may still land. The rollout undoes
   and records only its own revision or the one it started from: when another change has made
   a third revision the app's latest, the run fails saying so and leaves the app as it is. That
   guard sees only a change made before it looks, since Azure takes no conditional update of a
@@ -266,11 +359,23 @@ Out of scope:
   the app's own routes (a pricing saves nothing), signed in as the service principal
   `haute app rollout` signs in as. Before it reaches a host it makes the rollout's refusals: an
   app host other than `azure-container-apps`, `[workbench.app.staging]` or
-  `[workbench.app.prod]` not naming its app, or any of the four variables unset. It then reads
+  `[workbench.app.prod]` not naming its app, `AZURE_SUBSCRIPTION_ID` unset, or a sign-in to
+  Azure not given whole. It then reads
   each app's address and Entra ID registration from Azure as the rollout does, takes a token
-  for each, and reads each app's release and form revision from `/api/app/release` and its
+  for each before it asks either app anything (staging's, and production's when it records
+  a whole release: a sign-in can ask for a token it does not hold yet only in its first
+  minutes, and an app's answers can outlast them), and reads each app's release and form
+  revision from `/api/app/release` and its
   form from `/api/app/form`; an app that cannot be reached or refuses the service principal,
-  or whose quotes are closed, stops the run, which fails. When production has no
+  or whose quotes are closed, stops the run, which fails. An app its host has scaled to
+  nothing starts as it is asked, and its first answer can take longer than a request has
+  (seen on the rehearsal: forty-three seconds before Azure had so much as started the
+  container of a production app left idle): the first request to each app is asked again
+  while it gets no answer or a 5xx (Azure answers 502 or 503 while it pulls and starts a
+  container), no request beginning once five minutes have passed, and only then is the app
+  one that cannot be reached. A sign-in refused, a redirect or any other answer of the
+  app's is taken at once. Once an app has answered, a request it leaves unanswered stops the run
+  as before. When production has no
   `haute-release` tag it has never been rolled out: there is no baseline, production is not
   reached, and the candidate answers only for the test quotes `haute app build` scored in the
   validate job. A production app whose record is incomplete (one or two of `haute-image`,
@@ -309,9 +414,10 @@ Out of scope:
   The run has ten minutes from its start (`IMPACT_TIMEOUT_SECONDS`), checked before each
   request and each wait, a wait that would pass it not taken: a request started runs to its
   own bound, thirty seconds, or seventy-five for a pricing (longer than the app's own sixty,
-  so its 504 comes first), and Azure's reads and the service principal's tokens to the
+  so its 504 comes first), and Azure's reads and the sign-in's tokens to the
   rollout's bound on each call (thirty seconds to connect and to read each attempt, two
-  retries at most, a retry's wait ten seconds at most).
+  retries at most, a retry's wait ten seconds at most; a token asked of the Azure CLI,
+  thirty seconds for its answer).
   When time runs out once quotes are listed, the quote being priced and those after it are
   not compared, the report says time ran out, and the run passes on what it compared; time
   running out before the quotes are listed stops the run.
@@ -2270,7 +2376,9 @@ Out of scope:
   its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
   and a pricing asked for while every place is held is refused at once (503, `Retry-After`
   saying when to try again) rather than queued behind them to time out too. `GET /api/app/release` and `GET /api/app/form` serve the release and the
-  form; `GET /health` answers without sign-in, for the host's probes. Every other route
+  form; `GET /health` answers without sign-in, for the host's probes, with the release's id
+  and, on Azure Container Apps, the revision the app runs as (Azure's `CONTAINER_APP_REVISION`),
+  which a rollout reads to know which revision answered. Every other route
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each
   request, which the host strips from what a client sends, and refuses a request without

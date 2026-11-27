@@ -322,6 +322,103 @@ def _production_environment(name: str) -> str:
     return name
 
 
+# A runner's or a service connection's name: one every provider takes, inert in the generated
+# YAML, where it is written double-quoted. No quote, backslash or control character, and no
+# space at either end.
+_CI_NAME_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._()-]{0,98}[A-Za-z0-9._()-])?")
+
+
+def _ci_name_problem(name: object, what: str) -> str | None:
+    """Why *name* cannot stand as *what* in a generated file, or ``None`` when it can; an
+    empty one names none."""
+    if not isinstance(name, str):
+        return f"is {name!r}: {what} must be a string"
+    if name and _CI_NAME_PATTERN.fullmatch(name) is None:
+        return (
+            f"is {name!r}: {what} may hold only ASCII letters, digits, spaces, '.', '-', '_', "
+            "'(' and ')', starting with a letter or digit and ending in no space, in at most "
+            "100 characters"
+        )
+    return None
+
+
+def runner_problem(name: object) -> str | None:
+    """Why *name* cannot name where the generated jobs run, or ``None`` when it can.
+
+    Empty names none: the jobs run on the provider's hosted Ubuntu.
+    """
+    return _ci_name_problem(name, "a runner's name")
+
+
+def service_connection_problem(name: object) -> str | None:
+    """Why *name* cannot name the service connection an Azure DevOps pipeline signs in to
+    Azure through (:func:`uses_service_connection`), or ``None`` when it can. An empty one
+    names none, which such a pipeline cannot run with."""
+    if name == "":
+        return (
+            "is empty: on Azure DevOps this project signs in to Azure through a service "
+            "connection, so name the one your IT team made for it"
+        )
+    return _ci_name_problem(name, "a service connection's name")
+
+
+# How each provider's templates name the hosted Ubuntu their jobs run on, and what names a
+# runner of the project's in its place. GitLab's name none, its instance runners taking the
+# jobs: there the default job, which every job inherits, gains the runner's tag.
+_HOSTED_RUNNERS: Mapping[str, tuple[str, str]] = {
+    "github": ("runs-on: ubuntu-latest", 'runs-on: "{}"'),
+    "azure-devops": ("vmImage: ubuntu-latest", 'name: "{}"'),
+}
+_GITLAB_DEFAULT_JOB = "\ndefault:\n"
+
+
+def _pin_ci_runner(text: str, ci: str, runner: str) -> str:
+    """*text*, one of *ci*'s generated files, with every job moved from the provider's hosted
+    Ubuntu to *runner*: a self-hosted runner's label on GitHub, an agent pool on Azure DevOps,
+    a runner's tag on GitLab. Empty, the jobs stay where the templates put them."""
+    problem = runner_problem(runner)
+    if problem is not None:
+        raise ValueError(f"The runner {problem}")
+    if not runner:
+        return text
+    if ci == "gitlab":
+        tagged = f'{_GITLAB_DEFAULT_JOB}  tags:\n    - "{runner}"\n'
+        return text.replace(_GITLAB_DEFAULT_JOB, tagged)
+    hosted, named = _HOSTED_RUNNERS[ci]
+    return text.replace(hosted, named.format(runner))
+
+
+#: The service connection ``haute init`` names for an Azure DevOps project that signs in to
+#: Azure: the project's IT team makes one under this name, or names theirs in ``haute.toml``.
+DEFAULT_SERVICE_CONNECTION = "haute-azure"
+
+
+def uses_service_connection(target: str, ci: str) -> bool:
+    """Whether *ci*'s generated jobs sign in to Azure through a service connection for
+    *target*'s credentials (a deploy target's, or a workbench's app host's): Azure DevOps',
+    for Azure Container Apps. Such a pipeline holds no secret and reads no variable group."""
+    return ci == "azure-devops" and target == "azure-container-apps"
+
+
+def _service_connection(name: str) -> str:
+    """*name*, checked to stand as an ``AzureCLI@2`` step's ``azureSubscription``."""
+    problem = service_connection_problem(name)
+    if problem is not None:
+        raise ValueError(f"The service connection {problem}")
+    return name
+
+
+def _ci_table(target: str, ci: str) -> str:
+    """``haute.toml``'s ``[ci]`` table as ``haute init`` writes it: the provider, and the
+    service connection of one that signs in to Azure through one for *target*."""
+    connection = (
+        f'service_connection = "{DEFAULT_SERVICE_CONNECTION}"\n'
+        if uses_service_connection(target, ci)
+        else ""
+    )
+    return f'[ci]\nprovider = "{ci}"\n{connection}'
+
+
 def _github_trigger_paths() -> str:
     """The deploy workflow's ``on.push.paths`` entries, one per release input."""
     dirs = [f'      - "{name}/**"' for name in _RELEASE_INPUT_DIRS]
@@ -387,16 +484,31 @@ def _registry_login_script(target: str, indent: str) -> str:
     credential to ``docker login``. No ``-u``: on GitLab the lines share one shell with the
     job's later entries and the runner's own.
     """
+    return "\n".join(indent + line for line in _registry_login_lines(target))
+
+
+#: The login an Azure DevOps step under a service connection runs for a registry on Azure:
+#: the Azure CLI's, as the connection's identity. It is given the registry's whole login
+#: server, which the Azure CLI reads the registry's name from: a name is not always the
+#: host's first label (``pricing-a1b2c3.azurecr.io`` is the registry ``pricing``).
+_AZURE_CLI_REGISTRY_LOGIN = 'az acr login --name "$registry"'
+
+
+def _registry_login_lines(target: str, ci: str | None = None) -> list[str]:
+    """The lines of :func:`_registry_login_script`, logging in with *target*'s
+    ``registry_login``, or, where *ci* signs in through a service connection
+    (:func:`uses_service_connection`), with the Azure CLI."""
     login = _get_target(target)["registry_login"]
     assert isinstance(login, str)
-    lines = [
+    if ci is not None and uses_service_connection(target, ci):
+        login = _AZURE_CLI_REGISTRY_LOGIN
+    return [
         "set -eo pipefail",
         'registry="$(uv run haute ci registry-host | tail -n 1)"',
         'if [ -n "$registry" ]; then',
         f"  {login}",
         "fi",
     ]
-    return "\n".join(indent + line for line in lines)
 
 
 def _deploy_timeout_minutes(target: str) -> int:
@@ -477,9 +589,7 @@ endpoint_name = "{name}"
 [safety.approval]
 min_approvers = {min_approvers}
 
-[ci]
-provider = "{ci}"
-
+{_ci_table(target, ci)}
 [ci.staging]
 endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
 {_service_addresses(name, target)}""",
@@ -510,9 +620,7 @@ pipeline = "{PIPELINE_FILE}"
 registry = ""
 base_image = "{container_base_image(python_version)}"
 
-[ci]
-provider = "{ci}"
-
+{_ci_table(host, ci)}
 {workbench_table(host, store)}"""
 
 
@@ -650,27 +758,46 @@ _ENV_EXAMPLE_HEADER = """\
 """
 
 
-def env_example(target: str, connection_variables: Sequence[str] = ()) -> str:
+def env_example(
+    target: str, connection_variables: Sequence[str] = (), *, ci: str | None = None
+) -> str:
     """Generate an automated project's ``.env.example`` with only the credentials for the
     chosen target, and the variables ``connections.toml``'s sign-ins read,
-    *connection_variables*, when it names any."""
-    return _env_example_text(target, _build_only_notice(target), connection_variables)
+    *connection_variables*, when it names any. The credentials are left out for *ci*, a
+    provider whose jobs read none (:func:`ci_secret_names`)."""
+    return _env_example_text(target, _build_only_notice(target), connection_variables, ci)
 
 
-def app_env_example(host: str, connection_variables: Sequence[str] = ()) -> str:
+def app_env_example(
+    host: str, connection_variables: Sequence[str] = (), *, ci: str | None = None
+) -> str:
     """A workbench project's ``.env.example``: the credentials its CI publishes the underwriter
-    app's image to *host*'s registry with, and the variables ``connections.toml``'s sign-ins
-    read, *connection_variables*."""
-    return _env_example_text(host, "", connection_variables)
+    app's image to *host*'s registry with, left out for *ci*, a provider whose jobs read none
+    (:func:`ci_secret_names`), and the variables ``connections.toml``'s sign-ins read,
+    *connection_variables*."""
+    return _env_example_text(host, "", connection_variables, ci)
 
 
-def _env_example_text(key: str, notice: str, connection_variables: Sequence[str]) -> str:
-    """``.env.example`` with *key*'s credentials, :data:`TARGETS`' entry, under *notice*."""
+# What stands in the credentials' place where a provider's jobs sign in to Azure through a
+# service connection.
+_NO_CREDENTIALS = """#
+# Azure DevOps signs in to Azure through the service connection that
+# [ci] service_connection in haute.toml names: CI has no credentials to keep here.
+"""
+
+
+def _env_example_text(
+    key: str, notice: str, connection_variables: Sequence[str], ci: str | None
+) -> str:
+    """``.env.example`` with *key*'s credentials, :data:`TARGETS`' entry, under *notice*; with
+    :data:`_NO_CREDENTIALS` in their place where *ci*'s jobs read none."""
     cfg = _get_target(key)
     label = cfg["label"]
     assert isinstance(label, str)
     env_body = cfg["env_body"]
     assert isinstance(env_body, str)
+    if ci is not None and uses_service_connection(key, ci):
+        env_body = _NO_CREDENTIALS
     text = _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
     if connection_variables:
         named = "".join(f"{variable}=\n" for variable in connection_variables)
@@ -708,9 +835,12 @@ def env_example_placeholders(target: str) -> dict[str, str]:
 # ── CI secrets helpers ────────────────────────────────────────────────
 
 
-def ci_secret_names(target: str) -> list[str]:
+def ci_secret_names(target: str, ci: str) -> list[str]:
     """The CI secrets *target*'s generated deploy, registry login, smoke, impact and tag
-    steps read, or, for an app host, its publish job's registry login."""
+    steps read on *ci*, or, for an app host, its publish and rollout jobs: none where the
+    jobs sign in through a service connection (:func:`uses_service_connection`)."""
+    if uses_service_connection(target, ci):
+        return []
     secrets = _get_target(target)["secrets"]
     assert isinstance(secrets, list)
     return list(secrets)
@@ -1592,21 +1722,53 @@ stages:
 {tested}{publish}{server_job}"""
 
 
+def _azure_cli_step(display_name: str, connection: str, lines: Sequence[str], indent: str) -> str:
+    """An ``AzureCLI@2`` step of an Azure DevOps job, its dash *indent* deep: *lines* run by
+    bash, signed in to Azure through the service connection *connection* as the step starts.
+
+    The sign-in is the connection's, whichever way it was made. One made with workload
+    identity federation can ask for a token it does not hold yet only in its first minutes,
+    so a step runs one command that reaches Azure, which asks for its tokens as it starts.
+    """
+    script = "\n".join(f"{indent}      {line}" for line in lines)
+    return f"""\
+{indent}- task: AzureCLI@2
+{indent}  displayName: {display_name}
+{indent}  inputs:
+{indent}    azureSubscription: "{connection}"
+{indent}    scriptType: bash
+{indent}    scriptLocation: inlineScript
+{indent}    inlineScript: |
+{script}
+"""
+
+
+#: The lines of an ``AzureCLI@2`` step that give ``haute app rollout`` and ``haute app impact``
+#: the subscription the step's connection signs in to. Assigned, then exported: an export of
+#: a command's output passes when the command fails.
+_AZURE_CLI_SUBSCRIPTION = (
+    'AZURE_SUBSCRIPTION_ID="$(az account show --query id --output tsv)"',
+    "export AZURE_SUBSCRIPTION_ID",
+)
+
+
 def azure_devops_yml(
     target: str,
     *,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
     production_environment: str = "",
+    service_connection: str = DEFAULT_SERVICE_CONNECTION,
 ) -> str:
     """:func:`_azure_devops_yml` on *python_version* and *staging_suffix*, production under
-    *production_environment*, ``production`` when it is empty."""
+    *production_environment*, ``production`` when it is empty, signed in to Azure through
+    *service_connection* where *target* signs in there."""
     environment = _production_environment(production_environment) or _AZURE_PRODUCTION_ENVIRONMENT
-    text = _azure_devops_yml(target, environment=environment)
+    text = _azure_devops_yml(target, environment=environment, connection=service_connection)
     return _pin_staging_suffix(_pin_ci_python(text, python_version), staging_suffix)
 
 
-def _azure_devops_yml(target: str, *, environment: str) -> str:
+def _azure_devops_yml(target: str, *, environment: str, connection: str) -> str:
     """Combined CI + deploy pipeline for Azure DevOps.
 
     Uses stages to enforce ordering.  The ``DeployProduction`` stage
@@ -1615,8 +1777,12 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
 
     Credentials are read from an Azure DevOps variable group named
     ``haute-credentials`` - the env var names are identical to other
-    CI providers.
+    CI providers. A target that signs in to Azure (:func:`uses_service_connection`) reads
+    none: its registry logins are ``AzureCLI@2`` steps under *connection*, and its stages
+    name no group and its steps no secret.
     """
+    connected = uses_service_connection(target, "azure-devops")
+    group = "" if connected else "    variables:\n      - group: haute-credentials\n"
     secrets_env = _azure_devops_secrets_env(target)
     # The DeployProduction deployment strategy nests ``env:`` at 18 spaces, so
     # its secret keys must sit at 20 — deeper than the 14-space job-level block.
@@ -1631,8 +1797,17 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     verify_suffix = _verification_suffix_option(target)
     production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
+    deploy_env = "" if connected else f"            env:\n{secrets_env}\n"
+    deploy_env_production = (
+        "" if connected else f"                  env:\n{secrets_env_production}\n"
+    )
     # A container-based target logs in to its registry before each deploy step.
-    if target in _CONTAINER_BASED_TARGETS:
+    if connected:
+        login = _registry_login_lines(target, "azure-devops")
+        name = _service_connection(connection)
+        login_staging = _azure_cli_step("Log in to the registry", name, login, " " * 10)
+        login_production = _azure_cli_step("Log in to the registry", name, login, " " * 16)
+    elif target in _CONTAINER_BASED_TARGETS:
         login_staging = f"""\
           - script: |
 {_registry_login_script(target, " " * 14)}
@@ -1718,9 +1893,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
     displayName: Deploy → Staging
     dependsOn: Validate
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-    variables:
-      - group: haute-credentials
-    jobs:
+{group}    jobs:
       - job: deploy_staging
         displayName: Deploy to staging
         timeoutInMinutes: {_deploy_timeout_minutes(target)}
@@ -1735,16 +1908,12 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
             displayName: Install dependencies
 {login_staging}          - script: uv run haute deploy --endpoint-suffix "-staging"
             displayName: Deploy staging
-            env:
-{secrets_env}
-
+{deploy_env}
 {verification_stages}  # ── Deploy to production (manual approval) ───────────────────
   - stage: DeployProduction
     displayName: Deploy → Production
     dependsOn: {production_depends_on}
-    variables:
-      - group: haute-credentials
-    jobs:
+{group}    jobs:
       - deployment: deploy_production
         displayName: Deploy to production
         timeoutInMinutes: {_deploy_timeout_minutes(target)}
@@ -1765,9 +1934,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
                   displayName: Install dependencies
 {login_production}                - script: uv run haute deploy
                   displayName: Deploy production
-                  env:
-{secrets_env_production}
-                - script: |
+{deploy_env_production}                - script: |
                     set -euo pipefail
 {release_tag}
                   displayName: Tag release
@@ -1801,6 +1968,8 @@ def ci_files(
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
     production_environment: str = "",
+    runner: str = "",
+    service_connection: str = DEFAULT_SERVICE_CONNECTION,
 ) -> dict[str, str]:
     """The CI files ``haute init`` and ``haute ci update`` write for *ci*: path -> content.
 
@@ -1809,18 +1978,26 @@ def ci_files(
     Python, and GitHub's the one its ``.python-version`` names; the staging deploy steps
     pass *staging_suffix*, its ``[ci.staging] endpoint_suffix``, as a
     Databricks project's smoke and impact steps do; and the production job runs under
-    *production_environment*, its ``[ci.production] environment``, when it names one. Each
-    file is headed by :data:`CI_FILE_MARK`.
+    *production_environment*, its ``[ci.production] environment``, when it names one. Every
+    job runs on *runner*, its ``[ci] runner``, when it names one (:func:`_pin_ci_runner`),
+    and an Azure DevOps pipeline that signs in to Azure does so through
+    *service_connection*, its ``[ci] service_connection``, which ``haute init`` writes as
+    the default here. Each file is headed by :data:`CI_FILE_MARK`.
     """
-    return _marked(
-        _automated_ci_files(
-            target,
-            ci,
-            python_version=python_version,
-            staging_suffix=staging_suffix,
-            production_environment=production_environment,
-        )
+    files = _automated_ci_files(
+        target,
+        ci,
+        python_version=python_version,
+        staging_suffix=staging_suffix,
+        production_environment=production_environment,
+        service_connection=service_connection,
     )
+    return _marked(_on_runner(files, ci, runner))
+
+
+def _on_runner(files: dict[str, str], ci: str, runner: str) -> dict[str, str]:
+    """*files*, *ci*'s generated set, each with its jobs on *runner*."""
+    return {path: _pin_ci_runner(text, ci, runner) for path, text in files.items()}
 
 
 def _automated_ci_files(
@@ -1830,6 +2007,7 @@ def _automated_ci_files(
     python_version: str,
     staging_suffix: str,
     production_environment: str,
+    service_connection: str,
 ) -> dict[str, str]:
     if ci == "github":
         return {
@@ -1860,6 +2038,7 @@ def _automated_ci_files(
                 python_version=python_version,
                 staging_suffix=staging_suffix,
                 production_environment=production_environment,
+                service_connection=service_connection,
             )
         }
     if ci == "none":
@@ -1885,15 +2064,18 @@ def _app_publish_notice(host: str) -> str:
     )
 
 
+#: The publish, its output shown as it runs and kept in ``publish.log``, whose last line is
+#: the image by digest; and the staging rollout to that image. One script on GitHub and
+#: GitLab, a step each on Azure DevOps (:func:`_azure_devops_app_yml`): defined once, so no
+#: provider's release reads the digest or names the rollout another way.
+_PUBLISH_LINE = f"{_APP_PUBLISH} | tee publish.log"
+_STAGE_LINES = ('image="$(tail -n 1 publish.log)"', f'{_APP_ROLLOUT} staging --image "$image"')
+
+
 def _publish_and_stage_script(indent: str) -> str:
     """Shell lines, indented, that publish the app's image and roll staging out to the image by
     digest the publish prints last, its output shown as it runs and kept in ``publish.log``."""
-    lines = [
-        "set -eo pipefail",
-        f"{_APP_PUBLISH} | tee publish.log",
-        'image="$(tail -n 1 publish.log)"',
-        f'{_APP_ROLLOUT} staging --image "$image"',
-    ]
+    lines = ["set -eo pipefail", _PUBLISH_LINE, *_STAGE_LINES]
     return "\n".join(indent + line for line in lines)
 
 
@@ -2085,21 +2267,67 @@ deploy-production:
 
 
 def azure_devops_app_yml(
-    host: str, store: str | None, *, python_version: str = DEFAULT_CI_PYTHON
+    host: str,
+    store: str | None,
+    *,
+    python_version: str = DEFAULT_CI_PYTHON,
+    service_connection: str = DEFAULT_SERVICE_CONNECTION,
 ) -> str:
-    """:func:`_azure_devops_app_yml` on *python_version*."""
-    return _pin_ci_python(_azure_devops_app_yml(host, store), python_version)
+    """:func:`_azure_devops_app_yml` on *python_version*, signed in to Azure through
+    *service_connection*."""
+    return _pin_ci_python(
+        _azure_devops_app_yml(host, store, _service_connection(service_connection)),
+        python_version,
+    )
 
 
-def _azure_devops_app_yml(host: str, store: str | None) -> str:
+def _azure_devops_app_yml(host: str, store: str | None, connection: str) -> str:
     """A workbench project's pipeline for Azure DevOps: validate on a pull request and on a push
     to main; on main publish the underwriter app's image once and roll staging out to it, and
-    roll production out by hand (``trigger: manual``), logged in with *host*'s credentials from
-    the ``haute-credentials`` variable group, each a deployment under its environment, whose
-    exclusive lock keeps its rollouts one at a time."""
-    secrets_env = _azure_devops_secrets_env(host, indent=" " * 20)
+    roll production out by hand (``trigger: manual``), each a deployment under its
+    environment, whose exclusive lock keeps its rollouts one at a time. The production stage
+    names no ``dependsOn``, which Azure DevOps refuses on a stage started by hand: its
+    ``condition`` holds it to main, and ``haute app rollout prod --from staging`` to the
+    commit staging runs.
+
+    The pipeline holds no secret: each step that reaches Azure is an ``AzureCLI@2`` task under
+    the service connection *connection* (:func:`_azure_cli_step`), the publish, the rollout
+    and the impact each a step of its own, so each command asks for its tokens within
+    seconds of its step's sign-in.
+    """
+    if not uses_service_connection(host, "azure-devops"):
+        raise ValueError(f"Azure DevOps has no sign-in for the app host {host}")
     head = _azure_devops_head(
         _AZURE_APP_BUILD_CHECK, sequential=True, report=True, app=True, store=store
+    )
+    step = " " * 16
+    publish = _azure_cli_step(
+        "Publish the app's image",
+        connection,
+        [*_registry_login_lines(host, "azure-devops"), _PUBLISH_LINE],
+        step,
+    )
+    stage = _azure_cli_step(
+        "Roll staging out",
+        connection,
+        [
+            "set -eo pipefail",
+            *_AZURE_CLI_SUBSCRIPTION,
+            *_STAGE_LINES,
+        ],
+        step,
+    )
+    impact = _azure_cli_step(
+        "Compare staging with production on saved quotes",
+        connection,
+        ["set -eo pipefail", *_AZURE_CLI_SUBSCRIPTION, _APP_IMPACT],
+        step,
+    )
+    promote = _azure_cli_step(
+        "Roll production out",
+        connection,
+        ["set -eo pipefail", *_AZURE_CLI_SUBSCRIPTION, _APP_PROMOTE],
+        step,
     )
     return (
         _app_publish_notice(host)
@@ -2110,8 +2338,6 @@ def _azure_devops_app_yml(host: str, store: str | None) -> str:
     displayName: Publish → Staging
     dependsOn: Validate
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-    variables:
-      - group: haute-credentials
     jobs:
       - deployment: publish
         displayName: Publish the app's image and roll staging out
@@ -2129,31 +2355,18 @@ def _azure_devops_app_yml(host: str, store: str | None) -> str:
                     versionSpec: "3.11"
                 - script: pip install "uv>=0.5,<1" && uv sync --frozen
                   displayName: Install dependencies
-                - script: |
-{_registry_login_script(host, " " * 20)}
-                  displayName: Log in to the registry
-                  env:
-{secrets_env}
-                - script: |
-{_publish_and_stage_script(" " * 20)}
-                  displayName: Publish the app's image and roll staging out
-                  env:
-{secrets_env}
-                - script: {_APP_IMPACT}
-                  displayName: Compare staging with production on saved quotes
-                  env:
-{secrets_env}
-                - publish: impact_report.md
+{publish}{stage}{impact}                - publish: impact_report.md
                   artifact: impact-report
                   condition: succeededOrFailed()
 
   # ── Staging → Production (by hand) ───────────────────────────
+  # A stage started by hand takes no dependsOn, which Azure DevOps refuses beside
+  # `trigger: manual`: it runs when someone starts it, on main alone, and the rollout
+  # itself refuses a commit staging does not run.
   - stage: DeployProduction
     displayName: Staging → Production
-    dependsOn: Publish
     trigger: manual
-    variables:
-      - group: haute-credentials
+    condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
     jobs:
       - deployment: production
         displayName: Roll production out to the release staging runs
@@ -2171,11 +2384,7 @@ def _azure_devops_app_yml(host: str, store: str | None) -> str:
                     versionSpec: "3.11"
                 - script: pip install "uv>=0.5,<1" && uv sync --frozen
                   displayName: Install dependencies
-                - script: {_APP_PROMOTE}
-                  displayName: Roll production out
-                  env:
-{secrets_env}
-"""
+{promote}"""
     )
 
 
@@ -2198,6 +2407,8 @@ def workbench_ci_files(
     *,
     store: str | None,
     python_version: str = DEFAULT_CI_PYTHON,
+    runner: str = "",
+    service_connection: str = DEFAULT_SERVICE_CONNECTION,
 ) -> dict[str, str]:
     """The CI files a workbench ``haute init`` and ``haute ci update`` write for *ci*: path ->
     content, in the order they are reported; ``"none"`` has none. They validate the project and
@@ -2207,16 +2418,26 @@ def workbench_ci_files(
     endpoint. Each tests the packaged app before any host sees it, on SQLite and on *store*'s
     server engine, none when *store* is None (``haute app test``, :func:`ci_server_engine`).
     GitLab's and Azure DevOps' jobs run *python_version*, the project's Python, and GitHub's
-    the one its ``.python-version`` names. Each file is headed by :data:`CI_FILE_MARK`."""
+    the one its ``.python-version`` names. Every job runs on *runner*, the project's ``[ci]
+    runner``, when it names one (:func:`_pin_ci_runner`), and Azure DevOps' signs in to Azure
+    through *service_connection*, its ``[ci] service_connection``, which ``haute init``
+    writes as the default here. Each file is headed by :data:`CI_FILE_MARK`."""
     from haute._workbench_config import APP_HOSTS
 
     if host not in APP_HOSTS:
         raise ValueError(f"Unknown app host: {host}")
-    return _marked(_workbench_ci_files(host, ci, store=store, python_version=python_version))
+    files = _workbench_ci_files(
+        host,
+        ci,
+        store=store,
+        python_version=python_version,
+        service_connection=service_connection,
+    )
+    return _marked(_on_runner(files, ci, runner))
 
 
 def _workbench_ci_files(
-    host: str, ci: str, *, store: str | None, python_version: str
+    host: str, ci: str, *, store: str | None, python_version: str, service_connection: str
 ) -> dict[str, str]:
     if ci == "github":
         return {
@@ -2229,7 +2450,9 @@ def _workbench_ci_files(
         return {".gitlab-ci.yml": gitlab_app_ci_yml(host, store, python_version=python_version)}
     if ci == "azure-devops":
         return {
-            "azure-pipelines.yml": azure_devops_app_yml(host, store, python_version=python_version)
+            "azure-pipelines.yml": azure_devops_app_yml(
+                host, store, python_version=python_version, service_connection=service_connection
+            )
         }
     if ci == "none":
         return {}
@@ -2343,7 +2566,6 @@ from collections.abc import Callable
 
 import polars as pl
 
-
 # ── Date helpers ──────────────────────────────────────────────────────
 
 
@@ -2447,7 +2669,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute.parser import parse_pipeline_file
-
 
 PIPELINE_FILE = Path(__file__).resolve().parent.parent / "rating" / "main.py"
 

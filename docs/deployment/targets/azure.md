@@ -86,6 +86,8 @@ CI needs the service principal's credentials to push images to ACR. Credentials 
 
 Before each staging and production deploy, the generated workflow logs in to the ACR login server in `registry` as the service principal, with `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`. It must be allowed to push there: the `AcrPush` role on the registry, or Contributor on its resource group, as the [setup below](#infrastructure-setup-one-time-done-by-it) creates it.
 
+On Azure DevOps the pipeline reads none of these variables: it logs in through a service connection, whose identity needs `AcrPush` and `Reader` on the registry ([Signing in to Azure](../ci/azure-devops.md#signing-in-to-azure)).
+
 How to add them depends on your CI provider - see [GitHub Actions](../ci/github-actions.md#step-1-add-your-credentials-as-github-secrets), [GitLab](../ci/gitlab.md#step-1-add-your-credentials-as-cicd-variables), or [Azure DevOps](../ci/azure-devops.md#step-1-create-a-variable-group-for-credentials).
 
 ---

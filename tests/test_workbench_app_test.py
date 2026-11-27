@@ -18,12 +18,17 @@ from haute._quote_store import StoreLocation, store_url
 from haute._workbench_app import build_release, read_release
 from haute._workbench_app_test import (
     ENVIRONMENT,
+    SERVER_POLL_SECONDS,
+    SERVER_READY_SECONDS,
+    AppTestError,
+    _reached,
     run_app_test,
     server_store,
     sqlite_store,
 )
 from haute._workbench_form import FormSpec, with_quote_details
 from haute._workbench_input import with_stand_in
+from haute._workbench_rollout import Clock
 from haute._workbench_tables import input_tables, quote_request
 from tests._project import use_project
 from tests._store_servers import Target, configured, server_sign_in
@@ -270,3 +275,101 @@ def test_a_quote_not_ready_to_be_final_is_a_note_and_a_failed_finalising_fails_t
     assert len(failed.failed) == 1
     assert failed.failed[0].startswith("Fleet: marked final, HTTP 500")
     assert "the store broke" not in failed.failed[0]
+
+
+class _StartingServer:
+    """An engine whose server refuses its first *refusals* connections, as a database inside a
+    service container still starting does, then takes one; *error* is what it raises."""
+
+    def __init__(self, refusals: int, error: Exception) -> None:
+        self.refusals = refusals
+        self.error = error
+        self.asked = 0
+
+    def connect(self) -> str:
+        self.asked += 1
+        if self.asked <= self.refusals:
+            raise self.error
+        return "connected"
+
+
+class _Waited:
+    """A clock that passes only as the wait sleeps, each sleep kept."""
+
+    def __init__(self) -> None:
+        self.time = 0.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> Clock:
+        return Clock(now=lambda: self.time, sleep=self.sleep)
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.time += seconds
+
+
+def _refused() -> Exception:
+    """A connection the server refused, raised before any statement."""
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError(None, None, Exception("Login failed: the server is starting"))
+
+
+def test_a_server_still_starting_is_asked_again_until_it_takes_the_connection() -> None:
+    server = _StartingServer(3, _refused())
+    waited = _Waited()
+
+    connection = _reached(server, waited.clock())  # type: ignore[arg-type]
+
+    assert connection == "connected"
+    assert server.asked == 4
+    assert waited.sleeps == [SERVER_POLL_SECONDS] * 3
+
+
+def test_a_server_that_never_takes_the_connection_fails_the_run_with_its_last_refusal() -> None:
+    server = _StartingServer(10_000, _refused())
+    waited = _Waited()
+
+    with pytest.raises(AppTestError) as refused:
+        _reached(server, waited.clock())  # type: ignore[arg-type]
+
+    assert f"within {int(SERVER_READY_SECONDS)} seconds" in str(refused.value)
+    assert "Login failed: the server is starting" in str(refused.value)
+    # Asked for the whole wait and no longer: once more as it ends.
+    assert sum(waited.sleeps) == SERVER_READY_SECONDS
+    assert server.asked == len(waited.sleeps) + 1
+
+
+def test_an_error_that_is_no_refused_connection_is_raised_at_once() -> None:
+    from sqlalchemy.exc import ProgrammingError
+
+    statement_failed = ProgrammingError("SELECT 1", None, Exception("no such table"))
+    for error in (statement_failed, RuntimeError("the driver is not installed")):
+        server = _StartingServer(1, error)
+        waited = _Waited()
+
+        with pytest.raises(type(error)):
+            _reached(server, waited.clock())  # type: ignore[arg-type]
+
+        assert server.asked == 1 and waited.sleeps == []
+
+
+def test_time_spent_on_slow_refusals_counts_towards_the_wait() -> None:
+    """A server that takes half a minute to refuse each connection is asked only while the
+    wait lasts: the time goes on the connections, not only on the pauses between them."""
+    waited = _Waited()
+    server = _StartingServer(10_000, _refused())
+    ask = server.connect
+
+    def slow() -> str:
+        waited.time += 30.0
+        return ask()
+
+    server.connect = slow  # type: ignore[method-assign]
+
+    with pytest.raises(AppTestError):
+        _reached(server, waited.clock())  # type: ignore[arg-type]
+
+    # Four refusals of 30 seconds, and the pauses between, pass the two minutes.
+    assert server.asked == 4
+    assert len(waited.sleeps) == 3

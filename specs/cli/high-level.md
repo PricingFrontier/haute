@@ -184,7 +184,9 @@ Out of scope, owned elsewhere:
 - `haute ci secrets [--check] [--no-verify]` sets the CI secrets the deploy target needs, or in
   a workbench project its `[workbench.app] host`, on the
   project's GitHub repository from `.env`, after checking Databricks accepts them; `--check`
-  reports which are set. On GitLab and Azure DevOps it names the secrets to add by hand. The
+  reports which are set. On GitLab and Azure DevOps it names the secrets to add by hand; an
+  Azure DevOps project that signs in to Azure through its service connection has none, and is
+  told so, naming `[ci] service_connection`. The
   editor's Push does the same for a GitHub repository it first publishes to, before the push,
   and reports any a later Push finds missing so the push panel can offer to set them
   ([frontend git UI](../frontend-git-ui/high-level.md)); the editor sets only secrets the
@@ -193,8 +195,12 @@ Out of scope, owned elsewhere:
   only a CI file Haute wrote, as the re-run does), and `.env.example`, with
   the variables `connections.toml` names when the project has one, for the
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
-  changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
-  then gate production, without being initialised again. A workbench project's are the
+  changed `[ci.staging] endpoint_suffix`, a `[ci.production] environment` whose reviewers
+  then gate production, a `[ci] runner` its jobs then run on, or the `[ci]
+  service_connection` its Azure DevOps pipeline signs in to Azure through, without being
+  initialised again. A runner or a connection whose name the files cannot hold is refused,
+  as is an Azure DevOps project that signs in to Azure and names no connection
+  ([pipeline-config](../pipeline-config/high-level.md)). A workbench project's are the
   workbench's set, for its `[workbench.app] host`, which it refuses to run without; an
   automated project's are the scoring endpoint's, for its `[deploy] target`. A generated
   file Git does not track yet, a workflow a newer Haute adds or one an earlier run left
@@ -249,12 +255,14 @@ Out of scope, owned elsewhere:
   it was.
 - `haute app rollout ENVIRONMENT (--image REFERENCE | --from ENVIRONMENT)` rolls a
   workbench project's hosted app, the Container App `[workbench.app.<ENVIRONMENT>]` names, to
-  an image by digest in a maintenance window, checks the release there (it runs, the host's
+  an image by digest, the old release serving until Azure finds the new one ready, checks the
+  release there (its own revision answers, the host's
   sign-in stands in front of it, and its quotes are open), puts the previous release back
   when the new one fails, and records the release that stays on the Container App as Azure
   tags; `--from` rolls to the release another environment's app runs, when it runs the commit
   checked out. It is what
-  the workbench's generated jobs run, signed in as their service principal, and exits 1 naming
+  the workbench's generated jobs run, signed in as their service principal or through the
+  Azure CLI's sign-in their service connection gives, and exits 1 naming
   what failed ([workbench](../workbench/high-level.md)).
 - `haute app impact [--sample N]` compares the release a workbench project's staging app
   runs with production's on up to N of the final quotes production keeps (100 by

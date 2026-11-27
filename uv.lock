@@ -1343,7 +1343,7 @@ test-harness = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.18.4,<2" },
     { name = "anthropic", specifier = ">=0.40,<1" },
-    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.19.0,<2" },
+    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.20.0,<2" },
     { name = "azure-identity", marker = "extra == 'postgresql'", specifier = ">=1.19.0,<2" },
     { name = "azure-identity", marker = "extra == 'sqlserver'", specifier = ">=1.19.0,<2" },
     { name = "azure-mgmt-appcontainers", marker = "extra == 'azure'", specifier = ">=5.1.0,<6" },

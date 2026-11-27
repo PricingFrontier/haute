@@ -19,7 +19,12 @@ from unittest.mock import patch
 
 import pytest
 
-from haute.deploy._served_haute import ServedHaute, repack_installed_wheel, served_haute
+from haute.deploy._served_haute import (
+    ServedHaute,
+    packaged_haute_wheel,
+    repack_installed_wheel,
+    served_haute,
+)
 from haute.errors import DeployError
 
 _INFO = "haute-0.6.0.dist-info"
@@ -125,6 +130,27 @@ def test_a_haute_installed_from_git_ships_as_its_own_wheel(tmp_path: Path) -> No
             assert line == _record_line(path, data)
             assert int(size) == len(data)
         assert rows[-1] == ["haute-0.6.0.dist-info/RECORD", "", ""]
+
+
+def test_a_container_image_is_given_a_wheel_only_of_a_haute_the_index_does_not_hold(
+    tmp_path: Path,
+) -> None:
+    """The image installs a released haute from the index by its version; one installed from
+    Git ships as its own wheel, the bytes a served model carries; an editable checkout,
+    whose installed files only point at its working tree, gives none."""
+    editable = {"url": "file:///C:/src/haute", "dir_info": {"editable": True}}
+    wheels: dict[str, Path | None] = {}
+    for label, direct_url in (("released", None), ("git", _GIT), ("editable", editable)):
+        distribution = _distribution(tmp_path / label / "site", direct_url=direct_url)
+        with patch("haute.deploy._served_haute.metadata.distribution", return_value=distribution):
+            wheels[label] = packaged_haute_wheel(tmp_path / label / "wheel")
+            if label == "git":
+                served = served_haute(tmp_path / label / "served")
+
+    assert wheels["released"] is None and wheels["editable"] is None
+    assert wheels["git"] == tmp_path / "git" / "wheel" / "haute-0.6.0-py3-none-any.whl"
+    assert served.wheel is not None
+    assert wheels["git"].read_bytes() == served.wheel.read_bytes()
 
 
 def test_a_repack_is_byte_identical_every_time(tmp_path: Path) -> None:

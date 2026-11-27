@@ -828,7 +828,8 @@ folder's files, path to text, under the pipeline folder's `workbench/`
 ([workbench](../workbench/low-level.md)). `[server].host`, the optional
 closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workbench]` table are
 part of the whole-file schema the settings parse (`haute._project_settings._schema`) checks,
-which every reader shares. The assistant key sets are owned by `haute.assistant._config` and the
+which every reader shares, as are `[ci]`'s `provider`, `runner` and `service_connection`
+beside its `staging` and `production` tables. The assistant key sets are owned by `haute.assistant._config` and the
 workbench's (with its retired keys) by `haute._workbench_config`, so the parse and each reader
 cannot drift.
 `env_example()`, `app_env_example()` and the CI-YAML generators (`github_ci_yml`/
@@ -838,8 +839,12 @@ workbench's `github_app_ci_yml`/`github_release_yml`/`github_release_production_
 sets share) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
-once and rendered three ways; `ci_secret_names` hands the same list to `haute ci secrets` and
-to `haute init`'s next steps, and `env_example_placeholders` the stand-in values `.env.example` gives (a token
+once and rendered three ways; `ci_secret_names(target, ci)` hands the same list to `haute ci secrets` and
+to `haute init`'s next steps, empty where the provider's jobs read none: `azure-container-apps`
+on Azure DevOps (`uses_service_connection(target, ci)`), whose pipeline signs in to Azure
+through `[ci] service_connection`, so its stages name no `haute-credentials` group, its
+steps no `env` of secrets, and `haute init`'s next steps the connection in the secrets'
+place, and `env_example_placeholders` the stand-in values `.env.example` gives (a token
 placeholder, the example workspace; never a usable default such as an AWS region), which
 `haute ci secrets` refuses to upload. A Databricks production workflow's
 **Tag release** step gets the secrets too, as the deploy step does (BUG-25): it tags
@@ -869,7 +874,15 @@ target's `registry_login` command pipes its credential to `docker login "$regist
 fetches with the AWS keys in `AWS_DEFAULT_REGION`, as user `AWS` (the AWS CLI v1, which
 `uvx` runs from `awscli>=1.18,<2`, the one tool the jobs install unlocked besides uv);
 for `azure-container-apps` the service principal, `AZURE_CLIENT_ID` and
-`AZURE_CLIENT_SECRET`, which needs AcrPush on the registry; and for `gcp-run` the
+`AZURE_CLIENT_SECRET`, which needs AcrPush on the registry, but on Azure DevOps, where the
+login is an `AzureCLI@2` step under the service connection (`_azure_cli_step`) running
+`az acr login --name "$registry"` as the connection's identity, which needs AcrPush and,
+since the login looks the registry up in Azure for its address, Reader on it (without that
+read the login falls back to a host made from the bare name, which is not the address of
+a registry with a domain name label): the
+Azure CLI is given the registry's whole login server and reads the registry's name from
+it, since a name is not always the host's first label (`pricing-a1b2c3.azurecr.io` is the
+registry `pricing`); and for `gcp-run` the
 `GCP_SERVICE_ACCOUNT_KEY` JSON as user `_json_key`. No platform target lists the
 `DOCKER_*` pair. GitLab's job image has no Docker, so its container deploy jobs extend a
 hidden `.docker` job: a `docker:<version>-dind` service reached over TLS (`DOCKER_HOST`
@@ -963,6 +976,29 @@ string, or one that is not an ASCII letter or digit followed by up to 254 letter
 `-` and `_`. That is a name every provider reads as one environment, inert in the generated
 YAML; a dot is refused because Azure DevOps reads `a.b` as resource `b` of environment `a`.
 `staging_suffix_problem` likewise refuses a suffix that is not a string.
+Every generator, an automated project's and a workbench's, takes `runner` (`[ci] runner`,
+`CIConfig.runner`, default empty): where the jobs run. The templates are written with each
+provider's hosted Ubuntu (`runs-on: ubuntu-latest`, `vmImage: ubuntu-latest`, and no tag on
+GitLab, where whichever runners take untagged jobs then run them), and `_pin_ci_runner(text, ci, runner)`
+moves every job to a runner that is named: GitHub's `runs-on: "<runner>"` in each job of each
+workflow, Azure DevOps' `name: "<runner>"` in each job's `pool` in place of `vmImage`, and
+on GitLab `tags` holding `"<runner>"` in the `default` job, which every job inherits. Empty,
+the text is returned as it is. `service_connection` (`[ci] service_connection`,
+`CIConfig.service_connection`, default empty) reaches the Azure DevOps generators alone, and
+is read only where `uses_service_connection(target, ci)`: there it is every `AzureCLI@2`
+step's `azureSubscription`, written quoted, and an empty one raises `ValueError` saying
+that on Azure DevOps the project signs in to Azure through a service connection and to
+name it. The generators' own default for it is `DEFAULT_SERVICE_CONNECTION`, the name
+`haute init` writes, as their staging suffix's is the scaffolded one; `haute ci update`
+passes the project's. `haute_toml` and `workbench_haute_toml` write `service_connection =
+"haute-azure"` (`DEFAULT_SERVICE_CONNECTION`) under `[ci]` for such a project and no key for
+any other, and `haute init` generates the files with it. `runner_problem` and
+`service_connection_problem` refuse a value that is not a string, or (when not empty) not
+an ASCII letter or digit followed by up to 99 letters, digits, spaces, `.`, `-`, `_`, `(` and
+`)`, the last no space (`_CI_NAME_PATTERN`): a name each provider takes, inert in the
+generated YAML, where it is written double-quoted. An empty runner names none;
+`service_connection_problem`, asked only where a pipeline uses the connection, refuses an
+empty one too.
 `ci_files(target, ci, workbench=..., python_version=..., staging_suffix=..., production_environment=...)` returns exactly the files of the
 chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
 `handle_init` and `haute ci update` both write through `write_generated_files`, `haute ci
@@ -1600,7 +1636,16 @@ API and real JSON round-trips rather than mocks:
 - **`test_graph_shape_contracts.py`** — Explore in/out-degree contracts
   (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
   matching, and round-trip drift (`TestRoundTripDrift`).
-- **`test_scaffold.py`** — every CI provider × deploy target combination, complete
+- **`test_scaffold.py`** — `[ci] runner` held by every job of each provider's files, for
+  every deploy target and every workbench store: the jobs found by walking the parsed
+  files, never from a list of their names (GitHub's every job with steps, through each
+  workflow a job calls; Azure DevOps' every job and deployment of every stage; GitLab's
+  every job, none naming `tags` of its own or switching the default's inheritance off),
+  each asserted to run on the runner named, and without one on the hosted Ubuntu or
+  untagged; a name the YAML cannot hold refused; Azure DevOps' `azure-container-apps` pipeline logging in to the
+  registry through an `AzureCLI@2` step under the service connection, naming no
+  `haute-credentials` group and no secret, an empty connection refused, and every other
+  target's pipeline as it was; every CI provider × deploy target combination, complete
   YAML/TOML structural validation (including release conditions and exact secret
   placement, the deploy triggers naming only the pipeline
   folder and the test quotes' folder among folders), blank starter pipeline/test content, root-`main.py` removal, and absence of

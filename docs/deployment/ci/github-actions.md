@@ -52,7 +52,8 @@ the [underwriter app](../../building-models/workbench.md#the-underwriter-app). I
 | `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, builds the app's image once, pushes it to the registry `[deploy.container]` names, rolls the staging app out to it, and compares staging with production on saved quotes, keeping `impact_report.md` as the `impact-report` artifact |
 | `release-production.yml` | When you click "Run workflow" manually | Rolls the production app out to the release staging runs, for the commit you give (main's head when blank) |
 
-Each rollout stops the old release before the new one starts, checks the app, and puts the
+Each rollout starts the new release beside the old one, which keeps serving until the new one
+is ready, checks the app, and puts the
 previous release back when the new one fails
 ([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). Read the
 impact report before you run `release-production.yml`. One rollout of an environment runs
@@ -225,6 +226,20 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
 2. Watch the **Actions** tab - the CI workflow should start automatically
 3. If it passes, [merge](../before-you-start.md#5-accept-the-changes-merge) the PR
 4. Watch the deploy workflow run - it should deploy to staging and generate an impact report
+
+---
+
+## Running the jobs on your own runners
+
+Every job runs on a GitHub-hosted Ubuntu runner unless you name a self-hosted runner's label in `haute.toml` and run `haute ci update`:
+
+```toml
+[ci]
+provider = "github"
+runner = "pricing-linux"
+```
+
+Each runner with that label needs Ubuntu or Debian with Docker, permission to install packages unattended (`sudo apt-get`), and outbound access to the Python package index (PyPI), your base image's registry, Microsoft's container registry (a workbench project's test database image) and your own registry; in a workbench project, also to each hosted app's address ([Where the jobs run](../index.md#where-the-jobs-run)).
 
 ---
 

@@ -963,9 +963,14 @@ builder on screen. With a quote store it is where they manage their quotes too.
   fails the check. You can run it yourself after `haute app build`; it changes no
   environment's database.
 
-  A rollout stops the release the app runs before it starts the new one, so two releases
-  never take quotes at once, then checks the app: it answers, it signs no one in but through
-  Azure, and its quotes are open. A release that fails is replaced by the one before it. A
+  A rollout starts the new release beside the one the app runs, which keeps taking quotes
+  until the new one is ready: the app is not taken down to be updated, and a release
+  that never becomes ready never takes a quote. The rollout gives it ten minutes, so a
+  release that cannot start fails the run after those, not at once. Azure then moves every
+  request to the new release and stops the old one. The rollout then checks the app: the new release itself
+  answers, it signs no one in but through Azure, and its quotes are open. A release that
+  fails its check is replaced by the one before it, having taken the app's requests while
+  it was checked, for five minutes at most. A
   release whose quotes are closed because the environment's tables don't fit your schema yet
   stays, and the run names each difference: once the database's owners run the schema's SQL,
   its quotes open with no new run. Production takes the release staging runs for the commit
@@ -991,7 +996,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   names that incident and the app whose log holds what failed, so you can find it there.
 
   A price that moves never fails the run. The run fails when staging fails on a quote
-  production prices, or when an app can't be reached. Before production's first release
+  production prices, or when an app can't be reached; an app Azure has scaled to nothing is
+  given five minutes to start. Before production's first release
   there is nothing to compare against, and the report says so. The report names quotes by
   reference and option and holds output values, never what was typed, but anyone who can
   read the repository's runs can read it.
@@ -1000,10 +1006,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
   | What | Why |
   |---|---|
-  | One service principal, its tenant, client ID, secret and subscription in the CI secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` | CI pushes the image, rolls the apps out and compares them as it |
-  | AcrPush on the registry, and Container Apps Contributor on both apps, for that service principal | to push the image, and to change and tag the apps |
-  | Single revision mode and a public address (external ingress) on each app | one release at a time, and an address the check can reach |
-  | Azure's built-in authentication with Microsoft Entra ID on each app, letting that service principal sign in | underwriters sign in through it, and so do the check and the comparison |
+  | An identity for CI. On GitHub and GitLab, one service principal: its tenant, client ID, secret and subscription in the CI secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID`. On Azure DevOps, a service connection, so the pipeline holds no secret ([Signing in to Azure](../deployment/ci/azure-devops.md#signing-in-to-azure)) | CI pushes the image, rolls the apps out and compares them as it |
+  | AcrPush on the registry, and Container Apps Contributor on both apps, for that identity; for a service connection's, Reader on the registry too | to push the image, and to change and tag the apps |
+  | Single revision mode and external ingress on each app: an address outside its Container Apps environment, which need not be open to the internet as long as the CI jobs can reach it, and each release's own address beside it under the environment's domain | one release at a time, and addresses the check can reach: it asks the new release at its own address, then the app's |
+  | Azure's built-in authentication with Microsoft Entra ID on each app, letting that identity sign in | underwriters sign in through it, and so do the check and the comparison |
 
 - The app keeps quotes in the database of an environment you declare in `haute.toml`, as
   your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and

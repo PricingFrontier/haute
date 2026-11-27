@@ -1,9 +1,13 @@
 """The hosted app rolled out and checked: ``haute app rollout`` (specs/workbench, Control flow 35).
 
 A workbench project's CI rolls the Container App ``[workbench.app.<environment>]`` names to
-one image, by digest, in a maintenance window: the release running stops, then the new one
-starts on a revision of its own, never two at once. The hosted check then holds the app to the
-release: it answers, the host's sign-in stands in front of it, and its quotes are open. A
+one image, by digest, and leaves the switch to Azure, as single revision mode makes it: the
+new release starts on a revision of its own beside the one running, which takes every
+request until Azure finds the new one ready, then none, so an app is updated release after
+release with its underwriters never without it. Nothing is stopped first: Azure starts a
+stopped revision again as the next one is made, to serve until that one is ready. The hosted
+check then holds the app to the release: its own revision answers, the host's sign-in stands
+in front of it, and its quotes are open. A
 release that fails is replaced by the one before; one whose quotes are closed because its
 environment's tables do not fit its form yet stays, since the people who own the database
 change them in SQL and the app opens its quotes once they fit. The release that stays is
@@ -25,6 +29,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import time
 import urllib.error
 import urllib.parse
@@ -40,16 +45,22 @@ from typing import TYPE_CHECKING, Any, Protocol
 from haute._workbench_config import AppEnvironment, WorkbenchConfig, WorkbenchError
 
 if TYPE_CHECKING:
-    from azure.identity import ClientSecretCredential
+    from azure.core.credentials import TokenCredential
     from azure.mgmt.appcontainers import ContainerAppsAPIClient
 
-#: The variables the CI service principal and its subscription are named in: the four secrets
-#: a workbench project's CI is given for its host.
-CREDENTIAL_VARIABLES: tuple[str, ...] = (
-    "AZURE_SUBSCRIPTION_ID",
+#: The variable naming the subscription the hosted apps are in.
+SUBSCRIPTION_VARIABLE = "AZURE_SUBSCRIPTION_ID"
+#: The variables the CI service principal is named in, its tenant, client ID and secret: with
+#: the subscription's, the four secrets a GitHub or GitLab workbench project's CI is given.
+SERVICE_PRINCIPAL_VARIABLES: tuple[str, ...] = (
     "AZURE_TENANT_ID",
     "AZURE_CLIENT_ID",
     "AZURE_CLIENT_SECRET",
+)
+#: The two ways a run signs in to Azure, as a refusal names them.
+_SIGN_IN_WAYS = (
+    f"set {', '.join(SERVICE_PRINCIPAL_VARIABLES)} to sign in as the CI service principal, or "
+    "sign in through the Azure CLI (az login, or on Azure DevOps a service connection's step)"
 )
 #: An image named by digest: a tag can be pointed at other bytes, a digest cannot.
 DIGEST_REFERENCE = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}")
@@ -88,7 +99,11 @@ _MICROSOFT_LOGIN = "login.microsoftonline.com"
 #: A revision's states that say it is provisioned, and that it cannot serve.
 _PROVISIONED = "Provisioned"
 _FAILED_PROVISIONING = frozenset({"Failed"})
-_FAILED_RUNNING = frozenset({"Failed", "Degraded"})
+#: Running states of a revision that is not ready, whatever else Azure says of it: failed
+#: or degraded (how a restarting container is reported, for seconds), and failed to activate
+#: (its first replica did not start: reported of a release that could not start, five
+#: minutes in and from then on). None ends a wait: Azure documents none as final.
+_FAILED_RUNNING = frozenset({"Failed", "Degraded", "ActivationFailed"})
 
 
 class RolloutError(WorkbenchError):
@@ -116,19 +131,22 @@ class Recorded:
 
 @dataclass(frozen=True, slots=True)
 class RevisionState:
-    """A revision of the app as the host reports it."""
+    """A revision of the app as the host reports it: *address* is the revision's own, at
+    which requests reach it alone, whichever revision the app's address is answered by."""
 
     name: str
     image: str | None
     active: bool
     provisioning: str
     running: str
+    address: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AppState:
     """The Container App as the rollout needs it: whether it keeps one revision active at a
-    time, its containers' images, its public address (None without one), its latest revision
+    time, its containers' images, its address outside its Container Apps environment (None
+    without external ingress), its latest revision
     and every active one, its Microsoft Entra ID registration's client ID (None without one),
     the names of its Azure tags and the release recorded on it (None without a whole record)."""
 
@@ -170,7 +188,7 @@ class ContainerAppHost(Protocol):
         ...
 
     def token(self, client_id: str) -> str:
-        """A bearer token, as the CI service principal, for the app registration *client_id*."""
+        """A bearer token, as the run is signed in, for the app registration *client_id*."""
         ...
 
 
@@ -256,17 +274,91 @@ def forged_principal() -> dict[str, str]:
     }
 
 
-def credentials() -> dict[str, str]:
-    """The CI service principal and its subscription, by variable, from the environment;
-    :class:`RolloutError` naming every one of :data:`CREDENTIAL_VARIABLES` that is unset."""
-    values = {name: os.environ.get(name, "").strip() for name in CREDENTIAL_VARIABLES}
-    missing = [name for name, value in values.items() if not value]
+@dataclass(frozen=True, slots=True)
+class ServicePrincipal:
+    """The CI service principal: its tenant, its client ID and its secret, never shown."""
+
+    tenant_id: str
+    client_id: str
+    client_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class AzureSignIn:
+    """How a run signs in to Azure and the subscription it reads the apps in: as
+    *service_principal*, or, without one, through the Azure CLI's own sign-in."""
+
+    subscription: str
+    service_principal: ServicePrincipal | None = None
+
+
+def azure_sign_in() -> AzureSignIn:
+    """The run's sign-in to Azure, from the environment: by what the job gives, never by
+    what Azure then accepts.
+
+    All three of :data:`SERVICE_PRINCIPAL_VARIABLES` set are the CI service principal. None
+    set is the Azure CLI's sign-in, which an Azure DevOps service connection's step makes and
+    ``az login`` a person. :class:`RolloutError` names whatever is missing: the subscription,
+    the rest of a service principal given in part (which is never read as the Azure CLI's),
+    or, with none of the three and no ``az`` on the path, both ways.
+    """
+    subscription = os.environ.get(SUBSCRIPTION_VARIABLE, "").strip()
+    given = {name: os.environ.get(name, "").strip() for name in SERVICE_PRINCIPAL_VARIABLES}
+    unset = [name for name, value in given.items() if not value]
+    every = ", ".join(SERVICE_PRINCIPAL_VARIABLES)
+    missing: list[str] = []
+    if not subscription:
+        missing.append(f"set {SUBSCRIPTION_VARIABLE}, the subscription the apps are in")
+    principal: ServicePrincipal | None = None
+    if not unset:
+        principal = ServicePrincipal(*given.values())
+    elif len(unset) < len(given):
+        missing.append(
+            f"set {', '.join(unset)} too, to sign in as the CI service principal, or none of "
+            f"{every}, to sign in through the Azure CLI"
+        )
+    elif shutil.which("az") is None:
+        missing.append(f"{_SIGN_IN_WAYS}, which is not on the path here")
+    elif not subscription:
+        # Nothing was given at all, a job whose secrets were never set: the whole sign-in
+        # is named with the subscription, whether or not the Azure CLI is signed in.
+        missing.append(_SIGN_IN_WAYS)
     if missing:
         raise RolloutError(
-            "haute app rollout and haute app impact sign in to Azure as the CI service "
-            "principal: set " + ", ".join(missing) + "."
+            "haute app rollout and haute app impact reach the apps on Azure: "
+            + "; ".join(missing)
+            + "."
         )
-    return values
+    return AzureSignIn(subscription, principal)
+
+
+def _credential(sign_in: AzureSignIn) -> TokenCredential:
+    """The credential *sign_in* takes tokens from, each request bounded as the client's are.
+
+    A service principal's asks Microsoft Entra ID itself: each attempt's connection and read,
+    the retries and their waits. The Azure CLI's asks ``az`` for each token, and so holds
+    whatever sign-in ``az`` has, a service connection's (with a secret or federated) or a
+    person's, for the account the subscription is in; ``az`` is given the request's bound.
+    """
+    principal = sign_in.service_principal
+    if principal is None:
+        from azure.identity import AzureCliCredential
+
+        return AzureCliCredential(
+            subscription=sign_in.subscription, process_timeout=REQUEST_TIMEOUT_SECONDS
+        )
+    from azure.identity import ClientSecretCredential
+
+    return ClientSecretCredential(
+        principal.tenant_id,
+        principal.client_id,
+        principal.client_secret,
+        connection_timeout=REQUEST_TIMEOUT_SECONDS,
+        read_timeout=REQUEST_TIMEOUT_SECONDS,
+        retry_policy_class=_bounded_retry(),
+        retry_total=_SDK_RETRIES,
+        retry_backoff_max=_MAX_RETRY_WAIT_SECONDS,
+    )
 
 
 def app_environment(config: WorkbenchConfig, name: str) -> AppEnvironment:
@@ -372,53 +464,194 @@ def _suffix(clock: Clock) -> str:
     return "h" + clock.utc().strftime("%y%m%d%H%M%S") + clock.random()
 
 
-def _wait_provisioned(
+def _wait_serving(
     host: ContainerAppHost, name: str, deadline: float, clock: Clock, budget: int
-) -> None:
-    """Wait until revision *name* is provisioned, failing one whose provisioning failed or
-    whose running state is failed or degraded, or the *deadline* (*budget* seconds)."""
+) -> RevisionState:
+    """Wait until Azure sends the app's requests to revision *name* and reports it healthy:
+    until it is the app's latest ready revision, its provisioning not failed and its running
+    state neither failed nor degraded. A revision Azure calls provisioned is not serving
+    yet: in single revision mode the one before it takes every request until this one is
+    ready (measured: provisioned 9 seconds after the update, latest ready after 38).
+
+    Only the *deadline* (*budget* seconds) fails the wait. A report that the revision
+    failed, is degraded or failed to activate (:data:`_FAILED_RUNNING`) is not ready yet,
+    never a verdict and never a pass: Azure reports a healthy revision failed for the
+    seconds it restarts one of its containers, and running again after, and documents no
+    such state as final. The failure names the states last read and the revision Azure
+    still serves, or, for the latest ready revision still reported unhealthy, that.
+    Answers the revision.
+
+    Nothing is read once the deadline has passed, unless nothing was read yet: the host's
+    bound ends with it and refuses a request asked after. A reading the bound cut short, one
+    of its two reads refused or failed as the deadline passed, is left out too. Either way
+    the last whole reading stands, with the states the failure is there to say.
+    """
+    revision: RevisionState | None = None
+    serving: str | None = None
     while True:
-        revision = host.revision(name)
-        if revision.provisioning in _FAILED_PROVISIONING:
-            raise RolloutError(f"The revision {name} failed to provision.")
-        if revision.running in _FAILED_RUNNING:
-            raise RolloutError(f"The revision {name} is {revision.running.lower()}.")
+        if revision is None or clock.now() < deadline:
+            try:
+                read = host.revision(name)
+                sent = host.state().ready_revision
+            except RolloutError:
+                if revision is None or clock.now() < deadline:
+                    raise
+            else:
+                revision, serving = read, sent
+        assert revision is not None
+        unhealthy = (
+            revision.provisioning in _FAILED_PROVISIONING or revision.running in _FAILED_RUNNING
+        )
         if clock.now() >= deadline:
+            reported = f"provisioning {revision.provisioning}, running {revision.running}"
+            if serving == name and unhealthy:
+                raise RolloutError(
+                    f"The revision {name} takes the app's requests, but Azure still reported "
+                    f"it unhealthy after {budget} seconds ({reported})."
+                )
             raise RolloutError(
-                f"The revision {name} was not provisioned within {budget} seconds "
-                f"(provisioning {revision.provisioning}, running {revision.running})."
+                f"The revision {name} was not ready to take the app's requests within "
+                f"{budget} seconds ({reported}): Azure still sends them to "
+                f"{serving or 'no revision'}."
             )
-        if revision.provisioning == _PROVISIONED:
-            return
+        if serving == name and not unhealthy:
+            return revision
         clock.sleep(POLL_SECONDS)
 
 
-def hosted_check(get: Fetch, address: str, token: str, clock: Clock = _CLOCK) -> str:
-    """Hold the app at *address* to the release: ``/health`` answers signed in, a forged
-    principal is refused by the host, and the signed-in app answers the same release with its
-    quotes open. Answers the release id; :class:`QuotesClosedError` when the quotes are closed
-    because the store's tables do not fit the form, :class:`RolloutError` otherwise."""
-    base = f"https://{address}"
+def _answered(
+    get: Fetch,
+    address: str,
+    signed: Mapping[str, str],
+    revision: str,
+    deadline: float,
+    clock: Clock,
+    asked: str,
+) -> str:
+    """The release *revision* names in ``/health`` at *address*, asked signed in every
+    :data:`POLL_SECONDS` until that revision answers it or the *deadline* passes: no request
+    starts once it has, and one started before it may finish under its own bound. The app
+    says in ``/health`` which revision it runs as: an answer from another revision says
+    nothing of this one and is asked again, never taken for it. *asked* says what was."""
+    health: HttpAnswer | None = None
+    answering: object = None
+    while True:
+        if clock.now() >= deadline:
+            if health is None:
+                raise RolloutError(_spent(f"{asked} was not asked"))
+            by = f" from the revision {answering}" if isinstance(answering, str) else ""
+            # No server answered at all: the address is one this machine cannot reach.
+            unreached = (
+                f" The machine that runs the rollout must reach https://{address}: each "
+                "revision has an address of its own under its Container Apps environment's "
+                "domain, beside the app's."
+                if health.status == 0
+                else ""
+            )
+            raise RolloutError(
+                f"{asked} was not answered by the revision {revision} within "
+                f"{HEALTH_TIMEOUT_SECONDS} seconds (last answer: {_said(health)}{by}).{unreached}"
+            )
+        health = get(f"https://{address}/health", signed)
+        said = _json(health) if health.status == 200 else {}
+        release, answering = said.get("release"), said.get("revision")
+        if isinstance(release, str) and release and answering == revision:
+            return release
+        clock.sleep(POLL_SECONDS)
+
+
+def _spent(what: str) -> str:
+    """The failure of a request the hosted check did not start, its time spent before it."""
+    return f"{what}: the hosted check's {HEALTH_TIMEOUT_SECONDS} seconds were spent before it."
+
+
+def _asked(
+    get: Fetch,
+    url: str,
+    headers: Mapping[str, str],
+    deadline: float,
+    clock: Clock,
+    unsent: str,
+    what: str,
+) -> HttpAnswer:
+    """The app's answer to one request of the hosted check. While no server answers, or the
+    answer is a 5xx, the request is asked again every :data:`POLL_SECONDS`: a host
+    restarting a container answers so for a moment, which says nothing of the app, and one
+    dropped request must not put a good release back. Any other answer is the app's and is
+    answered as it comes, for the caller to judge, whatever came before it.
+
+    No request starts once the *deadline* has passed. *unsent* is the failure of a request
+    never sent; one sent and never answered fails naming *what* was asked and the last
+    answer, as an app that gave no answer and never as one that answered wrongly.
+    """
+    last: HttpAnswer | None = None
+    while True:
+        if clock.now() >= deadline:
+            if last is None:
+                raise RolloutError(_spent(unsent))
+            raise RolloutError(
+                f"The app gave no answer to {what} within the hosted check's "
+                f"{HEALTH_TIMEOUT_SECONDS} seconds (last answer: {_said(last)})."
+            )
+        last = get(url, headers)
+        if not unanswered(last):
+            return last
+        clock.sleep(POLL_SECONDS)
+
+
+def hosted_check(
+    get: Fetch, address: str, token: str, clock: Clock = _CLOCK, *, revision: RevisionState
+) -> str:
+    """Hold *revision* of the app at *address* to its release, then the app's address to that
+    revision. Answers the release id; :class:`QuotesClosedError` when the quotes are closed
+    because the store's tables do not fit the form, :class:`RolloutError` otherwise.
+
+    Every request of the check goes to the revision's own address, where it alone answers,
+    so none can be answered by the revision before it: ``/health`` answers signed in, naming
+    the revision; a forged principal is refused by the host; and the signed-in app answers
+    the same release with its quotes open. The app's own address, the one its underwriters
+    use, is then asked until that revision answers it, since Azure's routes follow its
+    switch. One deadline holds for the whole check: no request of it starts once the
+    deadline has passed, and one started before it may finish under its own bound. The
+    forged request and the signed one are asked again within it while they go unanswered
+    (:func:`_asked`); an answer of the app's is judged at once. Quotes closed by a store
+    mismatch are said only after the app's address has answered as the revision, like a
+    release that passes: both stay, and both are recorded.
+    """
+    own = revision.address
+    if own is None:
+        raise RolloutError(
+            f"Azure names no address for the revision {revision.name}: the hosted check asks "
+            "the revision itself."
+        )
     signed = {"Authorization": f"Bearer {token}"}
     deadline = clock.now() + HEALTH_TIMEOUT_SECONDS
-    while True:
-        health = get(f"{base}/health", signed)
-        release = _json(health).get("release") if health.status == 200 else None
-        if isinstance(release, str) and release:
-            break
-        if clock.now() >= deadline:
-            raise RolloutError(
-                f"The app did not answer its health check within {HEALTH_TIMEOUT_SECONDS} "
-                f"seconds (last answer: {_said(health)})."
-            )
-        clock.sleep(POLL_SECONDS)
-    forged = get(f"{base}/api/app/release", forged_principal())
-    if not _refused(forged, address):
+    release = _answered(
+        get, own, signed, revision.name, deadline, clock, "The revision's health check"
+    )
+    forged = _asked(
+        get,
+        f"https://{own}/api/app/release",
+        forged_principal(),
+        deadline,
+        clock,
+        "The forged principal was not sent",
+        "the request that forges a signed-in principal",
+    )
+    if not _refused(forged, own, address):
         raise RolloutError(
             "The app answered a request that forged a signed-in principal "
             f"({_said(forged)}): its host's built-in authentication must stand in front of it."
         )
-    answer = get(f"{base}/api/app/release", signed)
+    answer = _asked(
+        get,
+        f"https://{own}/api/app/release",
+        signed,
+        deadline,
+        clock,
+        "The signed-in release was not asked",
+        "the signed-in request for its release",
+    )
     if answer.status != 200:
         raise RolloutError(
             f"Signed in as the CI service principal, the app answered {_said(answer)}: your IT "
@@ -432,24 +665,30 @@ def hosted_check(get: Fetch, address: str, token: str, clock: Clock = _CLOCK) ->
     quotes = body.get("quotes")
     if not isinstance(quotes, dict):
         raise RolloutError("The app's release answered no state of its quotes.")
+    closed: QuotesClosedError | None = None
     if quotes.get("open") is not True:
         message = str(quotes.get("message") or "no reason given")
-        if quotes.get("error_code") == STORE_MISMATCH:
-            differences = tuple(str(each) for each in quotes.get("differences") or ())
-            raise QuotesClosedError(
-                f"Release {release} runs with its quotes closed: {message}"
-                + "".join(f"\n  - {each}" for each in differences),
-                release,
-                differences,
-            )
-        raise RolloutError(f"The app's quotes are closed: {message}")
+        if quotes.get("error_code") != STORE_MISMATCH:
+            raise RolloutError(f"The app's quotes are closed: {message}")
+        differences = tuple(str(each) for each in quotes.get("differences") or ())
+        closed = QuotesClosedError(
+            f"Release {release} runs with its quotes closed: {message}"
+            + "".join(f"\n  - {each}" for each in differences),
+            release,
+            differences,
+        )
+    # A release that stays, its quotes open or closed by a mismatch, is one the app's own
+    # address answers as: proved before either is said.
+    _answered(get, address, signed, revision.name, deadline, clock, "The app's own address")
+    if closed is not None:
+        raise closed
     return release
 
 
-def _refused(answer: HttpAnswer, address: str) -> bool:
-    """Whether the host refused a request: 401, 403, or a redirect to its sign-in, the app's
-    own address (*address*, or a relative location) under ``/.auth/login``, or Microsoft's
-    login host over https."""
+def _refused(answer: HttpAnswer, *addresses: str) -> bool:
+    """Whether the host refused a request: 401, 403, or a redirect to its sign-in, one of the
+    app's own *addresses* (the one asked, a revision's, or the app's; or a relative location)
+    under ``/.auth/login``, or Microsoft's login host over https."""
     if answer.status in (401, 403):
         return True
     if not 300 <= answer.status < 400 or not answer.location:
@@ -459,7 +698,7 @@ def _refused(answer: HttpAnswer, address: str) -> bool:
     if host == _MICROSOFT_LOGIN:
         return where.scheme == "https"
     own = (not where.netloc and not where.scheme) or (
-        where.scheme == "https" and host == address.lower()
+        where.scheme == "https" and host in {address.lower() for address in addresses}
     )
     return own and (where.path == _SIGN_IN_PATH or where.path.startswith(_SIGN_IN_PATH + "/"))
 
@@ -470,6 +709,14 @@ def _json(answer: HttpAnswer) -> dict[str, Any]:
     except (UnicodeDecodeError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def unanswered(answer: HttpAnswer) -> bool:
+    """Whether *answer* is no answer of the app's: no server answered, or the answer is a
+    5xx, which a host between gives while it starts or restarts a container. It says nothing
+    of the app, so a request that must be answered is asked again; the hosted check's rule,
+    and the impact's for an app's first contact."""
+    return answer.status == 0 or 500 <= answer.status < 600
 
 
 def _said(answer: HttpAnswer) -> str:
@@ -493,8 +740,8 @@ def _preflight(state: AppState, environment: str, image: str) -> str:
         )
     if state.address is None:
         raise RolloutError(
-            f"{environment}'s app takes no requests at a public address: the hosted check "
-            "needs its external ingress."
+            f"{environment}'s app takes no requests from outside its Container Apps "
+            "environment: the hosted check needs its external ingress."
         )
     if state.client_id is None:
         raise RolloutError(
@@ -527,8 +774,8 @@ class _Run:
     say: Callable[[str], None]
     steps: list[str] = field(default_factory=list)
 
-    def check(self) -> str:
-        return hosted_check(self.get, self.address, self.token, self.clock)
+    def check(self, revision: RevisionState) -> str:
+        return hosted_check(self.get, self.address, self.token, self.clock, revision=revision)
 
     def record(self, ours: str | None, recorded: Recorded) -> None:
         """Record the release on the app, while *ours* is still its latest revision."""
@@ -584,14 +831,13 @@ def rollout(
     host.limit(ROLLOUT_TIMEOUT_SECONDS)
     made: str | None = None
     try:
-        for name in state.active_revisions:
-            host.deactivate(name)
-            say(f"  ✓ Stopped the revision {name}")
+        # Nothing is stopped first: Azure keeps the revision before serving until this one
+        # is ready, and starts it again when it was stopped.
         made = host.set_image(image, suffix, max(0.0, deadline - clock.now()))
         say(f"  ✓ Started the revision {made} on {image}")
-        _wait_provisioned(host, made, deadline, clock, ROLLOUT_TIMEOUT_SECONDS)
-        say(f"  ✓ The revision {made} is provisioned")
-        release = run.check()
+        started = _wait_serving(host, made, deadline, clock, ROLLOUT_TIMEOUT_SECONDS)
+        say(f"  ✓ The revision {made} takes the app's requests")
+        release = run.check(started)
     except QuotesClosedError as closed:
         host.limit(None)
         run.record(made, Recorded(image, closed.release, commit))
@@ -613,18 +859,24 @@ def rollout(
 
 def _recheck(run: _Run, latest: RevisionState, image: str, commit: str) -> str:
     """A re-run: the app's latest revision already runs *image*, so nothing is rolled; it is
-    checked and recorded, and a failure undoes nothing."""
+    waited on as a rollout's revision is, checked and recorded, and a failure undoes
+    nothing."""
     run.say(f"  ✓ {run.environment} already runs {image}: checking it, changing nothing")
     unchanged = f"Nothing was changed: {run.environment} runs as it did."
-    if latest.running in _FAILED_RUNNING:
-        raise RolloutError(f"The revision {latest.name} is {latest.running.lower()}. {unchanged}")
+    # The wait has a rollout's deadline, and the host its bound, so no read outlasts it.
+    deadline = run.clock.now() + ROLLOUT_TIMEOUT_SECONDS
+    run.host.limit(ROLLOUT_TIMEOUT_SECONDS)
     try:
-        release = run.check()
+        serving = _wait_serving(run.host, latest.name, deadline, run.clock, ROLLOUT_TIMEOUT_SECONDS)
+        release = run.check(serving)
     except QuotesClosedError as closed:
+        run.host.limit(None)
         run.record(latest.name, Recorded(image, closed.release, commit))
         raise
     except RolloutError as failure:
+        run.host.limit(None)
         raise RolloutError(f"{failure} {unchanged}") from failure
+    run.host.limit(None)
     run.record(latest.name, Recorded(image, release, commit))
     return release
 
@@ -639,10 +891,17 @@ def _roll_back(
     say: Callable[[str], None],
 ) -> str:
     """Put the image the app served back on a revision of its own (the image alone: the
-    template is the app's as it stands) by *deadline*, unless another change has made a
-    revision other than this rollout's (suffixed *suffix*) or the one it started from
-    (*previous*) the app's latest; answers what was done, for the failure's message, a
-    recovery that fails too named beside the app's state as last read."""
+    template is the app's as it stands) and wait until Azure serves it, by *deadline*,
+    unless another change has made a revision other than this rollout's (suffixed *suffix*)
+    or the one it started from (*previous*) the app's latest; answers what was done, for the
+    failure's message, a recovery that fails too named beside the app's state as last read.
+
+    The failed revision is not stopped first: Azure sends the requests to the kept image's
+    revision once it is ready and stops the failed one itself, and would start a stopped one
+    again meanwhile. With no image to go back to it is stopped, which holds since no
+    revision follows it. When the update made no revision the kept image is set again all
+    the same: an update Azure answered late may still land.
+    """
     try:
         latest = host.state().latest_revision
         ours = latest if latest is not None and latest.endswith(f"--{suffix}") else None
@@ -651,13 +910,14 @@ def _roll_back(
                 f"Another change made {latest} the app's latest revision meanwhile, so nothing "
                 "was undone."
             )
-        if ours is not None:
+        if kept is None:
+            if ours is None:
+                return "No revision served before it, and none was made: nothing was changed."
             host.deactivate(ours)
             say(f"  ✓ Stopped the failed revision {ours}")
-        if kept is None:
             return "No revision served before it, so nothing runs: the failed revision is stopped."
         back = host.set_image(kept, _suffix(clock), max(0.0, deadline - clock.now()))
-        _wait_provisioned(host, back, deadline, clock, RECOVERY_TIMEOUT_SECONDS)
+        _wait_serving(host, back, deadline, clock, RECOVERY_TIMEOUT_SECONDS)
     except RolloutError as failure:
         return (
             f"Putting the previous release ({kept}) back failed too: {failure} {_last_state(host)}"
@@ -682,46 +942,41 @@ def _last_state(host: ContainerAppHost) -> str:
 
 @contextmanager
 def _azure(what: str) -> Iterator[None]:
-    """An Azure SDK failure while doing *what*, said as a :class:`RolloutError`."""
+    """An Azure SDK failure while doing *what*, said as a :class:`RolloutError`; the Azure
+    CLI having no sign-in to give, which a run finds only as it asks for its first token,
+    said naming both ways to sign in."""
     from azure.core.exceptions import AzureError
+    from azure.identity import CredentialUnavailableError
 
     try:
         yield
+    except CredentialUnavailableError as error:
+        raise RolloutError(
+            f"The run signs in to Azure through the Azure CLI, which gave it no sign-in "
+            f"({error.message}): {_SIGN_IN_WAYS}."
+        ) from error
     except AzureError as error:
         message = getattr(error, "message", None) or str(error)
         raise RolloutError(f"Azure could not {what}: {message}") from error
 
 
 class AzureContainerApps:
-    """A Container App on Azure, through ``azure-mgmt-appcontainers``, signed in as the CI
-    service principal *values* name."""
+    """A Container App on Azure, through ``azure-mgmt-appcontainers``, in the subscription
+    *sign_in* names and signed in as it says (:func:`_credential`)."""
 
     def __init__(
         self,
         environment: AppEnvironment,
-        values: Mapping[str, str],
+        sign_in: AzureSignIn,
         *,
         client: ContainerAppsAPIClient | None = None,
-        credential: ClientSecretCredential | None = None,
+        credential: TokenCredential | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         if credential is None:
-            from azure.identity import ClientSecretCredential
-
-            # Its token requests bounded as the client's are: each attempt's connection and
-            # read, the retries and their waits.
-            credential = ClientSecretCredential(
-                values["AZURE_TENANT_ID"],
-                values["AZURE_CLIENT_ID"],
-                values["AZURE_CLIENT_SECRET"],
-                connection_timeout=REQUEST_TIMEOUT_SECONDS,
-                read_timeout=REQUEST_TIMEOUT_SECONDS,
-                retry_policy_class=_bounded_retry(),
-                retry_total=_SDK_RETRIES,
-                retry_backoff_max=_MAX_RETRY_WAIT_SECONDS,
-            )
+            credential = _credential(sign_in)
         if client is None:
-            client = _client(credential, values["AZURE_SUBSCRIPTION_ID"])
+            client = _client(credential, sign_in.subscription)
         self._now = now
         self._end: float | None = None
         self._credential = credential
@@ -826,6 +1081,7 @@ class AzureContainerApps:
             active=bool(properties.active),
             provisioning=_named(properties.provisioning_state),
             running=_named(properties.running_state),
+            address=properties.fqdn or None,
         )
 
     def deactivate(self, name: str) -> None:
@@ -902,7 +1158,7 @@ class AzureContainerApps:
             poller.result()
 
     def token(self, client_id: str) -> str:
-        with _azure(f"give the CI service principal a token for the app {client_id}"):
+        with _azure(f"give CI's sign-in a token for the app {client_id}"):
             return str(self._credential.get_token(f"{client_id}/.default").token)
 
 

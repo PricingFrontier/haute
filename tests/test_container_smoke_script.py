@@ -105,6 +105,39 @@ class TestPrepareBuildDirectory:
         finally:
             resolved.close()
 
+    def test_a_haute_the_index_does_not_hold_ships_in_the_image_as_its_own_wheel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project on a haute installed from Git, an archive or a local wheel builds an
+        image that installs that haute, not the index's release of the same version number:
+        the image otherwise runs other code than the build that validated the release."""
+        from unittest.mock import patch
+
+        from tests.test_served_haute import _GIT, _distribution
+
+        resolved = _resolve_minimal_live_quote(tmp_path, monkeypatch)
+        try:
+            distribution = _distribution(tmp_path / "site", direct_url=_GIT)
+            build_dir = tmp_path / "image_from_git"
+            with patch(
+                "haute.deploy._served_haute.metadata.distribution", return_value=distribution
+            ):
+                manifest_path = prepare_build_directory(resolved, build_dir)
+
+            wheel = build_dir / "haute-0.6.0-py3-none-any.whl"
+            assert wheel.is_file()
+            dockerfile_text = (build_dir / "Dockerfile").read_text(encoding="utf-8")
+            assert "COPY haute-0.6.0-py3-none-any.whl ." in dockerfile_text
+            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+            # No release is asked of the index: the wheel installs by its own digest.
+            assert (build_dir / "haute.lock").read_text(encoding="utf-8") == (
+                f"./haute-0.6.0-py3-none-any.whl --hash=sha256:{digest}\n"
+            )
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            assert "./haute-0.6.0-py3-none-any.whl" in manifest_data["container_dependencies"]
+        finally:
+            resolved.close()
+
 
 class TestBuildAndPushImageCleanup:
     def test_cleans_build_dir_on_docker_failure(

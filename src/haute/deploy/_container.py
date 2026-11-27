@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -29,6 +30,7 @@ from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
 from haute.deploy._request_rows import copy_verified
+from haute.deploy._served_haute import packaged_haute_wheel
 from haute.deploy._utils import (
     artifact_file_name,
     build_manifest,
@@ -201,7 +203,7 @@ def prepare_build_directory(
     Steps:
         1. Write the bundle (``write_bundle``) into the empty *build_dir*: the manifest,
            with the container's pinned dependencies, the artifacts and the utility package
-        2. Copy the haute wheel, when haute_requirement names one
+        2. Copy the haute wheel, when the image installs one
         3. Generate FastAPI app source
         4. Generate Dockerfile
 
@@ -211,6 +213,10 @@ def prepare_build_directory(
         haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
             When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
             and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
+            Without it the image installs the haute that is building it: a released one from
+            the index by its version, any other as a wheel repacked from its installed
+            files (``packaged_haute_wheel``), since the index holds other code, or none,
+            under that version number.
         extra_files: Files the caller writes beside ``app.py``, which the image copies too: a
             workbench release's form and description.
         extra_dependencies: Distributions the caller's app needs past the scoring runtime,
@@ -222,6 +228,33 @@ def prepare_build_directory(
     Returns:
         Path to the written ``deploy_manifest.json``.
     """
+    if haute_requirement is not None:
+        return _staged_build(
+            resolved, build_dir, haute_requirement, extra_files, extra_dependencies, sqlserver_odbc
+        )
+    with tempfile.TemporaryDirectory(prefix="haute_wheel_") as scratch:
+        wheel = packaged_haute_wheel(Path(scratch))
+        return _staged_build(
+            resolved,
+            build_dir,
+            None if wheel is None else str(wheel),
+            extra_files,
+            extra_dependencies,
+            sqlserver_odbc,
+        )
+
+
+def _staged_build(
+    resolved: ResolvedDeploy,
+    build_dir: Path,
+    haute_requirement: str | None,
+    extra_files: Sequence[str],
+    extra_dependencies: Sequence[str],
+    sqlserver_odbc: bool,
+) -> Path:
+    """:func:`prepare_build_directory` once the haute the image installs is settled:
+    *haute_requirement*, a wheel's path or a requirement, or the index release of the
+    installed version when it is None."""
     config = resolved.config
     model_name = config.model_name
     ct = config.container

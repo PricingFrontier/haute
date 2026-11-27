@@ -50,10 +50,10 @@ artifact; and **DeployProduction**, a
 deployment to the `production` environment that you run by hand, which rolls the production
 app out to the release staging runs. Each rollout checks the app and puts the previous
 release back when the new one fails
-([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). Add an
-**Exclusive lock** check to both environments so one rollout of each runs at a time. The
-stages read your host's variables from the `haute-credentials` group,
-`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`.
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). The stages
+hold no secret: they sign in to Azure through a service connection ([Signing in to
+Azure](#signing-in-to-azure)). [Setting up a workbench project](#setting-up-a-workbench-project)
+lists what your IT team creates.
 
 ---
 
@@ -157,14 +157,7 @@ Azure DevOps stores shared secrets in **Variable Groups**. Haute's generated pip
 | `AWS_SECRET_ACCESS_KEY` | Your AWS secret key | ✓ Lock |
 | `AWS_DEFAULT_REGION` | e.g. `eu-west-1` | - |
 
-**For Azure Container Apps:**
-
-| Name | Value | Secret? |
-|---|---|---|
-| `AZURE_SUBSCRIPTION_ID` | Your subscription ID | ✓ Lock |
-| `AZURE_TENANT_ID` | Your tenant ID | ✓ Lock |
-| `AZURE_CLIENT_ID` | Your service principal app ID | ✓ Lock |
-| `AZURE_CLIENT_SECRET` | Your service principal secret | ✓ Lock |
+**For Azure Container Apps:** no variables, and no variable group. The pipeline signs in to Azure through a service connection instead: see [Signing in to Azure](#signing-in-to-azure).
 
 **For GCP Cloud Run:**
 
@@ -228,6 +221,90 @@ Two more settings, if your code is in **Azure Repos Git**:
 
 ---
 
+## Signing in to Azure
+
+A pipeline that reaches Azure holds no secret: a [workbench project's](#workbench-projects), and an automated project's that deploys to Azure Container Apps. It signs in through an **Azure Resource Manager service connection**, which your IT team creates once.
+
+1. Go to **Project settings** → **Service connections** → **New service connection** → **Azure Resource Manager**
+2. Choose how the connection signs in. **Workload identity federation** keeps no secret anywhere; a connection that holds a service principal's secret works too. Haute does not need to know which
+3. Scope it to the subscription the registry and the apps are in
+4. Name it `haute-azure`, the name `haute init` writes
+5. Allow the pipeline to use it, under the connection's **Security** settings, or approve it when the first run asks
+
+To use a connection with another name, name it in `haute.toml` and run `haute ci update`:
+
+```toml
+[ci]
+provider = "azure-devops"
+service_connection = "pricing-azure"
+```
+
+Then give the connection's identity (the service principal or managed identity behind it) these roles in Azure:
+
+| Role | On | Why |
+|---|---|---|
+| AcrPush | The container registry | The pipeline pushes the image |
+| Reader | The container registry | The login looks the registry up in Azure to find its address |
+| Container Apps Contributor | Each hosted app, in a workbench project | The rollout changes the app's image and records the release on it |
+
+In a workbench project, also let that identity sign in to each app through the app's built-in authentication ([The underwriter app](../../building-models/workbench.md#the-underwriter-app)).
+
+Each step that reaches Azure signs in afresh, and each Haute command takes the tokens it needs as it starts, so the short sign-in of a federated connection is enough.
+
+---
+
+## Setting up a workbench project
+
+What your IT team creates in Azure DevOps for a [workbench project](#workbench-projects), once:
+
+- **The service connection**, with its roles ([Signing in to Azure](#signing-in-to-azure)). A workbench project needs no variable group.
+- **Two environments**, `staging` and `production`, under **Pipelines** → **Environments** → **New environment**, each with Resource **None**. Create both before the first run on main: a run that a push starts cannot create them.
+- **An Exclusive lock on each environment**, under the environment's **Approvals and checks**, so one rollout of an environment runs at a time.
+- **An Approvals check on `production`**, if someone other than whoever starts the stage must approve it.
+- **The pipeline**, from `azure-pipelines.yml` ([Step 3](#step-3-create-the-pipeline)). On Azure Repos, add the build validation branch policy that step describes, or pull requests are not checked. The release-tag permission there is not needed: a workbench release is recorded on the app, not as a Git tag.
+
+In `haute.toml`, fill in what `haute init` left empty: the registry in `[deploy.container]`, and each app's resource group and Container App name in `[workbench.app.staging]` and `[workbench.app.prod]`.
+
+The production stage is started by hand, which needs Azure DevOps Services: Azure DevOps Server does not offer stages started by hand.
+
+To release: merge to main, read the `impact-report` artifact of the **Publish → Staging** stage, then start the **Staging → Production** stage from the run's page. The run itself finishes once staging is rolled out, and the production stage waits there until someone starts it. It can only release from a run of main: started from a pull request's run, it is skipped, and it refuses a commit that staging is not running.
+
+---
+
+## Where the jobs run
+
+Every job runs on a Microsoft-hosted Ubuntu agent unless you name an agent pool of your own. Name it in `haute.toml` and run `haute ci update`:
+
+```toml
+[ci]
+provider = "azure-devops"
+runner = "pricing-linux"
+```
+
+You need your own pool when the registry, the hosted apps or anything else the pipeline reaches can only be reached from inside your network. Each agent in the pool needs:
+
+- Ubuntu or Debian, with Docker. The image is built on the agent, and a workbench project's packaged app is tested against a database in a container
+- Permission to install packages unattended (`sudo apt-get`), for the libraries SQL Server's driver loads
+- Your project's Python version in the agent's tool cache, where the `UsePythonVersion` task looks for it
+- The Azure CLI, when the pipeline [signs in to Azure](#signing-in-to-azure)
+- Outbound access to the Python package index (PyPI), your base image's registry, Microsoft's container registry (the test database's image), the Debian package mirrors, your own registry and Azure, and in a workbench project to each hosted app's address and the other names under its Container Apps environment's domain, where a rollout asks the new release itself (for an environment inside your network, the wildcard record of its private DNS zone)
+
+Haute has no settings for an internal package mirror or a proxy.
+
+---
+
+## Owning the pipeline file
+
+If your organisation asks more of a pipeline than this, such as a template every pipeline must extend, keep a pipeline of your own:
+
+1. Delete the first line of `azure-pipelines.yml`, which marks the file as Haute's
+2. Set `provider = "none"` under `[ci]` in `haute.toml`
+3. Keep the `haute` commands the file runs
+
+`haute ci update` then leaves the file alone. `haute app rollout` and `haute app impact` read the subscription from `AZURE_SUBSCRIPTION_ID`. They sign in as the service principal that `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` name when all three are set, and otherwise through the Azure CLI's sign-in, as a step under a service connection has it.
+
+---
+
 ## The generated pipeline in detail
 
 !!! note "You don't need to read or understand the YAML below"
@@ -263,7 +340,7 @@ Two more settings, if your code is in **Azure Repos Git**:
 
     - **Path filters** - the pipeline only triggers when relevant files change (the `rating/` pipeline package, config, data, models, test quotes, and the dependency files `pyproject.toml` and `uv.lock`; a workbench's files are in the pipeline package, so a change to them deploys too), not on README changes
     - **PR validation** - the `Validate` stage runs on pull requests too (through a branch policy on Azure Repos), giving you feedback before merge
-    - **Variable group** - credentials come from the `haute-credentials` variable group, not hardcoded
+    - **Variable group** - credentials come from the `haute-credentials` variable group, not hardcoded. A pipeline that signs in to Azure reads none: it uses a service connection
     - **Environment approvals** - configure approval checks on the `production` environment if you need manual approval before production deploy
     - **Deployment job** - the production stage uses a `deployment` job type, which gives you deployment history and tracking in Azure DevOps
     - **Artifacts** - the impact report is published as a pipeline artifact you can download from the build summary
@@ -363,4 +440,4 @@ Check that:
 
 ## Keeping the pipeline file up to date
 
-After upgrading Haute, or changing `[ci.staging] endpoint_suffix` or `[ci.production] environment` in `haute.toml`, run `haute ci update` and commit `azure-pipelines.yml`. It overwrites changes you made to the file by hand: see [Keeping the generated files up to date](../index.md#keeping-the-generated-files-up-to-date) for what it rewrites and removes.
+After upgrading Haute, or changing `[ci.staging] endpoint_suffix`, `[ci.production] environment`, `[ci] runner` or `[ci] service_connection` in `haute.toml`, run `haute ci update` and commit `azure-pipelines.yml`. It overwrites changes you made to the file by hand: see [Keeping the generated files up to date](../index.md#keeping-the-generated-files-up-to-date) for what it rewrites and removes.

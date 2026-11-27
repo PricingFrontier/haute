@@ -895,6 +895,7 @@ def handle_init(config: InitConfig) -> None:
     )
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
+        DEFAULT_SERVICE_CONNECTION,
         app_env_example,
         ci_files,
         ci_secret_names,
@@ -909,6 +910,7 @@ def handle_init(config: InitConfig) -> None:
         starter_test_quote,
         starter_utility_features,
         starter_utility_init,
+        uses_service_connection,
         workbench_ci_files,
         workbench_haute_toml,
     )
@@ -1085,9 +1087,9 @@ def handle_init(config: InitConfig) -> None:
     credentials = answers.host if workbench else answers.target
     assert credentials is not None
     env_text = (
-        app_env_example(credentials, variables)
+        app_env_example(credentials, variables, ci=ci)
         if workbench
-        else env_example(credentials, variables)
+        else env_example(credentials, variables, ci=ci)
     )
     generated_ci = (
         workbench_ci_files(credentials, ci, store=answers.store, python_version=python_version)
@@ -1193,7 +1195,14 @@ def handle_init(config: InitConfig) -> None:
         click.echo("  uv sync                # install dependencies")
         click.echo("  cp .env.example .env   # fill in credentials")
         click.echo("  haute serve")
-    secret_names = ci_secret_names(credentials)
+    if uses_service_connection(credentials, ci):
+        click.echo(
+            f"\nBefore the first {first}, Azure DevOps needs a service connection to "
+            f"Azure named {DEFAULT_SERVICE_CONNECTION}, or the one [ci] "
+            "service_connection in haute.toml names: its pipeline signs in through it "
+            "and holds no secrets."
+        )
+    secret_names = ci_secret_names(credentials, ci)
     if ci != "none" and secret_names:
         click.echo(f"\nBefore the first {first}, {ci} needs these CI secrets:")
         for secret_name in secret_names:

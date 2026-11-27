@@ -67,6 +67,25 @@ def served_haute(directory: Path) -> ServedHaute:
     return ServedHaute(f"code/{wheel.name}", wheel)
 
 
+def packaged_haute_wheel(directory: Path) -> Path | None:
+    """The installed haute as a wheel in *directory*, for a container image to install,
+    when the index does not hold it.
+
+    A haute installed from a Git repository, an archive or a local wheel is not the code
+    the index holds under its version number, if it holds that number at all, so the image
+    installs a wheel repacked from the installed files (:func:`repack_installed_wheel`),
+    as a served model carries one. ``None`` for a released haute, which the image installs
+    from the index by its version, and for an editable checkout, whose installed files
+    only point at its working tree: an image is built in CI, which installs haute as a
+    package.
+    """
+    distribution = metadata.distribution(_DISTRIBUTION)
+    kind, _location = install_source(distribution)
+    if kind != "direct_url":
+        return None
+    return repack_installed_wheel(distribution, directory)
+
+
 def _wheel_tag(distribution: metadata.Distribution) -> str:
     """The wheel tag the installed ``WHEEL`` file records, compressed as a filename takes it."""
     tags = [

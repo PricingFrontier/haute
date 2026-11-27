@@ -310,7 +310,7 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
         # The deploy target's, or a workbench project's app host's (a WorkbenchConfigError,
         # a ConfigError, when it names none).
         target = ci_credentials(project_dir, config.target)
-        names = tuple(ci_secret_names(target))
+        names = tuple(ci_secret_names(target, config.ci.provider))
     except (OSError, ValueError, ConfigError, DeployError) as exc:
         raise _SettingsUnreadableError(
             f"Haute could not read this project's haute.toml and .env: {exc}", repository

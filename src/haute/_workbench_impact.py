@@ -45,6 +45,10 @@ from haute._workbench_rollout import (
 
 #: The whole run, every request and wait included.
 IMPACT_TIMEOUT_SECONDS = 600
+#: How long an app's first answer of a run is asked for while it goes unanswered: an app
+#: its host has scaled to nothing starts as it is asked, and takes longer than one request
+#: has, its host answering nothing, or a 502 or 503, meanwhile.
+START_TIMEOUT_SECONDS = 300
 #: The quotes priced unless ``--sample`` says otherwise, and the most it takes.
 DEFAULT_SAMPLE = 100
 MAX_SAMPLE = 1_000
@@ -247,11 +251,14 @@ class _Budget:
             answer = call()
             if answer.status != 503 or attempt == BUSY_TRIES - 1:
                 return answer
-            wait = _wait(answer.retry_after)
-            if self.clock.now() + wait >= self.deadline:
-                raise _OutOfTimeError
-            self.clock.sleep(wait)
+            self.wait(_wait(answer.retry_after))
         raise AssertionError("unreachable")
+
+    def wait(self, seconds: float) -> None:
+        """Wait *seconds*; :class:`_OutOfTimeError` when the deadline would pass meanwhile."""
+        if self.clock.now() + seconds >= self.deadline:
+            raise _OutOfTimeError
+        self.clock.sleep(seconds)
 
 
 def _wait(retry_after: str | None) -> float:
@@ -266,22 +273,56 @@ def _wait(retry_after: str | None) -> float:
     return min(seconds, _MAX_BUSY_WAIT_SECONDS)
 
 
-def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget: _Budget) -> Side:
-    """*environment*'s app as the impact reaches it, signed in, its quotes open; refused,
-    naming the environment, when it cannot be."""
+def _token(environment: str, host: AppReader, state: AppState, budget: _Budget) -> str:
+    """The token the impact signs in to *environment*'s app with; refused, naming the
+    environment, for an app it cannot reach signed in."""
     if state.address is None or state.client_id is None:
         raise ImpactError(
-            f"{environment}'s app takes no requests at a public address signed in through "
-            "Microsoft Entra ID: the impact prices quotes through it."
+            f"{environment}'s app takes no requests at an address outside its environment, "
+            "signed in through Microsoft Entra ID: the impact prices quotes through it."
         )
     budget.check()
-    signed = {"Authorization": f"Bearer {host.token(state.client_id)}"}
+    return host.token(state.client_id)
+
+
+def _first_answer(call: Callable[[], HttpAnswer], budget: _Budget) -> HttpAnswer:
+    """An app's first answer of the run. An app its host has scaled to nothing starts as it
+    is asked, and the request can time out before it has, or be answered a 502 or 503 by the
+    host meanwhile: while it goes unanswered (:func:`rollouts.unanswered`, the hosted check's
+    rule: no answer, or a 5xx), the app is asked again every :data:`rollouts.POLL_SECONDS`.
+
+    No request begins once :data:`START_TIMEOUT_SECONDS` have passed, nor once the run's
+    deadline has; one begun before may finish. An app still unanswered then is answered
+    with its last answer, for the caller to refuse. Any other answer, a sign-in refused or a
+    redirect included, is the app's and is answered as it comes. This is the start alone: a
+    request left unanswered once an app has answered is not asked again, and stops the run.
+    """
+    until = budget.clock.now() + START_TIMEOUT_SECONDS
+    answer: HttpAnswer | None = None
+    while True:
+        budget.check()
+        if answer is not None and budget.clock.now() >= until:
+            return answer
+        answer = call()
+        if not rollouts.unanswered(answer):
+            return answer
+        budget.wait(rollouts.POLL_SECONDS)
+
+
+def _side(environment: str, state: AppState, token: str, get: Fetch, budget: _Budget) -> Side:
+    """*environment*'s app as the impact reaches it, signed in with *token*, its quotes open;
+    refused, naming the environment, when it cannot be."""
+    assert state.address is not None
+    signed = {"Authorization": f"Bearer {token}"}
     base = f"https://{state.address}"
-    release = budget.ask(lambda: get(f"{base}/api/app/release", signed))
+    release = _first_answer(lambda: get(f"{base}/api/app/release", signed), budget)
     if release.status != 200:
+        asked = (
+            f", asked for {START_TIMEOUT_SECONDS} seconds" if rollouts.unanswered(release) else ""
+        )
         raise ImpactError(
             f"Signed in as the CI service principal, {environment}'s app answered "
-            f"{_reason(release)}."
+            f"{_reason(release)}{asked}."
         )
     body = _body(release)
     if not _named(body.get("id")) or not _named(body.get("form_revision")):
@@ -302,7 +343,7 @@ def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget
     return Side(
         environment=environment,
         address=state.address,
-        token=signed["Authorization"].removeprefix("Bearer "),
+        token=token,
         release=body["id"],
         form_revision=body["form_revision"],
         form=document,
@@ -511,7 +552,14 @@ def _measure(
     budget.check()
     production_state = baseline.state()
     budget.check()
-    staging = _side("staging", candidate, candidate.state(), get, budget)
+    staging_state = candidate.state()
+    # Every token the run needs, before either app is asked anything: a sign-in can ask for a
+    # token it does not hold yet only in its first minutes (a federated service connection's),
+    # and an app's answers, asked again while it is busy, can outlast them.
+    staging_token = _token("staging", candidate, staging_state, budget)
+    compared = production_state.recorded is not None
+    production_token = _token("prod", baseline, production_state, budget) if compared else None
+    staging = _side("staging", staging_state, staging_token, get, budget)
     run.candidate = Released("staging", staging.release, staging.commit)
     say(f"  ✓ staging runs release {staging.release}")
     if RELEASE_TAG not in production_state.tag_names:
@@ -524,7 +572,8 @@ def _measure(
             + ", ".join(RECORD_TAGS.values())
             + " tags together, so restore them or roll prod out again."
         )
-    production = _side("prod", baseline, production_state, get, budget)
+    assert production_token is not None
+    production = _side("prod", production_state, production_token, get, budget)
     run.baseline = Released("prod", production.release, production.commit)
     say(f"  ✓ prod runs release {production.release}")
     if production.release == staging.release:
