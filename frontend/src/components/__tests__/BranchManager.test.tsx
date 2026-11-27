@@ -170,6 +170,9 @@ describe("BranchManager", () => {
   })
 
   it("keeps every unsaved edit when one was made while the branch was read from the remote", async () => {
+    // A page reload would lose the edit, and is a no-op in jsdom: replace it to see it.
+    const pageReload = vi.fn()
+    Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, reload: pageReload } })
     const reload = vi.fn(async () => {})
     useWorkbenchFormStore.setState({ reload })
     useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
@@ -185,12 +188,16 @@ describe("BranchManager", () => {
     useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.5" } })))
     await act(async () => created({ working_branch: "next-change", moved: false, switched: true, last_save_sha: "c".repeat(40) }))
 
+    await waitFor(() => expect(mockGetWorkingBranch).toHaveBeenCalled())
+    expect(pageReload).not.toHaveBeenCalled()
     expect(useGraphStore.getState().nodes[0].data.label).toBe("Default 1.5")
     expect(useGraphStore.getState().dirty).toBe(true)
     expect(reload).not.toHaveBeenCalled()
   })
 
   it("asks about unsaved edits before it starts a branch from a remote, and drops the ones chosen over", async () => {
+    const pageReload = vi.fn()
+    Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, reload: pageReload } })
     useGraphStore.setState({ dirty: true })
     const resyncs = useDocumentStatusStore.getState().resyncRequests
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "next-change", moved: false, switched: true, last_save_sha: "c".repeat(40) })
@@ -204,6 +211,7 @@ describe("BranchManager", () => {
     await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("next-change", { fromRemote: "origin" }))
     await waitFor(() => expect(useDocumentStatusStore.getState().resyncRequests).toBe(resyncs + 1))
     expect(useGraphStore.getState().dirty).toBe(false)
+    expect(pageReload).not.toHaveBeenCalled()
   })
 
   it("offers no remote to start from when the remotes cannot be read", async () => {

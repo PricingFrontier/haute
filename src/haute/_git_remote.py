@@ -603,9 +603,16 @@ def _labels_failed(remote: str, stderr: str) -> GitDomainError:
     )
 
 
-def _labels_on(tip: str, cwd: Path | None = None) -> list[str]:
-    """The version labels on *tip*'s history, as tag refs: the annotated ``version/*`` tags an
-    atomic push's ``--follow-tags`` carries with the pair."""
+def _labels_to_send(remote: str, tip: str, cwd: Path | None = None) -> list[str]:
+    """The version labels on *tip*'s history that *remote* does not hold at their commit, as
+    tag refs: the annotated ``version/*`` tags an atomic push's ``--follow-tags`` carries
+    with the pair, which skips a tag the remote already has.
+
+    A label the remote holds at the same commit is left alone whatever its tag object (one
+    annotated again or signed there is still that release), since naming it in a push would
+    ask to replace it, which git refuses, on every Push after. One it holds at another
+    commit is still sent, and refused: :func:`_tag_collisions` says so first when it can
+    read the remote."""
     listed = _run_git(
         "for-each-ref",
         "--format=%(objecttype) %(refname)",
@@ -613,7 +620,13 @@ def _labels_on(tip: str, cwd: Path | None = None) -> list[str]:
         "refs/tags/version/",
         cwd=cwd,
     )
-    return [line.split(" ", 1)[1] for line in listed.splitlines() if line.startswith("tag ")]
+    labels = [line.split(" ", 1)[1] for line in listed.splitlines() if line.startswith("tag ")]
+    held = _ls_remote_version_tags(remote, cwd=cwd)
+    return [
+        label
+        for label in labels
+        if held.get(label.removeprefix("refs/tags/")) != _rev_parse(label, cwd=cwd)
+    ]
 
 
 def _push_pair_in_order(
@@ -639,7 +652,7 @@ def _push_pair_in_order(
             return result
         record_pushed_shas(project_root, {f"{remote}/{branch}": sha})
         landed.append(branch)
-    labels = _labels_on(branches[-1][1], cwd)
+    labels = _labels_to_send(remote, branches[-1][1], cwd)
     if labels:
         result = _run_push(
             remote, ["--no-follow-tags"], [f"{label}:{label}" for label in labels], cwd=cwd

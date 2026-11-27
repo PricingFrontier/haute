@@ -1139,6 +1139,33 @@ class TestRemotesAndPush:
 
         assert "refs/tags/version/1.0" in _git(repo, "ls-remote", "--tags", "origin")
 
+    def test_a_label_the_host_holds_at_the_same_commit_is_not_sent_again(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """A label annotated again on the remote is another tag object at the same commit.
+        Naming it in a push asks to replace it, which git refuses, and every later Push would
+        fail the same way: it is the same release, so it is left alone."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+        push_working_pair("origin", repo, cwd=repo)
+        released = _git(repo, "rev-parse", "version/1.0^{commit}")
+        ours = _git(repo, "rev-parse", "version/1.0")
+        _git(bare, "tag", "-f", "-a", "version/1.0", "-m", "annotated again", released)
+        theirs = _git(bare, "rev-parse", "version/1.0")
+        assert theirs != ours
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("milestone 2", repo, version_label="2.0", cwd=repo)
+
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.pushed_refs == [WORKING, LEDGER]
+        assert _git(bare, "rev-parse", "version/1.0") == theirs
+        assert "refs/tags/version/2.0" in _git(repo, "ls-remote", "--tags", "origin")
+
     def test_labels_that_cannot_be_sent_after_the_pair_landed_say_what_is_published(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

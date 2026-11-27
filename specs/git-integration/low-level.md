@@ -952,8 +952,11 @@ commits through `_run_push`, each push naming exactly the refs it sends
 (`--no-follow-tags`, since without atomicity a tag that followed a branch could land, or be
 refused, apart from it): the ledger's branch when there is one, the working branch only
 after it succeeded, and last, in one push of their own, the version labels on the working
-branch's history (`_labels_on`: the annotated `refs/tags/version/*` tags merged into its
-commit, what `--follow-tags` carries with an atomic push). It stops at the first push that
+branch's history that the remote does not hold at their commit (`_labels_to_send`: the
+annotated `refs/tags/version/*` tags merged into its commit, less those
+`_ls_remote_version_tags` finds on the remote at the same commit, whatever their tag
+object; `--follow-tags` skips a tag the remote has, and a push naming one would ask to
+replace it, which git refuses on every Push after). It stops at the first push that
 fails and answers that push's result; each branch is added to the caller's `landed` list,
 and its tip recorded (`record_pushed_shas`), as it lands, so what is published is known
 even when a later push raises. A ledger push that fails is handled as a failed atomic
