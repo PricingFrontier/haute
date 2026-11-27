@@ -58,7 +58,7 @@ where your team reviews and merges it ([Before You Start](../deployment/before-y
 explains pull requests).
 
 The line beside **Push** says how your branch stands against the remote: **synced**, or how
-many milestones ahead or behind it is. If the remote has changes you don't, **Catch up**
+far ahead or behind it is. If the remote has changes you don't, **Catch up**
 brings them in when it can do so without a merge; when it cannot, Haute offers **Spin off a
 copy**, which keeps your work on a branch beside the shared one.
 
