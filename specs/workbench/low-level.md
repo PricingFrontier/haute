@@ -3781,8 +3781,8 @@ no longer has; and `InputSource` in
   then its release passing and one refused failing on its first answer; quotes closed by a
   store mismatch left running, recorded and failed naming each difference, only once the
   app's own address has answered as the revision (asked while the old one answers it), a
-  mismatch at an address the revision never answers rolled back and never recorded, in a
-  rollout and in a re-run; every 5xx the forged and the signed request can get, not 503
+  mismatch at an address the revision never answers never recorded: rolled back in a
+  rollout, and in a re-run left as it was, nothing changed; every 5xx the forged and the signed request can get, not 503
   alone, asked again; an app updated release after release while Azure still runs the
   revision before the last; another revision
   made latest before the guard looks, never undone nor recorded over; and the record set,
