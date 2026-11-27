@@ -20,6 +20,7 @@ const mockUndelete = vi.fn()
 const mockGetWorkingBranch = vi.fn()
 const mockGetPrefs = vi.fn()
 const mockSetPrefs = vi.fn()
+const mockGetGitRemotes = vi.fn()
 
 vi.mock("../../api/client", () => ({
   getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
@@ -32,6 +33,7 @@ vi.mock("../../api/client", () => ({
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
   getGitPrefs: (...a: unknown[]) => mockGetPrefs(...a),
   setGitPrefs: (...a: unknown[]) => mockSetPrefs(...a),
+  getGitRemotes: (...a: unknown[]) => mockGetGitRemotes(...a),
 }))
 
 const branch = (over: Partial<Record<string, unknown>> = {}) => ({
@@ -91,6 +93,7 @@ describe("BranchManager", () => {
     mockGetWorkingBranch.mockResolvedValue({ working_branch: "demo", state: "ready" })
     mockGetPrefs.mockResolvedValue({ skip_switch_confirm: false })
     mockSetPrefs.mockResolvedValue({ skip_switch_confirm: true })
+    mockGetGitRemotes.mockResolvedValue({ remotes: [{ name: "origin" }], working_branch: "demo" })
   })
   afterEach(cleanup)
 
@@ -152,6 +155,29 @@ describe("BranchManager", () => {
     await waitFor(() => expect(screen.getByTestId("branch-manager-confirm-move")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("branch-manager-confirm-move-go"))
     await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("moved", { move: true }))
+  })
+
+  it("creates a branch where a remote's default branch is now, via the dropdown", async () => {
+    mockCreateWorkingBranch.mockResolvedValue({ working_branch: "next-change", moved: false, switched: true, last_save_sha: "c".repeat(40) })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-create-input")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("branch-manager-create-input"), { target: { value: "next-change" } })
+    fireEvent.click(screen.getByTestId("branch-manager-create-menu"))
+    const fromOrigin = await screen.findByTestId("branch-manager-create-from-origin")
+    expect(fromOrigin).toHaveTextContent("Create from origin's default branch")
+    fireEvent.click(fromOrigin)
+    await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("next-change", { fromRemote: "origin" }))
+  })
+
+  it("offers no remote to start from when the remotes cannot be read", async () => {
+    mockGetGitRemotes.mockRejectedValue(new Error("offline"))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-create-input")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("branch-manager-create-input"), { target: { value: "next-change" } })
+    fireEvent.click(screen.getByTestId("branch-manager-create-menu"))
+    await waitFor(() => expect(mockGetGitRemotes).toHaveBeenCalled())
+    expect(screen.getByTestId("branch-manager-create-move")).toBeInTheDocument()
+    expect(screen.queryByTestId("branch-manager-create-from-origin")).toBeNull()
   })
 
   it("switches only after the confirm dialog", async () => {

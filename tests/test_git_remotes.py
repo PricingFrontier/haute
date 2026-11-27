@@ -1742,6 +1742,163 @@ class TestRemotesAndPush:
         assert "rewritten" in exc.value.rejection.message
 
 
+class TestStartFromDefault:
+    """A new working branch started where the remote's default branch is now: the way to the
+    next change once a pull request has merged, whatever way it was completed."""
+
+    @pytest.fixture
+    def shared(self, repo: Path, tmp_path: Path) -> tuple[Path, Path]:
+        """The project published to a remote, and a colleague's clone of it."""
+        from haute._git_state import write_working_branch
+
+        resolve_ledger(WORKING, cwd=repo)
+        write_working_branch(repo, WORKING)
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        push_working_pair("origin", repo, cwd=repo)
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        return bare, other
+
+    @staticmethod
+    def _merged_on_the_remote(other: Path, name: str = "merged.txt") -> str:
+        """A change that reached the remote's default branch another way: a squashed pull
+        request, or a colleague's merge."""
+        _git(other, "checkout", "main")
+        (other / name).write_text("merged on the remote\n")
+        _git(other, "add", name)
+        _git(other, "commit", "-m", f"merged {name}")
+        _git(other, "push", "origin", "main")
+        return _git(other, "rev-parse", "main")
+
+    def test_the_new_branch_holds_what_the_remotes_default_holds_now(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+        from haute._git_state import read_working_branch
+
+        _, other = shared
+        merged = self._merged_on_the_remote(other)
+        local_main = _git(repo, "rev-parse", "main")
+        old_pair = (_git(repo, "rev-parse", WORKING), _git(repo, "rev-parse", LEDGER))
+
+        res = start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert (res.working_branch, res.switched, res.moved) == ("next-change", True, False)
+        assert read_working_branch(repo) == "next-change"
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "next-change-save"
+        assert _git(repo, "rev-parse", "next-change") == merged
+        assert _git(repo, "rev-parse", "next-change-save") == merged
+        assert (repo / "merged.txt").read_text() == "merged on the remote\n"
+        # The default branch here is never written, and the branch left is as it was.
+        assert _git(repo, "rev-parse", "main") == local_main
+        assert (_git(repo, "rev-parse", WORKING), _git(repo, "rev-parse", LEDGER)) == old_pair
+        assert check_invariants("next-change", cwd=repo) == []
+
+    def test_the_new_branch_is_published_as_any_other(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+
+        bare, other = shared
+        self._merged_on_the_remote(other)
+        start_from_default("next-change", "origin", repo, cwd=repo)
+        _write_and_save(repo, "next-change", {"rating.py": "# the next change\n"})
+        commit_milestone("the next change", repo, cwd=repo)
+
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.pushed_refs == ["next-change", "next-change-save"]
+        # It is a fast-forward of the remote's default: a pull request from it merges cleanly.
+        _git(other, "fetch", "origin")
+        assert _git(other, "merge-base", "origin/main", "origin/next-change") == _git(
+            other, "rev-parse", "origin/main"
+        )
+
+    def test_a_version_label_on_the_default_line_comes_with_it(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+
+        _, other = shared
+        merged = self._merged_on_the_remote(other)
+        _git(other, "tag", "-a", "version/2.0", "-m", "2.0", merged)
+        _git(other, "push", "origin", "version/2.0")
+
+        start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", "version/2.0^{commit}") == merged
+
+    def test_a_remote_that_cannot_be_reached_starts_nothing(
+        self, repo: Path, shared: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        from haute._git import GitRemoteUnavailableError, start_from_default
+
+        _git(repo, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+
+        with pytest.raises(GitRemoteUnavailableError) as failed:
+            start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert str(failed.value) == (
+            "Could not refresh 'origin'. Check your connection or credentials and try again."
+        )
+        assert "next-change" not in _git(repo, "branch", "--list")
+
+    def test_a_file_changed_outside_haute_is_named_before_anything_is_replaced(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+
+        _, other = shared
+        self._merged_on_the_remote(other)
+        (repo / "rating.py").write_text("# typed in another program\n")
+
+        with pytest.raises(GitDomainError, match="rating.py"):
+            start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert "next-change" not in _git(repo, "branch", "--list")
+        assert (repo / "rating.py").read_text() == "# typed in another program\n"
+
+    @pytest.mark.parametrize("taken", [WORKING, "main", f"{WORKING}-save"])
+    def test_a_name_that_cannot_be_a_new_working_branch_is_refused(
+        self, repo: Path, shared: tuple[Path, Path], taken: str
+    ) -> None:
+        from haute._git import start_from_default
+
+        with pytest.raises(GitError):
+            start_from_default(taken, "origin", repo, cwd=repo)
+
+    def test_an_unknown_remote_is_refused(self, repo: Path, shared: tuple[Path, Path]) -> None:
+        from haute._git import start_from_default
+
+        with pytest.raises(GitDomainError, match="No remote named 'elsewhere'"):
+            start_from_default("next-change", "elsewhere", repo, cwd=repo)
+
+    def test_another_projects_default_branch_is_refused(
+        self, repo: Path, shared: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        from haute._git import start_from_default
+
+        stranger = tmp_path / "stranger"
+        stranger.mkdir()
+        _git(stranger, "init", "-b", "main")
+        _git(stranger, "config", "user.name", "Stranger")
+        _git(stranger, "config", "user.email", "stranger@example.com")
+        (stranger / "theirs.txt").write_text("another project\n")
+        _git(stranger, "add", "theirs.txt")
+        _git(stranger, "commit", "-m", "another project")
+        _git(repo, "remote", "add", "elsewhere", str(stranger))
+
+        with pytest.raises(GitDomainError, match="unrelated"):
+            start_from_default("next-change", "elsewhere", repo, cwd=repo)
+
+        assert "next-change" not in _git(repo, "branch", "--list")
+        assert not (repo / "theirs.txt").exists()
+
+
 class TestFastForwardPair:
     """D1/D2: conflict-free catch-up to the remote by fast-forward only. Refuses
     anything that isn't a clean ff (local work present → branch-away)."""

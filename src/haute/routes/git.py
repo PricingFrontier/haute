@@ -49,6 +49,7 @@ from haute._git import (
     set_prefs,
     set_working_branch,
     settle_unrecorded,
+    start_from_default,
     undelete_working_pair,
     working_branch_status,
     working_branches,
@@ -492,8 +493,15 @@ def git_create_working_branch(
 ) -> GitCreateWorkingBranchResponse:
     """Fork a new working branch off the current one. ``at`` selects the fork
     point, ``move`` whether in-progress work is relocated onto it, and ``switch``
-    whether the new branch is opened (S38)."""
+    whether the new branch is opened (S38). With ``from_remote`` the branch starts
+    instead where that remote's default branch is now, and is opened."""
+    if body.from_remote is not None and (body.at is not None or body.move):
+        raise InvalidRequestError(
+            "A branch started from a remote's default branch takes no fork point and moves no work."
+        )
     with _rewriting_tree(background, body.settle):  # M4: move and switch check out the new ledger
+        if body.from_remote is not None:
+            return start_from_default(body.name, body.from_remote, current_project().root)
         response = create_working_branch(
             body.name, current_project().root, at=body.at, move=body.move, switch=body.switch
         )

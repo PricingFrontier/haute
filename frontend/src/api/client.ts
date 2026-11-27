@@ -2559,12 +2559,12 @@ export function repairBranchPair(
 
 export function createWorkingBranch(
   name: string,
-  opts: { at?: string | null; move?: boolean; switch?: boolean } = {},
+  opts: { at?: string | null; move?: boolean; switch?: boolean; fromRemote?: string | null } = {},
   { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitCreateWorkingBranchResponse> {
   return post<unknown>(
     "/api/git/working-branches",
-    { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false, ...settled(settle) },
+    { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false, from_remote: opts.fromRemote ?? null, ...settled(settle) },
     options,
   ).then(async (data) => expectGeneratedContract("GitCreateWorkingBranchResponse", (await gitValidators()).validateGitCreateWorkingBranchResponse, data))
 }

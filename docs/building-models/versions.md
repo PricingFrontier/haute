@@ -49,6 +49,30 @@ left here also fails there.
 If the message instead says ruff could not run, the hook could not start `uv run ruff`:
 check that uv is installed and that `uv sync` succeeds in the project folder.
 
+## Sharing your work for review
+
+**Push**, at the top of the Git panel, sends your branch and its saves to the remote you
+choose, such as your team's repository on GitHub, GitLab or Azure DevOps. Nothing leaves
+your computer until you press it. Then open a pull request from your branch on that site,
+where your team reviews and merges it ([Before You Start](../deployment/before-you-start.md)
+explains pull requests).
+
+The line beside **Push** says how your branch stands against the remote: **synced**, or how
+many milestones ahead or behind it is. If the remote has changes you don't, **Catch up**
+brings them in when it can do so without a merge; when it cannot, Haute offers **Spin off a
+copy**, which keeps your work on a branch beside the shared one.
+
+## Starting your next change
+
+Once your pull request has merged, start the next change from what the team's main branch
+holds now. In the Git panel, type the new branch's name, open the arrow beside **Create**
+and choose **Create from origin's default branch** (the menu names each remote you have).
+Haute reads the remote, makes the branch there and opens it.
+
+Start each change this way. A branch made with **Create** starts from the branch you are
+on, which doesn't have what merged from your colleagues, and after a pull request that was
+squashed it brings the old commits back, so the next pull request shows conflicts.
+
 ## Going back to a version
 
 Choose **Restore this version** on any earlier save or milestone (the button on its row, or

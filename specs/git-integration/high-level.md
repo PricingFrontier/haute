@@ -212,9 +212,23 @@ says nothing was published when the ledger was.
 A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
 forward; anything else is refused so the user spins off a copy instead of triggering a
 silent merge. Routine listing and readiness requests never fetch. They report divergence
-from locally-known remote-tracking refs; only deliberate Push, Catch up, or Spin off a copy
-operations perform prompt-proof, time-bounded network refreshes. Remote URLs returned to the browser strip URL userinfo
+from locally-known remote-tracking refs; only deliberate Push, Catch up, Spin off a copy, or
+starting a branch from a remote's default branch
+perform prompt-proof, time-bounded network refreshes. Remote URLs returned to the browser strip URL userinfo
 (`user:password@`) while leaving scp-style `git@host:path` and local paths unchanged.
+
+**The next change after a merge.** A pull request is opened, reviewed and completed on the
+hosting service, and what its completion leaves on the default branch is on no local
+branch's history: a squash or a rebase puts new commits there, and a merge commit can come
+with a colleague's work or an upgrade of Haute. A fork of the current branch, the only start
+a new branch had, cannot reach it, so the next change carried the last one's commits again
+and, after a squash, came up in conflict on the host. A new working branch can therefore
+start where a remote's default branch is now: Haute reads the remote afresh, as Catch up
+does, makes the branch and its ledger at that commit with the version labels on its line,
+and opens it, as one recorded operation. The default is the one Push publishes beside. It
+never merges: the branch left stays as it was, the local default branch is not written, a
+remote that cannot be read or holds another project's history starts nothing, and files
+changed outside Haute are named before any is replaced, as for any branch that is opened.
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
 touches HEAD or the working tree. The request names the pipeline file being compared, and

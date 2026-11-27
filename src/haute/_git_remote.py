@@ -19,7 +19,9 @@ from haute._git_core import (
     GitError,
     GitPushRejectedError,
     GitRemoteUnavailableError,
+    _assert_eligible_working,
     _assert_git_repo,
+    _assert_new_branch_name,
     _assert_no_git_op_in_progress,
     _assert_way_clear,
     _fetch_exec_lock,
@@ -53,6 +55,7 @@ from haute._logging import get_logger
 from haute._project_context import current_project
 from haute.schemas import (
     GitBranchAwayResponse,
+    GitCreateWorkingBranchResponse,
     GitFastForwardResponse,
     GitPushRejection,
     GitPushResponse,
@@ -78,6 +81,7 @@ __all__ = [
     "commit_exists",
     "list_remotes",
     "push_working_pair",
+    "start_from_default",
     "fast_forward_pair",
     "fast_forward_pair_from_tracking",
     "branch_away",
@@ -1253,3 +1257,81 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
 
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)
+
+
+@_serialized_mutation
+def start_from_default(
+    name: str, remote: str, project_root: Path, cwd: Path | None = None
+) -> GitCreateWorkingBranchResponse:
+    """Start the working branch *name* where *remote*'s default branch is now, and open it.
+
+    The way to the next change once a pull request has merged: the new branch holds what the
+    remote's default holds, however the pull request was completed (a squash and a rebase
+    leave the branch it came from behind, and a merge commit leaves out a colleague's), so a
+    pull request from it merges cleanly. A fork of the current branch
+    (:func:`haute._git_transactions.create_working_branch`) cannot reach that commit, which
+    is on no local branch's history.
+
+    The remote is read afresh, as Catch up and Spin off read it, and one that cannot be read
+    starts nothing. The default is the one Push would publish beside, and must share history
+    with the project. The new pair and the labels on its line are one recorded operation
+    with the checkout; the branch left and the local default are not touched, and files
+    changed outside Haute are named before any is replaced."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_new_branch_name(name, cwd=cwd)
+    _validate_ref_name(name)
+    _assert_eligible_working(name)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+    ledger = ledger_name(name)
+    for taken in (name, ledger):
+        if _rev_parse(f"refs/heads/{taken}", cwd=cwd) is not None:
+            raise GitDomainError(f"Branch '{taken}' already exists.")
+    _assert_no_git_op_in_progress(cwd)
+
+    with _fetch_exec_lock:
+        refreshed = _fetch_refs(remote, cwd=cwd)
+    if not refreshed:
+        raise _refresh_failed(remote)
+    heads, symbolic_head, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    if not has_object_refs:
+        raise GitDomainError(
+            f"'{remote}' holds no branch yet, so there is no default branch to start from."
+        )
+    current = read_working_branch(project_root)
+    default = _resolve_push_default(
+        heads,
+        symbolic_head,
+        has_object_refs,
+        current or name,
+        ledger_name(current or name),
+        remote,
+        cwd=cwd,
+    )
+    tip = _rev_parse(f"refs/remotes/{remote}/{default}", cwd=cwd)
+    if tip is None:
+        raise GitError("the remote's default branch did not resolve after the fetch")
+    here = _rev_parse("HEAD", cwd=cwd)
+    if here is None or _merge_base(tip, here, cwd=cwd) is None:
+        raise GitDomainError("The remote default and local working history are unrelated.")
+    # Opening the new branch replaces the files: none may be off version history.
+    _assert_way_clear(f"opening '{name}'", tip, cwd, leaving=True)
+
+    start = Operation("create-branch", project_root, cwd)
+    start.refs(
+        {
+            f"refs/heads/{name}": tip,
+            f"refs/heads/{ledger}": tip,
+            **labels_to_adopt(remote, tip, cwd),
+        }
+    )
+    start.checkout(ledger)
+    start.working_branch(name)
+    start.run()
+    logger.info("working_branch_started_from_default", name=name, remote=remote, at=tip[:8])
+    return GitCreateWorkingBranchResponse(
+        working_branch=name, moved=False, switched=True, last_save_sha=tip
+    )

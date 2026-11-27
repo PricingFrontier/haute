@@ -293,7 +293,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch {name,is_current,is_archived,has_unmerged_saves,has_uncommitted_changes,tip,ledger_tip,is_checked_out}...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
 | `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
-| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false,settle=null}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
+| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false,from_remote=null,settle=null}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400. With `from_remote` the route calls `start_from_default` (below) in place of `create_working_branch`, and `at` or `move` beside it is 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
@@ -907,6 +907,23 @@ refspecs, so Haute never implicitly advances it. A non-empty remote without the 
 default, an unrelated history, or an inspection/fetch failure raises a domain or sanitized
 git error before either pair ref is published. Haute does not configure the remote host's
 repository-level default-branch setting.
+
+`start_from_default(name, remote, project_root)` (`_git_remote.py`, a serialized mutation)
+starts the working branch *name* where *remote*'s default branch is now and opens it. It
+applies the new-branch name checks `create_working_branch` applies
+(`_assert_new_branch_name`, `_validate_ref_name`, `_assert_eligible_working`, neither the
+name nor its ledger existing), refuses an unknown remote and a git operation in progress,
+then fetches the remote's namespace (`_fetch_refs`, under `_fetch_exec_lock`; a failure is
+`_refresh_failed`), reads its advertisement (`_inspect_remote`; no object ref is a domain
+error) and resolves the default with `_resolve_push_default`, the rule Push uses, so the
+branch starts at the commit Push validates against. That commit must share history with
+`HEAD` ("The remote default and local working history are unrelated." otherwise).
+`_assert_way_clear(..., leaving=True)` then names files changed outside Haute, and one
+`Operation("create-branch")` writes `refs/heads/<name>` and its ledger at the commit with
+`labels_to_adopt(remote, tip)`, checks the ledger out and records the working branch; an
+interruption is put back or finished like any other recorded operation. The local default
+branch and the pair left are never written. It answers a `GitCreateWorkingBranchResponse`
+with `switched=true`, `moved=false` and the commit as `last_save_sha`.
 
 After preflight, `_tag_collisions` still checks `version/*` labels (best-effort — git's tag
 rejection remains the backstop). Then, after the bootstrap's default push when there is one,
