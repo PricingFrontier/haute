@@ -287,14 +287,19 @@ Out of scope:
   hold on Azure: as the new revision is made, Azure starts the old one again to serve until
   the new one is ready.) The rollout waits until Azure names the new revision the app's latest
   ready one, which is when it takes the requests: a revision Azure calls provisioned is not
-  serving yet. Azure's update and that wait together have ten minutes, and only their end
-  fails the wait. A revision Azure reports failed or degraded is not ready yet, and is never
+  serving yet. Azure's update and that wait together have ten minutes. Their end fails the
+  wait, and so does Azure giving up on the revision: one it reports as having failed to
+  activate fails at once, since Azure starts no replica of it again. (Seen once, on the
+  rehearsal of a release that could not start: Azure reported it activating for five
+  minutes, the tries its startup probe has, then `ActivationFailed`, and went on reporting
+  that.) Nothing else fails the wait before its end. A revision Azure reports failed or degraded is not ready yet, and is never
   taken for ready while it is so reported, but the report alone fails nothing: Azure reports
   a healthy revision failed for the seconds it restarts one of its containers, as it does
   when a health probe of its own did not complete, and running again after. One still
   reported so when the ten minutes end fails, saying what Azure reports. The cost is stated:
-  a release that cannot start is reported after the ten minutes, not at once, the release
-  before it serving throughout; and a revision Azure made ready and then reports unhealthy
+  a release that cannot start is reported when Azure gives up on it, five minutes on the
+  rehearsal, or at the ten minutes when Azure reports nothing of the kind, and not at once,
+  the release before it serving throughout; and a revision Azure made ready and then reports unhealthy
   to the end has taken the app's requests until then, since Azure stops the revision before
   it once it has switched. An app whose latest revision is active and provisioned on
   the image already is not rolled again: a re-run waits on it the same way, checks it and

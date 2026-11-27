@@ -965,8 +965,9 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
   A rollout starts the new release beside the one the app runs, which keeps taking quotes
   until the new one is ready: the app is not taken down to be updated, and a release
-  that never becomes ready never takes a quote. The rollout gives it ten minutes, so a
-  release that cannot start fails the run after those, not at once. Azure then moves every
+  that never becomes ready never takes a quote. A release that cannot start fails the
+  run when Azure gives up on it, after about five minutes, or after the rollout's ten at
+  most, not at once. Azure then moves every
   request to the new release and stops the old one. The rollout then checks the app: the new release itself
   answers, it signs no one in but through Azure, and its quotes are open. A release that
   fails its check is replaced by the one before it, having taken the app's requests while

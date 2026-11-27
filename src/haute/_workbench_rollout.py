@@ -100,6 +100,10 @@ _MICROSOFT_LOGIN = "login.microsoftonline.com"
 _PROVISIONED = "Provisioned"
 _FAILED_PROVISIONING = frozenset({"Failed"})
 _FAILED_RUNNING = frozenset({"Failed", "Degraded"})
+#: Running states that are Azure's own verdict that it gave up starting a revision, which
+#: then has no replica: seen of a release that could not start, five minutes after it was
+#: made and from then on. Never seen of a container Azure was restarting.
+_GAVE_UP_RUNNING = frozenset({"ActivationFailed"})
 
 
 class RolloutError(WorkbenchError):
@@ -469,11 +473,13 @@ def _wait_serving(
     yet: in single revision mode the one before it takes every request until this one is
     ready (measured: provisioned 9 seconds after the update, latest ready after 38).
 
-    Only the *deadline* (*budget* seconds) fails the wait. A failed or degraded report is not
-    ready yet, never a verdict and never a pass: Azure reports a healthy revision so for the
-    seconds it restarts one of its containers, and running again after. The failure names
-    the states last read and the revision Azure still serves, or, for the latest ready
-    revision still reported unhealthy, that. Answers the revision.
+    The *deadline* (*budget* seconds) fails the wait, and so does Azure giving up on the
+    revision (:data:`_GAVE_UP_RUNNING`), at once: it starts no replica of it again. Nothing
+    else does. A failed or degraded report is not ready yet, never a verdict and never a
+    pass: Azure reports a healthy revision so for the seconds it restarts one of its
+    containers, and running again after. The failure names the states last read and the
+    revision Azure still serves, or, for the latest ready revision still reported
+    unhealthy, that. Answers the revision.
 
     Nothing is read once the deadline has passed, unless nothing was read yet: the host's
     bound ends with it and refuses a request asked after. A reading the bound cut short, one
@@ -493,6 +499,12 @@ def _wait_serving(
             else:
                 revision, serving = read, sent
         assert revision is not None
+        if revision.running in _GAVE_UP_RUNNING:
+            raise RolloutError(
+                f"The revision {name} did not start: Azure gave up on it (provisioning "
+                f"{revision.provisioning}, running {revision.running}) and still sends the "
+                f"app's requests to {serving or 'no revision'}."
+            )
         unhealthy = (
             revision.provisioning in _FAILED_PROVISIONING or revision.running in _FAILED_RUNNING
         )
