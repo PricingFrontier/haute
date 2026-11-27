@@ -135,14 +135,17 @@ def _reached(admin: Engine, clock: Clock = _CLOCK) -> Connection:
         try:
             return admin.connect()
         except Exception as refusal:
-            if not unreached(refusal):
-                raise
-            if clock.now() >= deadline:
+            # Only a server that refuses the connection or never answers is waited on, and
+            # only to the deadline; anything else is raised on as it is.
+            if unreached(refusal):
+                if clock.now() < deadline:
+                    clock.sleep(SERVER_POLL_SECONDS)
+                    continue
                 raise AppTestError(
                     "The server did not take the run's connection within "
                     f"{int(SERVER_READY_SECONDS)} seconds: {refusal}"
                 ) from refusal
-            clock.sleep(SERVER_POLL_SECONDS)
+            raise
 
 
 @contextlib.contextmanager

@@ -731,6 +731,29 @@ def test_the_deadlines_failure_keeps_its_states_when_the_bound_ends_between_two_
     assert f"The previous release ({OLD}) runs again" in message
 
 
+def test_a_read_of_azure_that_fails_before_the_deadline_is_the_rollouts_failure() -> None:
+    """The wait keeps its last whole reading only once its deadline has passed: a read that
+    fails before it is the failure itself, said at once, not waited out to the ten minutes."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.ready_after = 2
+    reads: list[float] = []
+
+    def throttled_once(read: FakeHost) -> None:
+        reads.append(ticks.t)
+        # The rollout's first read, the wait's first, then this one.
+        if len(reads) == 3:
+            raise RolloutError("Azure could not read the app: throttled")
+
+    host.on_state = throttled_once
+
+    with pytest.raises(RolloutError, match="Azure could not read the app: throttled") as failed:
+        _roll(host, FakeApp(), clock=ticks.clock())
+
+    assert reads[2] == rollouts.POLL_SECONDS
+    assert f"The previous release ({OLD}) runs again" in str(failed.value)
+
+
 def test_a_re_run_bounds_azure_to_its_wait_as_a_rollout_does() -> None:
     host = FakeHost(image=NEW)
 
@@ -1226,6 +1249,16 @@ def test_a_re_run_with_a_mismatch_at_an_address_another_revision_answers_records
     assert not isinstance(failed.value, QuotesClosedError)
     assert "Nothing was changed" in str(failed.value)
     assert host.calls == []
+
+
+def test_a_re_run_that_finds_a_mismatch_records_it_with_the_hosts_bound_lifted() -> None:
+    host = FakeHost(image=NEW)
+
+    with pytest.raises(QuotesClosedError):
+        _roll(host, FakeApp(quotes=dict(_MISMATCH)))
+
+    assert host.calls == [("record", NEW, "rel-1", COMMIT)]
+    assert host.limits == [600, None]
 
 
 def test_another_change_made_latest_before_the_guard_looks_is_never_undone() -> None:

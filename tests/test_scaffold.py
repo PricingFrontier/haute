@@ -2035,6 +2035,21 @@ class TestAzureDevOpsSignsInThroughAServiceConnection:
                 assert uses_service_connection(target, ci) is connected, (target, ci)
                 assert (ci_secret_names(target, ci) == []) is connected, (target, ci)
 
+    def test_a_name_that_is_not_text_is_refused_saying_what_it_is(self) -> None:
+        from haute._scaffold import runner_problem, service_connection_problem
+
+        assert runner_problem(5) == "is 5: a runner's name must be a string"
+        assert (
+            service_connection_problem(["haute-azure"])
+            == "is ['haute-azure']: a service connection's name must be a string"
+        )
+
+    def test_a_host_without_a_service_connection_has_no_azure_devops_app_pipeline(self) -> None:
+        from haute._scaffold import _azure_devops_app_yml
+
+        with pytest.raises(ValueError, match="Azure DevOps has no sign-in for the app host"):
+            _azure_devops_app_yml("databricks", None, "haute-azure")
+
     def test_every_step_that_reaches_azure_is_a_task_under_the_connection(self) -> None:
         text = self._workbench()
         tasks = [
