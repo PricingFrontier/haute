@@ -555,14 +555,32 @@ def _refresh_failed(remote: str) -> GitRemoteUnavailableError:
     )
 
 
+#: What git's own client answers, before it sends a ref, when a host takes no atomic push
+#: (Azure Repos): in English, since every git command runs under ``_GIT_LOCALE_ENV``.
+_NOT_ATOMIC = "the receiving end does not support --atomic push"
+
+
 def _could_not_push(remote: str) -> GitRemoteUnavailableError:
     return GitRemoteUnavailableError(
         f"Could not push to '{remote}'. Check your connection or credentials and try again."
     )
 
 
-def _push_failed(remote: str, stderr: str) -> GitDomainError:
-    """Why a push failed for something other than diverged history, in the analyst's words."""
+def _branch_not_sent(remote: str, working: str) -> str:
+    """A working branch that could not be sent after its ledger landed in the same Push."""
+    return (
+        f"Your save history is on '{remote}', but the branch '{working}' could not be "
+        "pushed. Check your connection or credentials and push again to finish."
+    )
+
+
+def _push_failed(remote: str, stderr: str, *, unpublished: str | None = None) -> GitDomainError:
+    """Why a push failed for something other than diverged history, in the analyst's words.
+
+    *unpublished* is the working branch when its ledger landed in this Push before it, on a
+    host without atomic pushes: nothing then says that nothing was published. A failure
+    recognised by none of git's words is not put down to the connection alone: its incident
+    holds what git said."""
     if "(stale info)" in stderr:
         # The bootstrap's create-only lease: the default appeared since inspection. The
         # next push finds an established remote, so this passes like a transport failure.
@@ -572,12 +590,25 @@ def _push_failed(remote: str, stderr: str) -> GitDomainError:
         )
     if "[remote rejected]" in stderr:
         incident = record_incident(event="git_push_rejected", remote=remote, stderr=stderr)
-        return GitDomainError(
-            f"'{remote}' refused the push, so nothing was published and your work is "
-            f"unchanged. Its reason, for example a branch rule or missing write access, is "
-            f"recorded under incident {incident}."
+        refused = (
+            f"'{remote}' refused the push, so nothing was published"
+            if unpublished is None
+            else f"'{remote}' took your save history but refused the branch '{unpublished}', "
+            "so the branch is not published yet"
         )
-    return _could_not_push(remote)
+        return GitDomainError(
+            f"{refused} and your work is unchanged. Its reason, for example a branch rule or "
+            f"missing write access, is recorded under incident {incident}."
+        )
+    incident = record_incident(event="git_push_unrecognised", remote=remote, stderr=stderr)
+    said = (
+        str(_could_not_push(remote))
+        if unpublished is None
+        else _branch_not_sent(remote, unpublished)
+    )
+    return GitRemoteUnavailableError(
+        f"{said} Git's own message is recorded under incident {incident}."
+    )
 
 
 def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str | None, bool]:
@@ -826,12 +857,28 @@ def _create_remote_default(
 
 
 def _bootstrap_incomplete(
-    remote: str, default: str, *, refused: bool
+    remote: str, default: str, *, refused: bool, unpublished: str | None = None
 ) -> GitBootstrapIncompleteError:
-    """The hand-written error for a bootstrap whose default landed but whose pair did not."""
+    """The hand-written error for a bootstrap whose default landed but whose pair did not:
+    neither of the pair, or on a host without atomic pushes the working branch *unpublished*
+    alone, its ledger having landed."""
     incident = record_incident(
         event="git_bootstrap_incomplete", remote=remote, branch=default, refused=refused
     )
+    if unpublished is not None:
+        outcome = (
+            f"'{remote}' refused the branch '{unpublished}'. Nothing was overwritten and "
+            "your work is unchanged. Try again; if it fails the same way, its reason (for "
+            "example a branch rule or missing write access) is recorded under incident "
+            f"{incident}."
+            if refused
+            else f"Haute could not confirm that the branch '{unpublished}' was published. "
+            "Nothing was overwritten and your work is unchanged. Try again to finish."
+        )
+        return GitBootstrapIncompleteError(
+            f"'{default}' is now on '{remote}' as your merge target and your save history "
+            f"is published, but {outcome}"
+        )
     if refused:
         outcome = (
             f"'{remote}' did not accept your branch and save history. Nothing was "
@@ -853,7 +900,8 @@ def _bootstrap_incomplete(
 def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
     """Deliberately publish managed history to an existing *remote*.
 
-    The working branch and optional ledger always travel in one atomic push. A
+    The working branch and optional ledger travel in one atomic push, or on a host that
+    takes none (Azure Repos) in two ordinary ones, the ledger first. A
     successfully inspected empty remote first receives the resolved default branch
     on its own, in a single-ref create-only push (:func:`_create_remote_default`).
     An established remote receives only the pair after its default has been
@@ -915,9 +963,9 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
     # annotated version/<label> tags reachable from the pushed commits (X4: labels
     # travel with the work they mark). The pair push never names the default and
     # carries no lease, so no existing ref can be force-updated (S33).
-    refspecs = [f"{working_sha}:refs/heads/{working}"]
-    if ledger_sha is not None:
-        refspecs.append(f"{ledger_sha}:refs/heads/{ledger}")
+    working_refspec = f"{working_sha}:refs/heads/{working}"
+    ledger_refspec = None if ledger_sha is None else f"{ledger_sha}:refs/heads/{ledger}"
+    refspecs = [working_refspec] + ([] if ledger_refspec is None else [ledger_refspec])
 
     if bootstrapping:
         if default_sha is None:  # guarded above; keep the snapshot invariant explicit
@@ -926,11 +974,32 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
         # validated against default_sha above, and this publishes exactly that commit.
         _create_remote_default(remote, default, default_sha, cwd=cwd)
 
+    from haute._git_state import record_pushed_shas
+
+    # The working branch, once its ledger has landed in this Push ahead of it: only a host
+    # without atomic pushes can leave that, and what is said of a failure then names it.
+    unpublished: str | None = None
     try:
         result = _run_push(remote, ["--atomic", "--follow-tags"], refspecs, cwd=cwd)
+        if result.returncode != 0 and _NOT_ATOMIC in result.stderr:
+            # Git ended that push itself, before it sent a ref. The pair goes in order
+            # instead, the ledger first: a ledger without its branch is the one half-way
+            # state there can be, which nothing opens and the next Push completes.
+            logger.info("git_push_host_not_atomic", remote=remote)
+            if ledger_refspec is not None and ledger_sha is not None:
+                result = _run_push(remote, ["--follow-tags"], [ledger_refspec], cwd=cwd)
+                if result.returncode == 0:
+                    record_pushed_shas(project_root, {f"{remote}/{ledger}": ledger_sha})
+                    unpublished = working
+            if ledger_refspec is None or unpublished is not None:
+                result = _run_push(remote, ["--follow-tags"], [working_refspec], cwd=cwd)
     except GitError as exc:
         if bootstrapping:
-            raise _bootstrap_incomplete(remote, default, refused=False) from exc
+            raise _bootstrap_incomplete(
+                remote, default, refused=False, unpublished=unpublished
+            ) from exc
+        if unpublished is not None:
+            raise GitRemoteUnavailableError(_branch_not_sent(remote, unpublished)) from exc
         raise
     if result.returncode != 0:
         stderr = result.stderr.strip()
@@ -944,14 +1013,12 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             # Only an explicit refusal proves the pair did not land: git also exits
             # non-zero when the connection drops after the remote applied the refs.
             refused = "[remote rejected]" in stderr
-            raise _bootstrap_incomplete(remote, default, refused=refused)
-        raise _push_failed(remote, stderr)
+            raise _bootstrap_incomplete(remote, default, refused=refused, unpublished=unpublished)
+        raise _push_failed(remote, stderr, unpublished=unpublished)
 
     pushed = ([default] if bootstrapping else []) + [working] + ([ledger] if ledger_exists else [])
     # X3 robustness (§6.8): record the tips we just published so rewrite detection
     # survives a pruned reflog (keyed <remote>/<ref>).
-    from haute._git_state import record_pushed_shas
-
     pushed_shas = {f"{remote}/{working}": working_sha}
     if ledger_sha is not None:
         pushed_shas[f"{remote}/{ledger}"] = ledger_sha

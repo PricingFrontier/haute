@@ -178,8 +178,9 @@ target is created as the work is shared. The first push carries the default alon
 GitHub never triggers workflows in a repository whose first push created several branches. A
 create-only lease on the default ref makes that bootstrap a compare-and-create: a default
 branch that appears after inspection is never advanced or replaced. If the pair push then
-fails, the remote holds only the default and Haute says so in its own words; the next Push
-publishes the pair.
+fails, the remote holds only the default (on a host without atomic pushes, the default and
+perhaps the save ledger) and Haute says so in its own words; the next Push publishes the
+pair.
 
 For a non-empty remote, the expected default branch must already exist. Haute fetches that
 ref and validates that it shares history with the local working line before publishing the
@@ -188,11 +189,25 @@ branch. A non-empty remote missing the expected default, an unrelated default hi
 an inspection/fetch failure refuses before publication; the atomic push guarantees that a
 later ref rejection cannot leave only part of the submitted set behind. The push subprocess
 itself is prompt-proof and time-bounded, so a wedged transport cannot retain the repository
-mutation lock indefinitely; a timeout, launch failure or transport error answers "Could not
+mutation lock indefinitely; a timeout or launch failure answers "Could not
 push to '<remote>'. Check your connection or credentials and try again.", and a remote that
-refuses the refs (a branch rule, missing write access) says it refused the push. A
+refuses the refs (a branch rule, missing write access) says it refused the push. A push git
+ends for a reason Haute does not recognise answers the could-not-push words too, and adds the
+incident git's own message is recorded under, so the cause can be found when the connection
+and the credentials are fine. A
 working/ledger non-fast-forward rejection still surfaces as a structured "fork" the UI can
 explain (which leg diverged, by how much) rather than a dead-end error. No path force-pushes.
+
+Not every host takes an atomic push: Azure Repos answers that the receiving end does not
+support one, before any branch is sent. Such a host is published to in two ordinary pushes,
+the save ledger first and the working branch after it, each a plain non-force update of one
+branch. The order leaves one half-way state, and a harmless one: the ledger on the remote
+without its working branch, which no pull request can be opened from and no branch chooser
+lists, and which the next Push completes. A ledger the host does not take ends the Push with
+nothing published, as on any host. A working branch it does not take after the ledger landed
+is said as that: a fork is the same structured rejection, naming the working branch, and a
+refusal or a failure says the save history was published and the branch was not. No message
+says nothing was published when the ledger was.
 
 A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
 forward; anything else is refused so the user spins off a copy instead of triggering a

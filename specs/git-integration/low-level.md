@@ -920,10 +920,30 @@ ceiling; `TimeoutExpired` and process-launch `OSError` become `GitRemoteUnavaila
 bootstrap's pair push, `GitBootstrapIncompleteError`), after which the repository mutation
 lock is released. A push's other non-zero exit, outside the structured rejection below, goes
 through `_push_failed`: `[remote rejected]` (a hook or branch rule) answers "'<remote>'
-refused the push, so nothing was published and your work is unchanged. The Haute server log
-has its reason, for example a branch rule or missing write access.", the lease's `(stale
-info)` the message above, and anything else the could-not-push message. The working/ledger pair is always atomic, so one pair
-ref never lands without the other. A bootstrap default-push rejection, including a
+refused the push, so nothing was published and your work is unchanged. Its reason, for
+example a branch rule or missing write access, is recorded under incident <id>.", the
+lease's `(stale info)` the message above, and anything else the could-not-push message
+followed by "Git's own message is recorded under incident <id>." (`record_incident`, event
+`git_push_failed`, with the stderr). On a host that takes an atomic push the working/ledger
+pair is atomic, so one pair ref never lands without the other.
+
+A host that takes none makes git end the atomic push itself, before it sends a ref, with
+`the receiving end does not support --atomic push` (`_NOT_ATOMIC`; git's messages are in
+English under `_GIT_LOCALE_ENV`). `_push_pair_in_order` then publishes the same pinned
+refspecs through `_run_push` with `--follow-tags`, one push each: the ledger's when there is
+one, and the working branch's only after it succeeded. It answers the last push's result and
+whether the ledger landed in this Push, and each leg's tip is recorded
+(`record_pushed_shas`) as it lands. A ledger push that fails is handled as a failed atomic
+push is, since nothing landed. A working push that fails after the ledger landed is
+`_push_rejection` for a non-fast-forward, as ever; for `[remote rejected]`, "'<remote>' took
+your save history but refused the branch '<working>', so the branch is not published yet
+and your work is unchanged. Its reason, for example a branch rule or missing write access,
+is recorded under incident <id>."; and for anything else, a timeout or launch failure
+included, "Your save history is on '<remote>', but the branch '<working>' could not be
+pushed. Check your connection or credentials and push again to finish.", with the incident
+sentence when git ended it. During a bootstrap those two take the default's opening, "'<default>'
+is now on '<remote>' as your merge target and your save history is published, but ...",
+as a `GitBootstrapIncompleteError`. A bootstrap default-push rejection, including a
 different-SHA default winning the create-only race, follows a safe non-409 push-failure path
 and is never misreported as working/ledger divergence. A
 working/ledger non-fast-forward failure (`non-fast-forward` / `fetch first` / `[rejected]`
@@ -1151,7 +1171,8 @@ without replacing a successfully parsed response with a cleanup error.
   up-to-date no-op and safely coexist with successful pair publication. The initialising push
   carries the default alone; the pair push's atomicity prevents a failure from creating one
   pair ref without the other, and a bootstrap whose pair push fails leaves only the validated
-  default, which the next Push treats as an established remote.
+  default, which the next Push treats as an established remote. A host without atomic pushes
+  can also be left holding the ledger, never the working branch alone.
 - **Rename detection in ledger-save history** — `_parse_ledger_saves` runs `git log -M
   --name-status` so a renamed config file shows as one rename entry, not a delete+add pair.
 - **Unicode / space-containing paths in log output** — `core.quotepath=false` is passed
