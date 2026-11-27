@@ -367,7 +367,13 @@ Out of scope:
   minutes, and an app's answers can outlast them), and reads each app's release and form
   revision from `/api/app/release` and its
   form from `/api/app/form`; an app that cannot be reached or refuses the service principal,
-  or whose quotes are closed, stops the run, which fails. When production has no
+  or whose quotes are closed, stops the run, which fails. An app its host has scaled to
+  nothing starts as it is asked, and its first answer can take longer than a request has
+  (seen on the rehearsal: forty-three seconds before Azure had so much as started the
+  container of a production app left idle): the first request to each app is asked again
+  while no server answers, for five minutes at most, and only then is the app one that
+  cannot be reached. Once an app has answered, a request it leaves unanswered stops the run
+  as before. When production has no
   `haute-release` tag it has never been rolled out: there is no baseline, production is not
   reached, and the candidate answers only for the test quotes `haute app build` scored in the
   validate job. A production app whose record is incomplete (one or two of `haute-image`,

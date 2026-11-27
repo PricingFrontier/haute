@@ -45,6 +45,9 @@ from haute._workbench_rollout import (
 
 #: The whole run, every request and wait included.
 IMPACT_TIMEOUT_SECONDS = 600
+#: How long an app's first answer of a run is asked for while no server answers: an app its
+#: host has scaled to nothing starts as it is asked, and takes longer than one request has.
+START_TIMEOUT_SECONDS = 300
 #: The quotes priced unless ``--sample`` says otherwise, and the most it takes.
 DEFAULT_SAMPLE = 100
 MAX_SAMPLE = 1_000
@@ -247,11 +250,14 @@ class _Budget:
             answer = call()
             if answer.status != 503 or attempt == BUSY_TRIES - 1:
                 return answer
-            wait = _wait(answer.retry_after)
-            if self.clock.now() + wait >= self.deadline:
-                raise _OutOfTimeError
-            self.clock.sleep(wait)
+            self.wait(_wait(answer.retry_after))
         raise AssertionError("unreachable")
+
+    def wait(self, seconds: float) -> None:
+        """Wait *seconds*; :class:`_OutOfTimeError` when the deadline would pass meanwhile."""
+        if self.clock.now() + seconds >= self.deadline:
+            raise _OutOfTimeError
+        self.clock.sleep(seconds)
 
 
 def _wait(retry_after: str | None) -> float:
@@ -278,17 +284,33 @@ def _token(environment: str, host: AppReader, state: AppState, budget: _Budget) 
     return host.token(state.client_id)
 
 
+def _first_answer(call: Callable[[], HttpAnswer], budget: _Budget) -> HttpAnswer:
+    """An app's first answer of the run. An app its host has scaled to nothing starts as it
+    is asked, and the request can time out before it has: while no server answers, the app
+    is asked again every :data:`rollouts.POLL_SECONDS`, for :data:`START_TIMEOUT_SECONDS` at
+    most and within the run's deadline. Any answer is the app's and is answered as it
+    comes; a request left unanswered once an app has answered is not asked again, and
+    stops the run."""
+    until = budget.clock.now() + START_TIMEOUT_SECONDS
+    while True:
+        answer = budget.ask(call)
+        if answer.status != 0 or budget.clock.now() >= until:
+            return answer
+        budget.wait(rollouts.POLL_SECONDS)
+
+
 def _side(environment: str, state: AppState, token: str, get: Fetch, budget: _Budget) -> Side:
     """*environment*'s app as the impact reaches it, signed in with *token*, its quotes open;
     refused, naming the environment, when it cannot be."""
     assert state.address is not None
     signed = {"Authorization": f"Bearer {token}"}
     base = f"https://{state.address}"
-    release = budget.ask(lambda: get(f"{base}/api/app/release", signed))
+    release = _first_answer(lambda: get(f"{base}/api/app/release", signed), budget)
     if release.status != 200:
+        asked = f", asked for {START_TIMEOUT_SECONDS} seconds" if release.status == 0 else ""
         raise ImpactError(
             f"Signed in as the CI service principal, {environment}'s app answered "
-            f"{_reason(release)}."
+            f"{_reason(release)}{asked}."
         )
     body = _body(release)
     if not _named(body.get("id")) or not _named(body.get("form_revision")):

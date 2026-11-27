@@ -996,7 +996,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   names that incident and the app whose log holds what failed, so you can find it there.
 
   A price that moves never fails the run. The run fails when staging fails on a quote
-  production prices, or when an app can't be reached. Before production's first release
+  production prices, or when an app can't be reached; an app Azure has scaled to nothing is
+  given five minutes to start. Before production's first release
   there is nothing to compare against, and the report says so. The report names quotes by
   reference and option and holds output values, never what was typed, but anyone who can
   read the repository's runs can read it.

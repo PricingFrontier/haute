@@ -381,6 +381,68 @@ def test_a_busy_app_is_asked_again_after_a_capped_wait() -> None:
     assert report.quotes[0].outcome == "moved"
 
 
+@pytest.mark.parametrize("which", ["prod", "staging"])
+def test_an_app_that_gives_no_answer_at_first_is_asked_again_until_it_does(which: str) -> None:
+    """An app its host has scaled to nothing starts as it is asked, and takes longer than one
+    request has: its first request is asked again, and the run then compares as ever."""
+    apps = _apps(count=2)
+    starting = HttpAnswer(0, b"The read operation timed out")
+    getattr(apps, which).queued["/api/app/release"] = [starting] * 3
+    clock = FakeClock()
+
+    report = _run(apps, clock=clock)
+
+    assert (report.verdict, report.passed) == ("compared", True)
+    assert [quote.outcome for quote in report.quotes] == ["moved"] * 2
+    assert clock.slept == [rollouts.POLL_SECONDS] * 3
+
+
+def test_an_app_that_never_answers_is_refused_after_its_time_to_start() -> None:
+    apps = _apps(count=2)
+    apps.prod.queued["/api/app/release"] = [HttpAnswer(0, b"timed out")] * 100
+    clock = FakeClock()
+
+    report = _run(apps, clock=clock)
+
+    assert (report.verdict, report.passed) == ("stopped", False)
+    assert "prod's app answered no answer: timed out, asked for 300 seconds" in str(report.why)
+    assert sum(clock.slept) == impacts.START_TIMEOUT_SECONDS
+    assert not report.quotes
+
+
+def test_the_runs_deadline_passing_as_an_app_starts_stops_it_as_out_of_time() -> None:
+    """Two apps started from nothing can use the whole run between them, requests taking time
+    as waits do: the run's own deadline still holds, and ends the asking."""
+    apps = _apps(count=2)
+    unanswered = HttpAnswer(0, b"timed out")
+    # Staging answers on its eighth request, 310 seconds in, each taking the thirty seconds
+    # a request has; production, refusing its connections in twelve, never answers.
+    apps.staging.queued["/api/app/release"] = [unanswered] * 7
+    apps.prod.queued["/api/app/release"] = [unanswered] * 100
+    clock = FakeClock()
+
+    def taking_time(url: str, headers: Mapping[str, str]) -> HttpAnswer:
+        if url.endswith("/api/app/release"):
+            clock.t += rollouts.REQUEST_TIMEOUT_SECONDS if STAGING in url else 12
+        return apps.get(url, headers)
+
+    report = impact(
+        FakeHost(PROD),
+        FakeHost(STAGING),
+        sample=100,
+        say=lambda _: None,
+        get=taking_time,
+        send=apps.send,
+        clock=clock.clock(),
+    )
+
+    assert (report.verdict, report.passed) == ("stopped", False)
+    assert "ran out of time" in str(report.why)
+    # No wait was taken past the deadline; the last request, begun before it, could finish.
+    assert clock.t < impacts.IMPACT_TIMEOUT_SECONDS + rollouts.REQUEST_TIMEOUT_SECONDS
+    assert max(clock.slept) == rollouts.POLL_SECONDS
+
+
 def test_an_app_still_busy_after_its_tries_stops_the_run() -> None:
     apps = _apps(count=2)
     apps.staging.queued["/api/app/price"] = [_refused(503, "busy")] * impacts.BUSY_TRIES
