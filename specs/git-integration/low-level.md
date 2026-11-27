@@ -941,17 +941,30 @@ refused the push, so nothing was published and your work is unchanged. Its reaso
 example a branch rule or missing write access, is recorded under incident <id>.", the
 lease's `(stale info)` the message above, and anything else the could-not-push message
 followed by "Git's own message is recorded under incident <id>." (`record_incident`, event
-`git_push_failed`, with the stderr). On a host that takes an atomic push the working/ledger
-pair is atomic, so one pair ref never lands without the other.
+`git_push_unrecognised`, with the stderr; a refusal's event is `git_push_rejected`). On a
+host that takes an atomic push the working/ledger pair is atomic, so one pair ref never
+lands without the other.
 
 A host that takes none makes git end the atomic push itself, before it sends a ref, with
 `the receiving end does not support --atomic push` (`_NOT_ATOMIC`; git's messages are in
 English under `_GIT_LOCALE_ENV`). `_push_pair_in_order` then publishes the same pinned
-refspecs through `_run_push` with `--follow-tags`, one push each: the ledger's when there is
-one, and the working branch's only after it succeeded. It answers the last push's result and
-whether the ledger landed in this Push, and each leg's tip is recorded
-(`record_pushed_shas`) as it lands. A ledger push that fails is handled as a failed atomic
-push is, since nothing landed. A working push that fails after the ledger landed is
+commits through `_run_push`, each push naming exactly the refs it sends
+(`--no-follow-tags`, since without atomicity a tag that followed a branch could land, or be
+refused, apart from it): the ledger's branch when there is one, the working branch only
+after it succeeded, and last, in one push of their own, the version labels on the working
+branch's history (`_labels_on`: the annotated `refs/tags/version/*` tags merged into its
+commit, what `--follow-tags` carries with an atomic push). It stops at the first push that
+fails and answers that push's result; each branch is added to the caller's `landed` list,
+and its tip recorded (`record_pushed_shas`), as it lands, so what is published is known
+even when a later push raises. A ledger push that fails is handled as a failed atomic
+push is, since nothing landed. A labels push that fails leaves the pair published and
+recorded, and says so (`_labels_failed`): a refusal, "Your branch and save history are on
+'<remote>', but '<remote>' did not take its version labels. Its reason, for example a
+label of that name already there, is recorded under incident <id>."; anything else, a
+timeout or launch failure included, "Your branch and save history are on '<remote>', but
+its version labels could not be pushed. Check your connection or credentials and push
+again to finish.", with the incident sentence when git ended it. The next Push sends them.
+A working push that fails after the ledger landed is
 `_push_rejection` for a non-fast-forward, as ever; for `[remote rejected]`, "'<remote>' took
 your save history but refused the branch '<working>', so the branch is not published yet
 and your work is unchanged. Its reason, for example a branch rule or missing write access,

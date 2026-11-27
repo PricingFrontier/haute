@@ -194,17 +194,27 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   }
 
   // A branch started where a remote's default branch is now: the next change once a pull
-  // request has merged. It opens the new branch, so unsaved edits are asked about first.
-  const doCreateFromDefault = (name: string, remote: string) =>
-    run(name, "create branch", clearingTheWay((...settled) => createWorkingBranch(name, { fromRemote: remote }, ...settled)), (_, here) => {
-      addToast("success", `Created ${name} from ${remote}`)
-      here.apply(() => setNewBranch(""))
-    }, { reloadWhen: (res) => res.switched === true })
-
+  // request has merged. It opens the new branch as a switch does, in the app: unsaved edits
+  // are asked about first, and the checkout lands on the canvas through the sync. It reads
+  // the remote, which takes time, so what is dropped is what was chosen over when it was
+  // asked: an edit made while it ran keeps every unsaved edit.
   const onCreateFromDefaultClick = (remote: string) => {
     const name = newBranch.trim()
     setCreateMenuOpen(false)
-    if (name) navigation.guard(() => { void doCreateFromDefault(name, remote) })
+    if (!name) return
+    navigation.guard(() => {
+      const chosenOver = ask(chosenOverParts())
+      void run(name, "create branch", clearingTheWay((...settled) => createWorkingBranch(name, { fromRemote: remote }, ...settled)), (_, here, asked) => {
+        const drop = chosenOver.current()
+        if (drop) discardCanvasEdits()
+        return asked.answer(drop ? discardFormEdits() : Promise.resolve(), {
+          ok: () => {
+            addToast("success", `Created ${name} from ${remote}`)
+            here.apply(() => setNewBranch(""))
+          },
+        })
+      }).finally(() => chosenOver.release())
+    })
   }
 
   // The remotes the menu offers to start from, read when it opens. A read that fails

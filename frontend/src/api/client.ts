@@ -2565,7 +2565,8 @@ export function createWorkingBranch(
   return post<unknown>(
     "/api/git/working-branches",
     { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false, from_remote: opts.fromRemote ?? null, ...settled(settle) },
-    options,
+    // From a remote it fetches, which the server bounds, as it does Catch up's.
+    opts.fromRemote ? { ...UNBOUNDED_BY_THE_BROWSER, ...options } : options,
   ).then(async (data) => expectGeneratedContract("GitCreateWorkingBranchResponse", (await gitValidators()).validateGitCreateWorkingBranchResponse, data))
 }
 

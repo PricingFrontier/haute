@@ -207,7 +207,10 @@ lists, and which the next Push completes. A ledger the host does not take ends t
 nothing published, as on any host. A working branch it does not take after the ledger landed
 is said as that: a fork is the same structured rejection, naming the working branch, and a
 refusal or a failure says the save history was published and the branch was not. No message
-says nothing was published when the ledger was.
+says nothing was published when the ledger was. Version labels, which an atomic push
+carries with the pair, go last on such a host, in a push of their own after the branch
+they mark: none is on the remote without its branch, and labels the host does not take
+leave the pair published, said as that, for the next Push to send.
 
 A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
 forward; anything else is refused so the user spins off a copy instead of triggering a

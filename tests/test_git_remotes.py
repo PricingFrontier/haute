@@ -1057,6 +1057,121 @@ class TestRemotesAndPush:
         assert "SECRET-STDERR" not in said
         assert self._remote_refs(repo, bare) == sorted(["refs/heads/main", f"refs/heads/{LEDGER}"])
 
+    def test_a_version_label_goes_after_its_branch_on_a_host_without_atomic_pushes(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """An atomic push carries the labels with the pair. Without one each ref lands on its
+        own, so the labels go last, in a push of their own: none is on the remote before the
+        branch it marks."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        self._branch_rule(bare, 'echo "$1" >> order.log\nexit 0')
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+
+        push_working_pair("origin", repo, cwd=repo)
+
+        assert (bare / "order.log").read_text().split() == [
+            f"refs/heads/{LEDGER}",
+            f"refs/heads/{WORKING}",
+            "refs/tags/version/1.0",
+        ]
+
+    def test_a_branch_the_host_refuses_takes_no_label_with_it(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        self._refusing(bare, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+
+        with pytest.raises(GitDomainError, match="took your save history but refused the branch"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert self._remote_refs(repo, bare) == sorted(["refs/heads/main", f"refs/heads/{LEDGER}"])
+        assert read_pushed_shas(repo) == {f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER)}
+
+    def test_a_label_the_host_refuses_leaves_the_pair_published_and_says_so(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The branch landed, so it is recorded as pushed and never said to be refused: what
+        is missing is its label, which the next Push sends."""
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        hook = self._branch_rule(
+            bare,
+            'case "$1" in refs/tags/*) echo "tag rule: SECRET-STDERR" >&2; exit 1;; esac\nexit 0',
+        )
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+
+        with pytest.raises(GitDomainError) as refused:
+            push_working_pair("origin", repo, cwd=repo)
+
+        said = str(refused.value)
+        assert said.startswith(
+            "Your branch and save history are on 'origin', but 'origin' did not take its "
+            "version labels. Its reason, for example a label of that name already there, is "
+            "recorded under incident "
+        )
+        assert "SECRET-STDERR" not in said
+        assert self._remote_refs(repo, bare) == sorted(
+            ["refs/heads/main", f"refs/heads/{WORKING}", f"refs/heads/{LEDGER}"]
+        )
+        assert read_pushed_shas(repo) == {
+            f"origin/{WORKING}": _git(repo, "rev-parse", WORKING),
+            f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER),
+        }
+
+        hook.unlink()
+        push_working_pair("origin", repo, cwd=repo)
+
+        assert "refs/tags/version/1.0" in _git(repo, "ls-remote", "--tags", "origin")
+
+    def test_labels_that_cannot_be_sent_after_the_pair_landed_say_what_is_published(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git import GitRemoteUnavailableError
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+        real_run = git_core._run_process_group
+        pushes: list[list[str]] = []
+
+        def lose_the_fourth(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            if cmd[:2] == ["git", "push"]:
+                pushes.append(cmd)
+                # The atomic push git ends, the ledger's, the branch's, then the labels'.
+                if len(pushes) == 4:
+                    raise subprocess.TimeoutExpired(cmd, 1)
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(git_core, "_run_process_group", lose_the_fourth)
+
+        with pytest.raises(GitRemoteUnavailableError) as failed:
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert str(failed.value) == (
+            "Your branch and save history are on 'origin', but its version labels could not "
+            "be pushed. Check your connection or credentials and push again to finish."
+        )
+        assert f"refs/heads/{WORKING}" in self._remote_refs(repo, bare)
+
     def test_a_push_git_ends_for_a_reason_haute_does_not_know_names_its_incident(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

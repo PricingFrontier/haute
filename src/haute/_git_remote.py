@@ -578,6 +578,77 @@ def _branch_not_sent(remote: str, working: str) -> str:
     )
 
 
+def _labels_not_sent(remote: str) -> str:
+    """Version labels that could not be sent after their branch and its ledger landed."""
+    return (
+        f"Your branch and save history are on '{remote}', but its version labels could not "
+        "be pushed. Check your connection or credentials and push again to finish."
+    )
+
+
+def _labels_failed(remote: str, stderr: str) -> GitDomainError:
+    """Why the labels' own push failed, the pair being published: a host without atomic
+    pushes takes them after the branch they mark, so nothing here says the branch was
+    refused."""
+    if "[remote rejected]" in stderr or "[rejected]" in stderr:
+        incident = record_incident(event="git_push_rejected", remote=remote, stderr=stderr)
+        return GitDomainError(
+            f"Your branch and save history are on '{remote}', but '{remote}' did not take "
+            "its version labels. Its reason, for example a label of that name already "
+            f"there, is recorded under incident {incident}."
+        )
+    incident = record_incident(event="git_push_unrecognised", remote=remote, stderr=stderr)
+    return GitRemoteUnavailableError(
+        f"{_labels_not_sent(remote)} Git's own message is recorded under incident {incident}."
+    )
+
+
+def _labels_on(tip: str, cwd: Path | None = None) -> list[str]:
+    """The version labels on *tip*'s history, as tag refs: the annotated ``version/*`` tags an
+    atomic push's ``--follow-tags`` carries with the pair."""
+    listed = _run_git(
+        "for-each-ref",
+        "--format=%(objecttype) %(refname)",
+        f"--merged={tip}",
+        "refs/tags/version/",
+        cwd=cwd,
+    )
+    return [line.split(" ", 1)[1] for line in listed.splitlines() if line.startswith("tag ")]
+
+
+def _push_pair_in_order(
+    remote: str,
+    branches: list[tuple[str, str]],
+    project_root: Path,
+    landed: list[str],
+    cwd: Path | None = None,
+) -> _GitProcessResult[str]:
+    """Publish to a host that takes no atomic push: each of *branches* (name and commit, the
+    ledger first when there is one) in a push of its own, then the version labels on the
+    last one's history in theirs, stopping at the first that fails. Each is one ordinary
+    non-force push of exactly the refs it names (``--no-follow-tags``), so what landed is
+    what its push says landed. A branch is added to *landed*, and its tip recorded as
+    pushed, as it lands, so the caller knows what is published even when a later push
+    raises. Answers the last push's result."""
+    from haute._git_state import record_pushed_shas
+
+    result: _GitProcessResult[str] | None = None
+    for branch, sha in branches:
+        result = _run_push(remote, ["--no-follow-tags"], [f"{sha}:refs/heads/{branch}"], cwd=cwd)
+        if result.returncode != 0:
+            return result
+        record_pushed_shas(project_root, {f"{remote}/{branch}": sha})
+        landed.append(branch)
+    labels = _labels_on(branches[-1][1], cwd)
+    if labels:
+        result = _run_push(
+            remote, ["--no-follow-tags"], [f"{label}:{label}" for label in labels], cwd=cwd
+        )
+    if result is None:  # *branches* always names the working branch
+        raise GitError("no branch was given to push")
+    return result
+
+
 def _push_failed(remote: str, stderr: str, *, unpublished: str | None = None) -> GitDomainError:
     """Why a push failed for something other than diverged history, in the analyst's words.
 
@@ -967,9 +1038,9 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
     # annotated version/<label> tags reachable from the pushed commits (X4: labels
     # travel with the work they mark). The pair push never names the default and
     # carries no lease, so no existing ref can be force-updated (S33).
-    working_refspec = f"{working_sha}:refs/heads/{working}"
-    ledger_refspec = None if ledger_sha is None else f"{ledger_sha}:refs/heads/{ledger}"
-    refspecs = [working_refspec] + ([] if ledger_refspec is None else [ledger_refspec])
+    refspecs = [f"{working_sha}:refs/heads/{working}"]
+    if ledger_sha is not None:
+        refspecs.append(f"{ledger_sha}:refs/heads/{ledger}")
 
     if bootstrapping:
         if default_sha is None:  # guarded above; keep the snapshot invariant explicit
@@ -980,9 +1051,14 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
 
     from haute._git_state import record_pushed_shas
 
-    # The working branch, once its ledger has landed in this Push ahead of it: only a host
-    # without atomic pushes can leave that, and what is said of a failure then names it.
-    unpublished: str | None = None
+    # The pair's branches that landed in this Push, on a host without atomic pushes: a
+    # failure after one of them names what is published, never that nothing was.
+    landed: list[str] = []
+
+    def unpublished() -> str | None:
+        """The working branch, once its ledger has landed ahead of it."""
+        return working if landed == [ledger] else None
+
     try:
         result = _run_push(remote, ["--atomic", "--follow-tags"], refspecs, cwd=cwd)
         if result.returncode != 0 and _NOT_ATOMIC in result.stderr:
@@ -990,24 +1066,26 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             # instead, the ledger first: a ledger without its branch is the one half-way
             # state there can be, which nothing opens and the next Push completes.
             logger.info("git_push_host_not_atomic", remote=remote)
-            if ledger_refspec is not None and ledger_sha is not None:
-                result = _run_push(remote, ["--follow-tags"], [ledger_refspec], cwd=cwd)
-                if result.returncode == 0:
-                    record_pushed_shas(project_root, {f"{remote}/{ledger}": ledger_sha})
-                    unpublished = working
-            if ledger_refspec is None or unpublished is not None:
-                result = _run_push(remote, ["--follow-tags"], [working_refspec], cwd=cwd)
+            in_order = [] if ledger_sha is None else [(ledger, ledger_sha)]
+            result = _push_pair_in_order(
+                remote, [*in_order, (working, working_sha)], project_root, landed, cwd=cwd
+            )
     except GitError as exc:
+        if working in landed:
+            raise GitRemoteUnavailableError(_labels_not_sent(remote)) from exc
         if bootstrapping:
             raise _bootstrap_incomplete(
-                remote, default, refused=False, unpublished=unpublished
+                remote, default, refused=False, unpublished=unpublished()
             ) from exc
-        if unpublished is not None:
-            raise GitRemoteUnavailableError(_branch_not_sent(remote, unpublished)) from exc
+        if unpublished() is not None:
+            raise GitRemoteUnavailableError(_branch_not_sent(remote, working)) from exc
         raise
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
+        if working in landed:
+            # The pair is published: only its labels' own push failed.
+            raise _labels_failed(remote, stderr)
         if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
             # M7: a rejection is the moment we KNOW we're diverged — turn it into
             # the data-bearing fork the UI needs, not a generic dead-end string.
@@ -1017,8 +1095,8 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             # Only an explicit refusal proves the pair did not land: git also exits
             # non-zero when the connection drops after the remote applied the refs.
             refused = "[remote rejected]" in stderr
-            raise _bootstrap_incomplete(remote, default, refused=refused, unpublished=unpublished)
-        raise _push_failed(remote, stderr, unpublished=unpublished)
+            raise _bootstrap_incomplete(remote, default, refused=refused, unpublished=unpublished())
+        raise _push_failed(remote, stderr, unpublished=unpublished())
 
     pushed = ([default] if bootstrapping else []) + [working] + ([ledger] if ledger_exists else [])
     # X3 robustness (§6.8): record the tips we just published so rewrite detection

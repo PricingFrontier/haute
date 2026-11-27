@@ -169,6 +169,43 @@ describe("BranchManager", () => {
     await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("next-change", { fromRemote: "origin" }))
   })
 
+  it("keeps every unsaved edit when one was made while the branch was read from the remote", async () => {
+    const reload = vi.fn(async () => {})
+    useWorkbenchFormStore.setState({ reload })
+    useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
+    let created: (value: unknown) => void = () => {}
+    mockCreateWorkingBranch.mockReturnValueOnce(new Promise((resolve) => (created = resolve)))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-create-input")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("branch-manager-create-input"), { target: { value: "next-change" } })
+    fireEvent.click(screen.getByTestId("branch-manager-create-menu"))
+    fireEvent.click(await screen.findByTestId("branch-manager-create-from-origin"))
+    await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("next-change", { fromRemote: "origin" }))
+
+    useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.5" } })))
+    await act(async () => created({ working_branch: "next-change", moved: false, switched: true, last_save_sha: "c".repeat(40) }))
+
+    expect(useGraphStore.getState().nodes[0].data.label).toBe("Default 1.5")
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it("asks about unsaved edits before it starts a branch from a remote, and drops the ones chosen over", async () => {
+    useGraphStore.setState({ dirty: true })
+    const resyncs = useDocumentStatusStore.getState().resyncRequests
+    mockCreateWorkingBranch.mockResolvedValue({ working_branch: "next-change", moved: false, switched: true, last_save_sha: "c".repeat(40) })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-create-input")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("branch-manager-create-input"), { target: { value: "next-change" } })
+    fireEvent.click(screen.getByTestId("branch-manager-create-menu"))
+    fireEvent.click(await screen.findByTestId("branch-manager-create-from-origin"))
+    expect(mockCreateWorkingBranch).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockCreateWorkingBranch).toHaveBeenCalledWith("next-change", { fromRemote: "origin" }))
+    await waitFor(() => expect(useDocumentStatusStore.getState().resyncRequests).toBe(resyncs + 1))
+    expect(useGraphStore.getState().dirty).toBe(false)
+  })
+
   it("offers no remote to start from when the remotes cannot be read", async () => {
     mockGetGitRemotes.mockRejectedValue(new Error("offline"))
     render(<BranchManager />)
