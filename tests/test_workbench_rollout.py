@@ -77,6 +77,10 @@ class FakeHost:
         #: by the image of a revision an update makes, or by the name of one that exists.
         self.reports: dict[str, list[tuple[str, str]]] = {}
         self._made: set[str] = set()
+        #: The clock of a host that holds its bound as Azure's adapter does: once the bound
+        #: ``limit`` set is spent, a read is refused. None for a host that only records it.
+        self.now: Any = None
+        self._end: float | None = None
         #: How many reads of the app's state pass before a new revision is its latest ready
         #: one: Azure calls a revision provisioned long before it serves.
         self.ready_after = 1
@@ -104,7 +108,12 @@ class FakeHost:
             if other != name:
                 self.revisions[other] = replace(revision, active=False)
 
+    def _bounded(self, what: str) -> None:
+        if self.now is not None and self._end is not None and self.now() >= self._end:
+            raise RolloutError(f"The rollout's deadline passed before Azure was asked to {what}.")
+
     def state(self) -> AppState:
+        self._bounded("read the app")
         if self.on_state is not None:
             self.on_state(self)
         self._switch()
@@ -121,6 +130,7 @@ class FakeHost:
         )
 
     def revision(self, name: str) -> RevisionState:
+        self._bounded(f"read the revision {name}")
         revision = self.revisions[name]
         first = self.reports.get((revision.image if name in self._made else name) or "")
         if first:
@@ -130,6 +140,8 @@ class FakeHost:
 
     def limit(self, seconds: float | None) -> None:
         self.limits.append(seconds)
+        if self.now is not None:
+            self._end = None if seconds is None else self.now() + seconds
 
     def deactivate(self, name: str) -> None:
         self.calls.append(("deactivate", name))
@@ -648,6 +660,26 @@ def test_a_revision_still_reported_failed_at_the_deadline_fails_saying_what_azur
     assert "unhealthy after 600 seconds (provisioning Failed, running Failed)" in message
     # It was never checked, and the release before it runs again.
     assert app.asked == []
+    assert f"The previous release ({OLD}) runs again" in message
+
+
+def test_the_deadlines_failure_says_what_azure_reported_though_the_hosts_bound_is_spent() -> None:
+    """Azure's adapter refuses a request asked once the rollout's bound is spent, and the
+    wait's deadline is that bound: the failure of a release that cannot start still says
+    the states last read, not that Azure could not be asked."""
+    ticks = FakeClock()
+    host = FakeHost()
+    host.now = lambda: ticks.t
+    host.settles[NEW] = ("Failed", "Failed")
+
+    with pytest.raises(RolloutError, match="was not ready to take the app's requests") as failed:
+        _roll(host, FakeApp(), clock=ticks.clock())
+
+    message = str(failed.value)
+    assert "within 600 seconds (provisioning Failed, running Failed)" in message
+    assert "Azure still sends them to motor--old" in message
+    assert "before Azure was asked" not in message
+    # The recovery has a bound of its own, and puts the release before it back.
     assert f"The previous release ({OLD}) runs again" in message
 
 

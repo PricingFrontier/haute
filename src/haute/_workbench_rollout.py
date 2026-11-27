@@ -474,13 +474,20 @@ def _wait_serving(
     seconds it restarts one of its containers, and running again after. The failure names
     the states last read and the revision Azure still serves, or, for the latest ready
     revision still reported unhealthy, that. Answers the revision.
+
+    Nothing is read once the deadline has passed, unless nothing was read yet: the host's
+    bound ends with it and refuses a request asked after, which would lose the states the
+    failure is there to say.
     """
+    revision: RevisionState | None = None
+    serving: str | None = None
     while True:
-        revision = host.revision(name)
+        if revision is None or clock.now() < deadline:
+            revision = host.revision(name)
+            serving = host.state().ready_revision
         unhealthy = (
             revision.provisioning in _FAILED_PROVISIONING or revision.running in _FAILED_RUNNING
         )
-        serving = host.state().ready_revision
         if clock.now() >= deadline:
             reported = f"provisioning {revision.provisioning}, running {revision.running}"
             if serving == name and unhealthy:

@@ -1804,7 +1804,9 @@ no longer has; and `InputSource` in
     seconds after a liveness restart, `Provisioned`/`RunningAtMaxScale` fourteen seconds
     later), so the wait goes on. Only the end of the deadline fails it, naming the states
     last read and the revision Azure still serves, or, when the revision is the latest ready
-    one and still reported unhealthy, that; a release that cannot start is therefore reported
+    one and still reported unhealthy, that (nothing is read once the deadline has passed,
+    unless nothing was read yet: `host.limit`'s bound ends with it, and a read
+    `AzureContainerApps` refused would lose those states); a release that cannot start is therefore reported
     at the deadline, the one before it serving until then, and a revision that became the
     latest ready one and stays reported unhealthy takes the app's requests until then (Azure
     having stopped the one before it), which is the price of not reading one report as a
@@ -3761,6 +3763,8 @@ no longer has; and `InputSource` in
   revision never deactivated, or, with no image to go back to, its own revision deactivated
   and nothing changed when it made none, and a rollback that fails naming the app's state; a revision reported
   failed for a read and running again after rolled out, put back and re-run all the same,
+  one failed to the deadline on a host that refuses a read once its bound is spent still
+  failing with the states last read,
   and one reported failed while Azure names it latest ready never checked; the forged and
   the signed request asked again while unanswered or answered a 5xx, the clock moving as
   they are asked: the first dropped and the second refused completing the rollout, every
