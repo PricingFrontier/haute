@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
 import {
   GitBranch, Archive, Trash2, Plus, AlertTriangle,
-  RotateCcw, ChevronRight, ChevronDown, ArrowRightLeft,
+  RotateCcw, ChevronRight, ChevronDown, ArrowRightLeft, ArrowDownToLine,
 } from "lucide-react"
 
 import {
   createWorkingBranch,
+  getGitRemotes,
   getGitPrefs,
   gitArchiveBranch,
   gitDeleteBranch,
@@ -72,6 +73,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const [confirmDelete, setConfirmDelete] = useState<GitManagedBranch | null>(null)
   const [confirmSwitch, setConfirmSwitch] = useState<GitManagedBranch | null>(null)
   const [confirmMove, setConfirmMove] = useState<string | null>(null)
+  const [remoteNames, setRemoteNames] = useState<string[]>([])
   const [dontAskSwitch, setDontAskSwitch] = useState(false)
 
   // Persisted "don't ask again" for switching (loaded once; whole-environment).
@@ -190,6 +192,42 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
     setCreateMenuOpen(false)
     if (name) setConfirmMove(name)
   }
+
+  // A branch started where a remote's default branch is now: the next change once a pull
+  // request has merged. It opens the new branch as a switch does, in the app: unsaved edits
+  // are asked about first, and the checkout lands on the canvas through the sync. It reads
+  // the remote, which takes time, so what is dropped is what was chosen over when it was
+  // asked: an edit made while it ran keeps every unsaved edit.
+  const onCreateFromDefaultClick = (remote: string) => {
+    const name = newBranch.trim()
+    setCreateMenuOpen(false)
+    if (!name) return
+    navigation.guard(() => {
+      const chosenOver = ask(chosenOverParts())
+      void run(name, "create branch", clearingTheWay((...settled) => createWorkingBranch(name, { fromRemote: remote }, ...settled)), (_, here, asked) => {
+        const drop = chosenOver.current()
+        if (drop) discardCanvasEdits()
+        return asked.answer(drop ? discardFormEdits() : Promise.resolve(), {
+          ok: () => {
+            addToast("success", `Created ${name} from ${remote}`)
+            here.apply(() => setNewBranch(""))
+          },
+        })
+      }).finally(() => chosenOver.release())
+    })
+  }
+
+  // The remotes the menu offers to start from, read when it opens. A read that fails
+  // offers none: the menu keeps what it always had.
+  useEffect(() => {
+    if (!createMenuOpen) return
+    const asked = ask([under(life)])
+    void asked.answer(getGitRemotes(), {
+      ok: (res) => setRemoteNames(res.remotes.map((r) => r.name)),
+      failed: () => setRemoteNames([]),
+    })
+    return () => asked.release()
+  }, [createMenuOpen, life])
 
   // -- switch -----------------------------------------------------------------
   // In-app (feedback round 2): no page reload — the checkout lands on the
@@ -422,6 +460,18 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                 >
                   <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Create &amp; Move
                 </button>
+                {remoteNames.map((remote) => (
+                  <button
+                    key={remote}
+                    type="button"
+                    data-testid={`branch-manager-create-from-${remote}`}
+                    onClick={() => onCreateFromDefaultClick(remote)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] w-full text-left whitespace-nowrap hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    <ArrowDownToLine size={12} style={{ color: "var(--accent)" }} /> Create from {remote}&apos;s default branch
+                  </button>
+                ))}
               </div>
             )}
           </div>

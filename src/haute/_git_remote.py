@@ -19,7 +19,9 @@ from haute._git_core import (
     GitError,
     GitPushRejectedError,
     GitRemoteUnavailableError,
+    _assert_eligible_working,
     _assert_git_repo,
+    _assert_new_branch_name,
     _assert_no_git_op_in_progress,
     _assert_way_clear,
     _fetch_exec_lock,
@@ -53,6 +55,7 @@ from haute._logging import get_logger
 from haute._project_context import current_project
 from haute.schemas import (
     GitBranchAwayResponse,
+    GitCreateWorkingBranchResponse,
     GitFastForwardResponse,
     GitPushRejection,
     GitPushResponse,
@@ -78,6 +81,7 @@ __all__ = [
     "commit_exists",
     "list_remotes",
     "push_working_pair",
+    "start_from_default",
     "fast_forward_pair",
     "fast_forward_pair_from_tracking",
     "branch_away",
@@ -555,14 +559,116 @@ def _refresh_failed(remote: str) -> GitRemoteUnavailableError:
     )
 
 
+#: What git's own client answers, before it sends a ref, when a host takes no atomic push
+#: (Azure Repos): in English, since every git command runs under ``_GIT_LOCALE_ENV``.
+_NOT_ATOMIC = "the receiving end does not support --atomic push"
+
+
 def _could_not_push(remote: str) -> GitRemoteUnavailableError:
     return GitRemoteUnavailableError(
         f"Could not push to '{remote}'. Check your connection or credentials and try again."
     )
 
 
-def _push_failed(remote: str, stderr: str) -> GitDomainError:
-    """Why a push failed for something other than diverged history, in the analyst's words."""
+def _branch_not_sent(remote: str, working: str) -> str:
+    """A working branch that could not be sent after its ledger landed in the same Push."""
+    return (
+        f"Your save history is on '{remote}', but the branch '{working}' could not be "
+        "pushed. Check your connection or credentials and push again to finish."
+    )
+
+
+def _labels_not_sent(remote: str) -> str:
+    """Version labels that could not be sent after their branch and its ledger landed."""
+    return (
+        f"Your branch and save history are on '{remote}', but its version labels could not "
+        "be pushed. Check your connection or credentials and push again to finish."
+    )
+
+
+def _labels_failed(remote: str, stderr: str) -> GitDomainError:
+    """Why the labels' own push failed, the pair being published: a host without atomic
+    pushes takes them after the branch they mark, so nothing here says the branch was
+    refused."""
+    if "[remote rejected]" in stderr or "[rejected]" in stderr:
+        incident = record_incident(event="git_push_rejected", remote=remote, stderr=stderr)
+        return GitDomainError(
+            f"Your branch and save history are on '{remote}', but '{remote}' did not take "
+            "its version labels. Its reason, for example a label of that name already "
+            f"there, is recorded under incident {incident}."
+        )
+    incident = record_incident(event="git_push_unrecognised", remote=remote, stderr=stderr)
+    return GitRemoteUnavailableError(
+        f"{_labels_not_sent(remote)} Git's own message is recorded under incident {incident}."
+    )
+
+
+def _labels_to_send(remote: str, tip: str, cwd: Path | None = None) -> list[str]:
+    """The version labels on *tip*'s history that *remote* does not hold at their commit, as
+    tag refs: the annotated ``version/*`` tags an atomic push's ``--follow-tags`` carries
+    with the pair, which skips a tag the remote already has.
+
+    A label the remote holds at the same commit is left alone whatever its tag object (one
+    annotated again or signed there is still that release), since naming it in a push would
+    ask to replace it, which git refuses, on every Push after. One it holds at another
+    commit is still sent, and refused: :func:`_tag_collisions` says so first when it can
+    read the remote."""
+    listed = _run_git(
+        "for-each-ref",
+        "--format=%(objecttype) %(refname)",
+        f"--merged={tip}",
+        "refs/tags/version/",
+        cwd=cwd,
+    )
+    labels = [line.split(" ", 1)[1] for line in listed.splitlines() if line.startswith("tag ")]
+    held = _ls_remote_version_tags(remote, cwd=cwd)
+    return [
+        label
+        for label in labels
+        if held.get(label.removeprefix("refs/tags/")) != _rev_parse(label, cwd=cwd)
+    ]
+
+
+def _push_pair_in_order(
+    remote: str,
+    branches: list[tuple[str, str]],
+    project_root: Path,
+    landed: list[str],
+    cwd: Path | None = None,
+) -> _GitProcessResult[str]:
+    """Publish to a host that takes no atomic push: each of *branches* (name and commit, the
+    ledger first when there is one) in a push of its own, then the version labels on the
+    last one's history in theirs, stopping at the first that fails. Each is one ordinary
+    non-force push of exactly the refs it names (``--no-follow-tags``), so what landed is
+    what its push says landed. A branch is added to *landed*, and its tip recorded as
+    pushed, as it lands, so the caller knows what is published even when a later push
+    raises. Answers the last push's result."""
+    from haute._git_state import record_pushed_shas
+
+    result: _GitProcessResult[str] | None = None
+    for branch, sha in branches:
+        result = _run_push(remote, ["--no-follow-tags"], [f"{sha}:refs/heads/{branch}"], cwd=cwd)
+        if result.returncode != 0:
+            return result
+        record_pushed_shas(project_root, {f"{remote}/{branch}": sha})
+        landed.append(branch)
+    labels = _labels_to_send(remote, branches[-1][1], cwd)
+    if labels:
+        result = _run_push(
+            remote, ["--no-follow-tags"], [f"{label}:{label}" for label in labels], cwd=cwd
+        )
+    if result is None:  # *branches* always names the working branch
+        raise GitError("no branch was given to push")
+    return result
+
+
+def _push_failed(remote: str, stderr: str, *, unpublished: str | None = None) -> GitDomainError:
+    """Why a push failed for something other than diverged history, in the analyst's words.
+
+    *unpublished* is the working branch when its ledger landed in this Push before it, on a
+    host without atomic pushes: nothing then says that nothing was published. A failure
+    recognised by none of git's words is not put down to the connection alone: its incident
+    holds what git said."""
     if "(stale info)" in stderr:
         # The bootstrap's create-only lease: the default appeared since inspection. The
         # next push finds an established remote, so this passes like a transport failure.
@@ -572,12 +678,25 @@ def _push_failed(remote: str, stderr: str) -> GitDomainError:
         )
     if "[remote rejected]" in stderr:
         incident = record_incident(event="git_push_rejected", remote=remote, stderr=stderr)
-        return GitDomainError(
-            f"'{remote}' refused the push, so nothing was published and your work is "
-            f"unchanged. Its reason, for example a branch rule or missing write access, is "
-            f"recorded under incident {incident}."
+        refused = (
+            f"'{remote}' refused the push, so nothing was published"
+            if unpublished is None
+            else f"'{remote}' took your save history but refused the branch '{unpublished}', "
+            "so the branch is not published yet"
         )
-    return _could_not_push(remote)
+        return GitDomainError(
+            f"{refused} and your work is unchanged. Its reason, for example a branch rule or "
+            f"missing write access, is recorded under incident {incident}."
+        )
+    incident = record_incident(event="git_push_unrecognised", remote=remote, stderr=stderr)
+    said = (
+        str(_could_not_push(remote))
+        if unpublished is None
+        else _branch_not_sent(remote, unpublished)
+    )
+    return GitRemoteUnavailableError(
+        f"{said} Git's own message is recorded under incident {incident}."
+    )
 
 
 def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str | None, bool]:
@@ -826,12 +945,28 @@ def _create_remote_default(
 
 
 def _bootstrap_incomplete(
-    remote: str, default: str, *, refused: bool
+    remote: str, default: str, *, refused: bool, unpublished: str | None = None
 ) -> GitBootstrapIncompleteError:
-    """The hand-written error for a bootstrap whose default landed but whose pair did not."""
+    """The hand-written error for a bootstrap whose default landed but whose pair did not:
+    neither of the pair, or on a host without atomic pushes the working branch *unpublished*
+    alone, its ledger having landed."""
     incident = record_incident(
         event="git_bootstrap_incomplete", remote=remote, branch=default, refused=refused
     )
+    if unpublished is not None:
+        outcome = (
+            f"'{remote}' refused the branch '{unpublished}'. Nothing was overwritten and "
+            "your work is unchanged. Try again; if it fails the same way, its reason (for "
+            "example a branch rule or missing write access) is recorded under incident "
+            f"{incident}."
+            if refused
+            else f"Haute could not confirm that the branch '{unpublished}' was published. "
+            "Nothing was overwritten and your work is unchanged. Try again to finish."
+        )
+        return GitBootstrapIncompleteError(
+            f"'{default}' is now on '{remote}' as your merge target and your save history "
+            f"is published, but {outcome}"
+        )
     if refused:
         outcome = (
             f"'{remote}' did not accept your branch and save history. Nothing was "
@@ -853,7 +988,8 @@ def _bootstrap_incomplete(
 def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
     """Deliberately publish managed history to an existing *remote*.
 
-    The working branch and optional ledger always travel in one atomic push. A
+    The working branch and optional ledger travel in one atomic push, or on a host that
+    takes none (Azure Repos) in two ordinary ones, the ledger first. A
     successfully inspected empty remote first receives the resolved default branch
     on its own, in a single-ref create-only push (:func:`_create_remote_default`).
     An established remote receives only the pair after its default has been
@@ -926,15 +1062,43 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
         # validated against default_sha above, and this publishes exactly that commit.
         _create_remote_default(remote, default, default_sha, cwd=cwd)
 
+    from haute._git_state import record_pushed_shas
+
+    # The pair's branches that landed in this Push, on a host without atomic pushes: a
+    # failure after one of them names what is published, never that nothing was.
+    landed: list[str] = []
+
+    def unpublished() -> str | None:
+        """The working branch, once its ledger has landed ahead of it."""
+        return working if landed == [ledger] else None
+
     try:
         result = _run_push(remote, ["--atomic", "--follow-tags"], refspecs, cwd=cwd)
+        if result.returncode != 0 and _NOT_ATOMIC in result.stderr:
+            # Git ended that push itself, before it sent a ref. The pair goes in order
+            # instead, the ledger first: a ledger without its branch is the one half-way
+            # state there can be, which nothing opens and the next Push completes.
+            logger.info("git_push_host_not_atomic", remote=remote)
+            in_order = [] if ledger_sha is None else [(ledger, ledger_sha)]
+            result = _push_pair_in_order(
+                remote, [*in_order, (working, working_sha)], project_root, landed, cwd=cwd
+            )
     except GitError as exc:
+        if working in landed:
+            raise GitRemoteUnavailableError(_labels_not_sent(remote)) from exc
         if bootstrapping:
-            raise _bootstrap_incomplete(remote, default, refused=False) from exc
+            raise _bootstrap_incomplete(
+                remote, default, refused=False, unpublished=unpublished()
+            ) from exc
+        if unpublished() is not None:
+            raise GitRemoteUnavailableError(_branch_not_sent(remote, working)) from exc
         raise
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
+        if working in landed:
+            # The pair is published: only its labels' own push failed.
+            raise _labels_failed(remote, stderr)
         if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
             # M7: a rejection is the moment we KNOW we're diverged — turn it into
             # the data-bearing fork the UI needs, not a generic dead-end string.
@@ -944,14 +1108,12 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             # Only an explicit refusal proves the pair did not land: git also exits
             # non-zero when the connection drops after the remote applied the refs.
             refused = "[remote rejected]" in stderr
-            raise _bootstrap_incomplete(remote, default, refused=refused)
-        raise _push_failed(remote, stderr)
+            raise _bootstrap_incomplete(remote, default, refused=refused, unpublished=unpublished())
+        raise _push_failed(remote, stderr, unpublished=unpublished())
 
     pushed = ([default] if bootstrapping else []) + [working] + ([ledger] if ledger_exists else [])
     # X3 robustness (§6.8): record the tips we just published so rewrite detection
     # survives a pruned reflog (keyed <remote>/<ref>).
-    from haute._git_state import record_pushed_shas
-
     pushed_shas = {f"{remote}/{working}": working_sha}
     if ledger_sha is not None:
         pushed_shas[f"{remote}/{ledger}"] = ledger_sha
@@ -1186,3 +1348,81 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
 
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)
+
+
+@_serialized_mutation
+def start_from_default(
+    name: str, remote: str, project_root: Path, cwd: Path | None = None
+) -> GitCreateWorkingBranchResponse:
+    """Start the working branch *name* where *remote*'s default branch is now, and open it.
+
+    The way to the next change once a pull request has merged: the new branch holds what the
+    remote's default holds, however the pull request was completed (a squash and a rebase
+    leave the branch it came from behind, and a merge commit leaves out a colleague's), so a
+    pull request from it merges cleanly. A fork of the current branch
+    (:func:`haute._git_transactions.create_working_branch`) cannot reach that commit, which
+    is on no local branch's history.
+
+    The remote is read afresh, as Catch up and Spin off read it, and one that cannot be read
+    starts nothing. The default is the one Push would publish beside, and must share history
+    with the project. The new pair and the labels on its line are one recorded operation
+    with the checkout; the branch left and the local default are not touched, and files
+    changed outside Haute are named before any is replaced."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_new_branch_name(name, cwd=cwd)
+    _validate_ref_name(name)
+    _assert_eligible_working(name)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+    ledger = ledger_name(name)
+    for taken in (name, ledger):
+        if _rev_parse(f"refs/heads/{taken}", cwd=cwd) is not None:
+            raise GitDomainError(f"Branch '{taken}' already exists.")
+    _assert_no_git_op_in_progress(cwd)
+
+    with _fetch_exec_lock:
+        refreshed = _fetch_refs(remote, cwd=cwd)
+    if not refreshed:
+        raise _refresh_failed(remote)
+    heads, symbolic_head, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    if not has_object_refs:
+        raise GitDomainError(
+            f"'{remote}' holds no branch yet, so there is no default branch to start from."
+        )
+    current = read_working_branch(project_root)
+    default = _resolve_push_default(
+        heads,
+        symbolic_head,
+        has_object_refs,
+        current or name,
+        ledger_name(current or name),
+        remote,
+        cwd=cwd,
+    )
+    tip = _rev_parse(f"refs/remotes/{remote}/{default}", cwd=cwd)
+    if tip is None:
+        raise GitError("the remote's default branch did not resolve after the fetch")
+    here = _rev_parse("HEAD", cwd=cwd)
+    if here is None or _merge_base(tip, here, cwd=cwd) is None:
+        raise GitDomainError("The remote default and local working history are unrelated.")
+    # Opening the new branch replaces the files: none may be off version history.
+    _assert_way_clear(f"opening '{name}'", tip, cwd, leaving=True)
+
+    start = Operation("create-branch", project_root, cwd)
+    start.refs(
+        {
+            f"refs/heads/{name}": tip,
+            f"refs/heads/{ledger}": tip,
+            **labels_to_adopt(remote, tip, cwd),
+        }
+    )
+    start.checkout(ledger)
+    start.working_branch(name)
+    start.run()
+    logger.info("working_branch_started_from_default", name=name, remote=remote, at=tip[:8])
+    return GitCreateWorkingBranchResponse(
+        working_branch=name, moved=False, switched=True, last_save_sha=tip
+    )

@@ -293,7 +293,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch {name,is_current,is_archived,has_unmerged_saves,has_uncommitted_changes,tip,ledger_tip,is_checked_out}...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
 | `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
-| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false,settle=null}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
+| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false,from_remote=null,settle=null}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400. With `from_remote` the route calls `start_from_default` (below) in place of `create_working_branch`, and `at` or `move` beside it is 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
@@ -908,6 +908,23 @@ default, an unrelated history, or an inspection/fetch failure raises a domain or
 git error before either pair ref is published. Haute does not configure the remote host's
 repository-level default-branch setting.
 
+`start_from_default(name, remote, project_root)` (`_git_remote.py`, a serialized mutation)
+starts the working branch *name* where *remote*'s default branch is now and opens it. It
+applies the new-branch name checks `create_working_branch` applies
+(`_assert_new_branch_name`, `_validate_ref_name`, `_assert_eligible_working`, neither the
+name nor its ledger existing), refuses an unknown remote and a git operation in progress,
+then fetches the remote's namespace (`_fetch_refs`, under `_fetch_exec_lock`; a failure is
+`_refresh_failed`), reads its advertisement (`_inspect_remote`; no object ref is a domain
+error) and resolves the default with `_resolve_push_default`, the rule Push uses, so the
+branch starts at the commit Push validates against. That commit must share history with
+`HEAD` ("The remote default and local working history are unrelated." otherwise).
+`_assert_way_clear(..., leaving=True)` then names files changed outside Haute, and one
+`Operation("create-branch")` writes `refs/heads/<name>` and its ledger at the commit with
+`labels_to_adopt(remote, tip)`, checks the ledger out and records the working branch; an
+interruption is put back or finished like any other recorded operation. The local default
+branch and the pair left are never written. It answers a `GitCreateWorkingBranchResponse`
+with `switched=true`, `moved=false` and the commit as `last_save_sha`.
+
 After preflight, `_tag_collisions` still checks `version/*` labels (best-effort — git's tag
 rejection remains the backstop). Then, after the bootstrap's default push when there is one,
 the pinned-SHA pair refspecs `<working_sha>:refs/heads/<working>
@@ -920,10 +937,46 @@ ceiling; `TimeoutExpired` and process-launch `OSError` become `GitRemoteUnavaila
 bootstrap's pair push, `GitBootstrapIncompleteError`), after which the repository mutation
 lock is released. A push's other non-zero exit, outside the structured rejection below, goes
 through `_push_failed`: `[remote rejected]` (a hook or branch rule) answers "'<remote>'
-refused the push, so nothing was published and your work is unchanged. The Haute server log
-has its reason, for example a branch rule or missing write access.", the lease's `(stale
-info)` the message above, and anything else the could-not-push message. The working/ledger pair is always atomic, so one pair
-ref never lands without the other. A bootstrap default-push rejection, including a
+refused the push, so nothing was published and your work is unchanged. Its reason, for
+example a branch rule or missing write access, is recorded under incident <id>.", the
+lease's `(stale info)` the message above, and anything else the could-not-push message
+followed by "Git's own message is recorded under incident <id>." (`record_incident`, event
+`git_push_unrecognised`, with the stderr; a refusal's event is `git_push_rejected`). On a
+host that takes an atomic push the working/ledger pair is atomic, so one pair ref never
+lands without the other.
+
+A host that takes none makes git end the atomic push itself, before it sends a ref, with
+`the receiving end does not support --atomic push` (`_NOT_ATOMIC`; git's messages are in
+English under `_GIT_LOCALE_ENV`). `_push_pair_in_order` then publishes the same pinned
+commits through `_run_push`, each push naming exactly the refs it sends
+(`--no-follow-tags`, since without atomicity a tag that followed a branch could land, or be
+refused, apart from it): the ledger's branch when there is one, the working branch only
+after it succeeded, and last, in one push of their own, the version labels on the working
+branch's history that the remote does not hold at their commit (`_labels_to_send`: the
+annotated `refs/tags/version/*` tags merged into its commit, less those
+`_ls_remote_version_tags` finds on the remote at the same commit, whatever their tag
+object; `--follow-tags` skips a tag the remote has, and a push naming one would ask to
+replace it, which git refuses on every Push after). It stops at the first push that
+fails and answers that push's result; each branch is added to the caller's `landed` list,
+and its tip recorded (`record_pushed_shas`), as it lands, so what is published is known
+even when a later push raises. A ledger push that fails is handled as a failed atomic
+push is, since nothing landed. A labels push that fails leaves the pair published and
+recorded, and says so (`_labels_failed`): a refusal, "Your branch and save history are on
+'<remote>', but '<remote>' did not take its version labels. Its reason, for example a
+label of that name already there, is recorded under incident <id>."; anything else, a
+timeout or launch failure included, "Your branch and save history are on '<remote>', but
+its version labels could not be pushed. Check your connection or credentials and push
+again to finish.", with the incident sentence when git ended it. The next Push sends them.
+A working push that fails after the ledger landed is
+`_push_rejection` for a non-fast-forward, as ever; for `[remote rejected]`, "'<remote>' took
+your save history but refused the branch '<working>', so the branch is not published yet
+and your work is unchanged. Its reason, for example a branch rule or missing write access,
+is recorded under incident <id>."; and for anything else, a timeout or launch failure
+included, "Your save history is on '<remote>', but the branch '<working>' could not be
+pushed. Check your connection or credentials and push again to finish.", with the incident
+sentence when git ended it. During a bootstrap those two take the default's opening, "'<default>'
+is now on '<remote>' as your merge target and your save history is published, but ...",
+as a `GitBootstrapIncompleteError`. A bootstrap default-push rejection, including a
 different-SHA default winning the create-only race, follows a safe non-409 push-failure path
 and is never misreported as working/ledger divergence. A
 working/ledger non-fast-forward failure (`non-fast-forward` / `fetch first` / `[rejected]`
@@ -1151,7 +1204,8 @@ without replacing a successfully parsed response with a cleanup error.
   up-to-date no-op and safely coexist with successful pair publication. The initialising push
   carries the default alone; the pair push's atomicity prevents a failure from creating one
   pair ref without the other, and a bootstrap whose pair push fails leaves only the validated
-  default, which the next Push treats as an established remote.
+  default, which the next Push treats as an established remote. A host without atomic pushes
+  can also be left holding the ledger, never the working branch alone.
 - **Rename detection in ledger-save history** — `_parse_ledger_saves` runs `git log -M
   --name-status` so a renamed config file shows as one rename entry, not a delete+add pair.
 - **Unicode / space-containing paths in log output** — `core.quotepath=false` is passed

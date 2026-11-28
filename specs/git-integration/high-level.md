@@ -178,8 +178,9 @@ target is created as the work is shared. The first push carries the default alon
 GitHub never triggers workflows in a repository whose first push created several branches. A
 create-only lease on the default ref makes that bootstrap a compare-and-create: a default
 branch that appears after inspection is never advanced or replaced. If the pair push then
-fails, the remote holds only the default and Haute says so in its own words; the next Push
-publishes the pair.
+fails, the remote holds only the default (on a host without atomic pushes, the default and
+perhaps the save ledger) and Haute says so in its own words; the next Push publishes the
+pair.
 
 For a non-empty remote, the expected default branch must already exist. Haute fetches that
 ref and validates that it shares history with the local working line before publishing the
@@ -188,18 +189,49 @@ branch. A non-empty remote missing the expected default, an unrelated default hi
 an inspection/fetch failure refuses before publication; the atomic push guarantees that a
 later ref rejection cannot leave only part of the submitted set behind. The push subprocess
 itself is prompt-proof and time-bounded, so a wedged transport cannot retain the repository
-mutation lock indefinitely; a timeout, launch failure or transport error answers "Could not
+mutation lock indefinitely; a timeout or launch failure answers "Could not
 push to '<remote>'. Check your connection or credentials and try again.", and a remote that
-refuses the refs (a branch rule, missing write access) says it refused the push. A
+refuses the refs (a branch rule, missing write access) says it refused the push. A push git
+ends for a reason Haute does not recognise answers the could-not-push words too, and adds the
+incident git's own message is recorded under, so the cause can be found when the connection
+and the credentials are fine. A
 working/ledger non-fast-forward rejection still surfaces as a structured "fork" the UI can
 explain (which leg diverged, by how much) rather than a dead-end error. No path force-pushes.
+
+Not every host takes an atomic push: Azure Repos answers that the receiving end does not
+support one, before any branch is sent. Such a host is published to in two ordinary pushes,
+the save ledger first and the working branch after it, each a plain non-force update of one
+branch. The order leaves one half-way state, and a harmless one: the ledger on the remote
+without its working branch, which no pull request can be opened from and no branch chooser
+lists, and which the next Push completes. A ledger the host does not take ends the Push with
+nothing published, as on any host. A working branch it does not take after the ledger landed
+is said as that: a fork is the same structured rejection, naming the working branch, and a
+refusal or a failure says the save history was published and the branch was not. No message
+says nothing was published when the ledger was. Version labels, which an atomic push
+carries with the pair, go last on such a host, in a push of their own after the branch
+they mark: none is on the remote without its branch, and labels the host does not take
+leave the pair published, said as that, for the next Push to send.
 
 A remote fast-forward catch-up only ever advances refs when every leg is a clean fast-
 forward; anything else is refused so the user spins off a copy instead of triggering a
 silent merge. Routine listing and readiness requests never fetch. They report divergence
-from locally-known remote-tracking refs; only deliberate Push, Catch up, or Spin off a copy
-operations perform prompt-proof, time-bounded network refreshes. Remote URLs returned to the browser strip URL userinfo
+from locally-known remote-tracking refs; only deliberate Push, Catch up, Spin off a copy, or
+starting a branch from a remote's default branch
+perform prompt-proof, time-bounded network refreshes. Remote URLs returned to the browser strip URL userinfo
 (`user:password@`) while leaving scp-style `git@host:path` and local paths unchanged.
+
+**The next change after a merge.** A pull request is opened, reviewed and completed on the
+hosting service, and what its completion leaves on the default branch is on no local
+branch's history: a squash or a rebase puts new commits there, and a merge commit can come
+with a colleague's work or an upgrade of Haute. A fork of the current branch, the only start
+a new branch had, cannot reach it, so the next change carried the last one's commits again
+and, after a squash, came up in conflict on the host. A new working branch can therefore
+start where a remote's default branch is now: Haute reads the remote afresh, as Catch up
+does, makes the branch and its ledger at that commit with the version labels on its line,
+and opens it, as one recorded operation. The default is the one Push publishes beside. It
+never merges: the branch left stays as it was, the local default branch is not written, a
+remote that cannot be read or holds another project's history starts nothing, and files
+changed outside Haute are named before any is replaced, as for any branch that is opened.
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
 touches HEAD or the working tree. The request names the pipeline file being compared, and

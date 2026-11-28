@@ -972,8 +972,12 @@ builder on screen. With a quote store it is where they manage their quotes too.
   fails its check is replaced by the one before it, having taken the app's requests while
   it was checked, for five minutes at most. A
   release whose quotes are closed because the environment's tables don't fit your schema yet
-  stays, and the run names each difference: once the database's owners run the schema's SQL,
-  its quotes open with no new run. Production takes the release staging runs for the commit
+  stays, and the run fails naming each difference: once the database's owners run the schema's SQL,
+  its quotes open within seconds with no new run, and running the failed stage again passes
+  without changing the app. Until then underwriters are told the database doesn't match the
+  form, and can open no quote. To add a field without closing quotes at all, have the SQL run
+  first ([A new field without closed quotes](#a-new-field-without-closed-quotes)).
+  Production takes the release staging runs for the commit
   you promote, and is refused when staging runs another. Each app's Azure tags
   `haute-image`, `haute-release` and `haute-commit` say what it runs.
 
@@ -1010,6 +1014,15 @@ builder on screen. With a quote store it is where they manage their quotes too.
   | AcrPush on the registry, and Container Apps Contributor on both apps, for that identity; for a service connection's, Reader on the registry too | to push the image, and to change and tag the apps |
   | Single revision mode and external ingress on each app: an address outside its Container Apps environment, which need not be open to the internet as long as the CI jobs can reach it, and each release's own address beside it under the environment's domain | one release at a time, and addresses the check can reach: it asks the new release at its own address, then the app's |
   | Azure's built-in authentication with Microsoft Entra ID on each app, letting that identity sign in | underwriters sign in through it, and so do the check and the comparison |
+
+  And looks after, from then on:
+
+  | What | Why |
+  |---|---|
+  | The client secret of the sign-in registration, which each app's built-in authentication holds | it expires on the date your IT team gave it; once it has, nobody can sign in to the app until it is renewed and set on each app again |
+  | The secret of a service connection or service principal CI signs in with, if it has one | it expires too; a connection that signs in by workload identity federation has none |
+  | `base_image` in `[deploy.container]` | it is pinned to one Python patch release, which stops receiving fixes; raise it from time to time and release |
+  | The registry's images | an app starts each new replica from the image it runs, and a failed release is replaced by the image before it: a clean-up rule must leave both |
 
 - The app keeps quotes in the database of an environment you declare in `haute.toml`, as
   your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and
@@ -1166,6 +1179,12 @@ builder on screen. With a quote store it is where they manage their quotes too.
   changes with the app release, since a running app may still use the old structure.
   Copying SQL or saving the schema does not change the database or verify release
   compatibility.
+
+  Download the script and keep the file before anyone runs it: once a database holds a
+  column, Compare has nothing left to add for it, and the script for that database is
+  gone. The script names no database, so one exported against staging also runs on a
+  database your computer cannot reach, such as production, when the two hold the same
+  tables.
 - The app starts whatever its database holds. Until the tables fit its release it opens no
   quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
   table or column missing, of another type or holding less than the app keeps in it (a
@@ -1186,6 +1205,27 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 A page opened before a new release is refused when it prices or saves, and offers
 **Reload**, which picks up the release; its unsaved values stay in the browser.
+
+### A new field without closed quotes
+
+A field you add to the schema needs a column in each environment's database. Release it in
+this order and underwriters never see quotes close:
+
+1. Add the field in **Schema**, use it on your sheets and in your pipeline, and save.
+2. Choose an environment in **Database**, press **Export SQL** and download the script.
+   For an added field it is one `ALTER TABLE ... ADD`, and the new column allows blanks.
+3. Have the database's owners run the script on every environment's database: `dev`,
+   staging and production.
+4. Commit, push and merge as usual.
+
+The release that is running takes no notice of a column it doesn't know, so it keeps
+taking quotes while the databases are changed, and the new release finds its tables ready.
+Quotes saved before the field existed open with it empty, so give the pipeline something to
+price them with: `pl.col("deductible").fill_null(0)`, for example.
+
+This order is for a field you add. Changing a field's type alters a column the running
+release reads, so agree the moment with the database's owners and expect quotes to be
+closed between the script and the release.
 
 ### Reading quotes with SQL
 The app keeps each quote in your schema's own tables, so a report reads them with plain SQL.

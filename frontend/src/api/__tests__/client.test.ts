@@ -1478,8 +1478,15 @@ describe("git remote catch-up + history endpoints", () => {
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/git/working-branches")
     expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ name: "idea", at: "a".repeat(40), move: false, switch: true })
+    expect(JSON.parse(opts.body)).toEqual({ name: "idea", at: "a".repeat(40), move: false, switch: true, from_remote: null })
     expect(result.switched).toBe(true)
+  })
+
+  it("createWorkingBranch names the remote whose default branch the new branch starts from", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: "next", moved: false, switched: true, last_save_sha: "c".repeat(40) }))
+    await createWorkingBranch("next", { fromRemote: "origin" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).toEqual({ name: "next", at: null, move: false, switch: false, from_remote: "origin" })
   })
 
   it("restoreVersion POSTs /api/git/restore-version with the sha", async () => {
@@ -1806,6 +1813,31 @@ describe("request() edge cases", () => {
 
       await expect(push).resolves.toEqual(pushBody)
       await expect(secrets).resolves.toEqual(secretsBody)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("lets a slow branch from a remote's default answer, and keeps the deadline on a local one", async () => {
+    // It fetches as Catch up does, up to the server's 60 seconds: a 30-second browser
+    // deadline would report a failure while the server went on to open the branch.
+    vi.useFakeTimers()
+    try {
+      const body = { working_branch: "next", moved: false, switched: true, last_save_sha: null }
+      mockFetch.mockImplementation(
+        (_url: string, options?: RequestInit) =>
+          new Promise((resolve, reject) => {
+            const signal = options?.signal as AbortSignal | undefined
+            signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true })
+            setTimeout(() => resolve(jsonResponse(body)), 45 * 1000)
+          }),
+      )
+      const fromRemote = createWorkingBranch("next", { fromRemote: "origin" })
+      const local = createWorkingBranch("idea", { switch: true })
+      const localOutcome = local.then(() => "answered", () => "timed out")
+      await vi.advanceTimersByTimeAsync(46 * 1000)
+      await expect(fromRemote).resolves.toEqual(body)
+      await expect(localOutcome).resolves.toBe("timed out")
     } finally {
       vi.useRealTimers()
     }

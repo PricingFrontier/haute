@@ -6447,6 +6447,10 @@ class GitCreateWorkingBranchRequest(BaseModel):
     # Open the new branch at once, leaving the current branch's refs as they
     # were. Not with ``move``, which already opens it.
     switch: bool = False
+    # Start the branch where this remote's default branch is now, read afresh, and
+    # open it: the next change after a pull request merged. Not with ``at`` or
+    # ``move``: it forks no local branch.
+    from_remote: BoundedName | None = None
     settle: GitSettleUnrecorded | None = None
 
 

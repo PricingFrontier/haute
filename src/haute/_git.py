@@ -93,6 +93,7 @@ from haute._git_remote import (
     remote_is_empty,
     remote_push_urls,
     remote_url,
+    start_from_default,
 )
 from haute._git_setup import (
     ensure_repo,
@@ -184,6 +185,7 @@ __all__ = [
     "ensure_remote",
     "ensure_repo",
     "fast_forward_pair",
+    "start_from_default",
     "fast_forward_pair_from_tracking",
     "fetch_bundle_refs",
     "get_identity",

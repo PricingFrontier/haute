@@ -2488,8 +2488,13 @@ Out of scope:
   naming each check the quote fails (`failing`), or the release that priced the quote; a quote
   the app does not keep is 404. A write whose browser says it came from another site, or,
   from a browser that does not say, whose origin is not the app's host, is refused (403). The
-  app's pages, `/`, `/quotes/new` and `/quotes/{reference}/{option}`, are its one page, which
-  reads its route in the browser.
+  app has one page, which reads its route in the browser, and the app answers every address
+  with it but its API's and its files', as the editor's server does: no list of pages is kept
+  beside the browser's routes, so an address the page moves to (`/quotes/new`,
+  `/quotes/{reference}/{option}`, `/quotes/{reference}/{option}/edit`) opens the same after a
+  reload, from a bookmark or as a link sent to a colleague, and an address the page does not
+  know is its own Not found, with the way back to Quotes. An address under `/api/` that no
+  route takes is a 404 in JSON, never the page.
 - **The Quotes page.** With a quote store, the app opens on the Quotes page, at `/`. On
   the left are the lists, My work (the quotes assigned to the signed-in underwriter), Team
   (everyone's) and Archived, and the stages of the list showing, Draft and Final, each with

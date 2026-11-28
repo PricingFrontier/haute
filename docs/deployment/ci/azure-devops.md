@@ -226,7 +226,7 @@ Two more settings, if your code is in **Azure Repos Git**:
 A pipeline that reaches Azure holds no secret: a [workbench project's](#workbench-projects), and an automated project's that deploys to Azure Container Apps. It signs in through an **Azure Resource Manager service connection**, which your IT team creates once.
 
 1. Go to **Project settings** → **Service connections** → **New service connection** → **Azure Resource Manager**
-2. Choose how the connection signs in. **Workload identity federation** keeps no secret anywhere; a connection that holds a service principal's secret works too. Haute does not need to know which
+2. Choose how the connection signs in. **Workload identity federation** keeps no secret anywhere, so nothing in it expires; a connection that holds a service principal's secret works too, until that secret expires and has to be renewed. Haute does not need to know which
 3. Scope it to the subscription the registry and the apps are in
 4. Name it `haute-azure`, the name `haute init` writes
 5. Allow the pipeline to use it, under the connection's **Security** settings, or approve it when the first run asks
@@ -283,13 +283,32 @@ runner = "pricing-linux"
 
 You need your own pool when the registry, the hosted apps or anything else the pipeline reaches can only be reached from inside your network. Each agent in the pool needs:
 
-- Ubuntu or Debian, with Docker. The image is built on the agent, and a workbench project's packaged app is tested against a database in a container
+- Ubuntu or Debian, with Docker, which the agent's user can run without `sudo` (on Ubuntu, a member of the `docker` group). The image is built on the agent, and a workbench project's packaged app is tested against a database in a container
 - Permission to install packages unattended (`sudo apt-get`), for the libraries SQL Server's driver loads
-- Your project's Python version in the agent's tool cache, where the `UsePythonVersion` task looks for it
+- Your project's Python version in the agent's tool cache, where the `UsePythonVersion` task looks for it. Without it every job stops at that task ("Version spec ... did not match any version in Agent.ToolsDirectory"): see [Python in the agent's tool cache](#python-in-the-agents-tool-cache)
 - The Azure CLI, when the pipeline [signs in to Azure](#signing-in-to-azure)
 - Outbound access to the Python package index (PyPI), your base image's registry, Microsoft's container registry (the test database's image), the Debian package mirrors, your own registry and Azure, and in a workbench project to each hosted app's address and the other names under its Container Apps environment's domain, where a rollout asks the new release itself (for an environment inside your network, the wildcard record of its private DNS zone)
 
 Haute has no settings for an internal package mirror or a proxy.
+
+### Python in the agent's tool cache
+
+A Microsoft-hosted agent comes with several Python versions. An agent of your own has none until you put one where the `UsePythonVersion` task looks: a folder named for the full version under the agent's tool folder, with a marker file beside it ([Microsoft's description](https://learn.microsoft.com/azure/devops/pipelines/tasks/reference/use-python-version-v0)). When the machine's own Python is the version your project uses (Ubuntu 24.04 ships Python 3.12), this is enough, run once as an administrator:
+
+```bash
+sudo apt-get install -y python3-venv
+TOOLS=/path/to/the/agent/_work/_tool
+VERSION=$(python3 -c 'import platform; print(platform.python_version())')
+sudo python3 -m venv --copies "$TOOLS/Python/$VERSION/x64"
+sudo touch "$TOOLS/Python/$VERSION/x64.complete"
+sudo chown -R "the agent's user" "$TOOLS"
+```
+
+The first two parts of the version must be the ones `azure-pipelines.yml` asks for (`versionSpec: "3.12"`).
+
+### What an agent of your own keeps
+
+A Microsoft-hosted agent starts every job on a fresh machine. An agent of your own keeps what its jobs leave: the project's folder with its installed packages, and every image it has built. Each release adds the layers of its image that changed, so remove old images from time to time (`docker image prune -a`; what the next run needs is pulled again), or the disk fills.
 
 ---
 

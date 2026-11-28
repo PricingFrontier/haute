@@ -366,6 +366,52 @@ class TestGitCreateWorkingBranch:
         status = client.get("/api/git/working-branch").json()
         assert status["working_branch"] == "pricing/test-user/idea"
 
+    def test_from_remote_starts_where_that_remotes_default_is_and_opens_it(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._adopt(client)
+        bare = tmp_path / "origin.git"
+        other = tmp_path / "other"
+        _git(tmp_path, "init", "--bare", str(bare))
+        _git(tmp_path, "remote", "add", "origin", str(bare))
+        _git(tmp_path, "push", "origin", "main")
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", "main")
+        (other / "merged.txt").write_text("merged on the remote\n")
+        _git(other, "add", "merged.txt")
+        _git(other, "commit", "-m", "merged on the remote")
+        _git(other, "push", "origin", "main")
+
+        res = client.post(
+            "/api/git/working-branches",
+            json={"name": "pricing/test-user/next", "from_remote": "origin"},
+        )
+
+        assert res.status_code == 200, res.text
+        assert res.json()["switched"] is True and res.json()["moved"] is False
+        assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == "pricing/test-user/next-save"
+        assert _git(tmp_path, "rev-parse", "pricing/test-user/next") == _git(
+            other, "rev-parse", "main"
+        )
+        assert (tmp_path / "merged.txt").is_file()
+
+    @pytest.mark.parametrize("extra", [{"move": True}, {"at": "HEAD"}])
+    def test_from_remote_takes_no_fork_point_and_moves_no_work(
+        self, client: TestClient, tmp_path: Path, extra: dict[str, object]
+    ) -> None:
+        self._adopt(client)
+
+        res = client.post(
+            "/api/git/working-branches",
+            json={"name": "pricing/test-user/next", "from_remote": "origin", **extra},
+        )
+
+        assert res.status_code == 400
+        assert "takes no fork point" in res.json()["detail"]
+        assert "pricing/test-user/next" not in _git(tmp_path, "branch")
+
     def test_move_and_switch_together_rejected(self, client: TestClient) -> None:
         self._adopt(client)
         res = client.post(

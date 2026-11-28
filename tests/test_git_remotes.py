@@ -861,6 +861,388 @@ class TestRemotesAndPush:
         assert "server log" not in said
         assert self._remote_refs(repo, bare) == ["refs/heads/main"]
 
+    @staticmethod
+    def _without_atomic(bare: Path) -> None:
+        """A host that takes no atomic push, as Azure Repos is: git's own client then ends an
+        atomic push before it sends a ref."""
+        _git(bare, "config", "receive.advertiseAtomic", "false")
+
+    @staticmethod
+    def _branch_rule(bare: Path, body: str) -> Path:
+        """The host's update hook, run once for each branch a push sends, its name in $1."""
+        hook = bare / "hooks" / "update"
+        hook.write_text(f"#!/bin/sh\n{body}\n", newline="\n")
+        hook.chmod(0o755)
+        return hook
+
+    def _refusing(self, bare: Path, branch: str) -> Path:
+        return self._branch_rule(
+            bare,
+            f'if [ "$1" = "refs/heads/{branch}" ]; then\n'
+            "  echo 'branch rule: SECRET-STDERR' >&2\n  exit 1\nfi\nexit 0",
+        )
+
+    def test_a_host_without_atomic_pushes_takes_the_ledger_then_the_branch(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Azure Repos refuses an atomic push outright, which stopped every Push to it. The
+        pair goes in two ordinary pushes instead, the ledger first, so the only half-way state
+        there can be is a ledger without its branch."""
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        self._branch_rule(bare, 'echo "$1" >> order.log\nexit 0')
+
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.pushed_refs == [WORKING, LEDGER]
+        assert (bare / "order.log").read_text().split() == [
+            f"refs/heads/{LEDGER}",
+            f"refs/heads/{WORKING}",
+        ]
+        assert read_pushed_shas(repo) == {
+            f"origin/{WORKING}": _git(repo, "rev-parse", WORKING),
+            f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER),
+        }
+
+    def test_a_first_push_to_an_empty_host_without_atomic_pushes_publishes_everything(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        self._without_atomic(bare)
+
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.bootstrapped_default is True
+        assert res.pushed_refs == ["main", WORKING, LEDGER]
+        assert self._remote_refs(repo, bare) == sorted(
+            ["refs/heads/main", f"refs/heads/{WORKING}", f"refs/heads/{LEDGER}"]
+        )
+
+    def test_a_host_without_atomic_pushes_that_refuses_the_ledger_publishes_nothing(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        self._refusing(bare, LEDGER)
+
+        with pytest.raises(GitDomainError) as refused:
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert str(refused.value).startswith(
+            "'origin' refused the push, so nothing was published and your work is unchanged. "
+        )
+        assert self._remote_refs(repo, bare) == ["refs/heads/main"]
+        assert read_pushed_shas(repo) == {}
+
+    def test_a_branch_refused_after_the_ledger_landed_is_said_as_that_and_the_next_push_ends_it(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        hook = self._refusing(bare, WORKING)
+
+        with pytest.raises(GitDomainError) as refused:
+            push_working_pair("origin", repo, cwd=repo)
+
+        said = str(refused.value)
+        assert said.startswith(
+            f"'origin' took your save history but refused the branch '{WORKING}', so the "
+            "branch is not published yet and your work is unchanged. Its reason, for example "
+            "a branch rule or missing write access, is recorded under incident "
+        )
+        assert "SECRET-STDERR" not in said
+        assert self._remote_refs(repo, bare) == sorted(["refs/heads/main", f"refs/heads/{LEDGER}"])
+        assert read_pushed_shas(repo) == {f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER)}
+
+        hook.unlink()
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.pushed_refs == [WORKING, LEDGER]
+        assert f"refs/heads/{WORKING}" in self._remote_refs(repo, bare)
+
+    def test_a_branch_that_cannot_be_sent_after_the_ledger_landed_says_what_is_published(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git import GitRemoteUnavailableError
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        real_run = git_core._run_process_group
+        pushes: list[list[str]] = []
+
+        def lose_the_third(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            if cmd[:2] == ["git", "push"]:
+                pushes.append(cmd)
+                # The atomic push git ends, the ledger's, then the branch's.
+                if len(pushes) == 3:
+                    raise subprocess.TimeoutExpired(cmd, 1)
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(git_core, "_run_process_group", lose_the_third)
+
+        with pytest.raises(GitRemoteUnavailableError) as failed:
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert str(failed.value) == (
+            f"Your save history is on 'origin', but the branch '{WORKING}' could not be "
+            "pushed. Check your connection or credentials and push again to finish."
+        )
+        assert self._remote_refs(repo, bare) == sorted(["refs/heads/main", f"refs/heads/{LEDGER}"])
+
+    def test_a_fork_on_the_branch_of_a_host_without_atomic_pushes_is_the_structured_rejection(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        self._without_atomic(bare)
+        push_working_pair("origin", repo, cwd=repo)
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        (other / "x.txt").write_text("a colleague's milestone\n")
+        _git(other, "add", "x.txt")
+        _git(other, "commit", "-m", "a colleague's milestone")
+        _git(other, "push", "origin", WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# local\n"})
+        commit_milestone("local milestone", repo, cwd=repo)
+
+        with pytest.raises(GitPushRejectedError) as forked:
+            push_working_pair("origin", repo, cwd=repo)
+
+        rejection = forked.value.rejection
+        assert rejection.working.status == "diverged"
+        assert "working branch" in rejection.message
+        # The ledger was a fast-forward, and landed before the branch was refused.
+        assert rejection.ledger is not None and rejection.ledger.status == "synced"
+        assert _git(repo, "ls-remote", "origin", f"refs/heads/{LEDGER}").split()[0] == _git(
+            repo, "rev-parse", LEDGER
+        )
+
+    def test_a_branch_refused_on_a_first_push_after_the_ledger_landed_names_what_is_published(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import GitBootstrapIncompleteError
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        self._without_atomic(bare)
+        self._refusing(bare, WORKING)
+
+        with pytest.raises(GitBootstrapIncompleteError) as exc:
+            push_working_pair("origin", repo, cwd=repo)
+
+        said = str(exc.value)
+        assert said.startswith(
+            "'main' is now on 'origin' as your merge target and your save history is "
+            f"published, but 'origin' refused the branch '{WORKING}'."
+        )
+        assert "SECRET-STDERR" not in said
+        assert self._remote_refs(repo, bare) == sorted(["refs/heads/main", f"refs/heads/{LEDGER}"])
+
+    def test_a_version_label_goes_after_its_branch_on_a_host_without_atomic_pushes(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """An atomic push carries the labels with the pair. Without one each ref lands on its
+        own, so the labels go last, in a push of their own: none is on the remote before the
+        branch it marks."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        self._branch_rule(bare, 'echo "$1" >> order.log\nexit 0')
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+
+        push_working_pair("origin", repo, cwd=repo)
+
+        assert (bare / "order.log").read_text().split() == [
+            f"refs/heads/{LEDGER}",
+            f"refs/heads/{WORKING}",
+            "refs/tags/version/1.0",
+        ]
+
+    def test_a_branch_the_host_refuses_takes_no_label_with_it(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        self._refusing(bare, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+
+        with pytest.raises(GitDomainError, match="took your save history but refused the branch"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert self._remote_refs(repo, bare) == sorted(["refs/heads/main", f"refs/heads/{LEDGER}"])
+        assert read_pushed_shas(repo) == {f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER)}
+
+    def test_a_label_the_host_refuses_leaves_the_pair_published_and_says_so(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The branch landed, so it is recorded as pushed and never said to be refused: what
+        is missing is its label, which the next Push sends."""
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        hook = self._branch_rule(
+            bare,
+            'case "$1" in refs/tags/*) echo "tag rule: SECRET-STDERR" >&2; exit 1;; esac\nexit 0',
+        )
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+
+        with pytest.raises(GitDomainError) as refused:
+            push_working_pair("origin", repo, cwd=repo)
+
+        said = str(refused.value)
+        assert said.startswith(
+            "Your branch and save history are on 'origin', but 'origin' did not take its "
+            "version labels. Its reason, for example a label of that name already there, is "
+            "recorded under incident "
+        )
+        assert "SECRET-STDERR" not in said
+        assert self._remote_refs(repo, bare) == sorted(
+            ["refs/heads/main", f"refs/heads/{WORKING}", f"refs/heads/{LEDGER}"]
+        )
+        assert read_pushed_shas(repo) == {
+            f"origin/{WORKING}": _git(repo, "rev-parse", WORKING),
+            f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER),
+        }
+
+        hook.unlink()
+        push_working_pair("origin", repo, cwd=repo)
+
+        assert "refs/tags/version/1.0" in _git(repo, "ls-remote", "--tags", "origin")
+
+    def test_a_label_the_host_holds_at_the_same_commit_is_not_sent_again(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """A label annotated again on the remote is another tag object at the same commit.
+        Naming it in a push asks to replace it, which git refuses, and every later Push would
+        fail the same way: it is the same release, so it is left alone."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+        push_working_pair("origin", repo, cwd=repo)
+        released = _git(repo, "rev-parse", "version/1.0^{commit}")
+        ours = _git(repo, "rev-parse", "version/1.0")
+        # The bare repository has no identity of its own, and a clean runner has none either.
+        _git(
+            bare,
+            "-c",
+            "user.name=Other",
+            "-c",
+            "user.email=other@example.com",
+            "tag",
+            "-f",
+            "-a",
+            "version/1.0",
+            "-m",
+            "annotated again",
+            released,
+        )
+        theirs = _git(bare, "rev-parse", "version/1.0")
+        assert theirs != ours
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("milestone 2", repo, version_label="2.0", cwd=repo)
+
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.pushed_refs == [WORKING, LEDGER]
+        assert _git(bare, "rev-parse", "version/1.0") == theirs
+        assert "refs/tags/version/2.0" in _git(repo, "ls-remote", "--tags", "origin")
+
+    def test_labels_that_cannot_be_sent_after_the_pair_landed_say_what_is_published(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git import GitRemoteUnavailableError
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        self._without_atomic(bare)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+        real_run = git_core._run_process_group
+        pushes: list[list[str]] = []
+
+        def lose_the_fourth(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            if cmd[:2] == ["git", "push"]:
+                pushes.append(cmd)
+                # The atomic push git ends, the ledger's, the branch's, then the labels'.
+                if len(pushes) == 4:
+                    raise subprocess.TimeoutExpired(cmd, 1)
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(git_core, "_run_process_group", lose_the_fourth)
+
+        with pytest.raises(GitRemoteUnavailableError) as failed:
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert str(failed.value) == (
+            "Your branch and save history are on 'origin', but its version labels could not "
+            "be pushed. Check your connection or credentials and push again to finish."
+        )
+        assert f"refs/heads/{WORKING}" in self._remote_refs(repo, bare)
+
+    def test_a_push_git_ends_for_a_reason_haute_does_not_know_names_its_incident(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The analyst was told to check the connection or the credentials whatever git said,
+        with nothing to find git's own words by: Azure Repos' refusal read as a sign-in fault."""
+        from haute._git import GitRemoteUnavailableError
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        real_run = git_core._run_process_group
+
+        def odd_push(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            if cmd[:2] == ["git", "push"]:
+                return subprocess.CompletedProcess(cmd, 128, b"", b"fatal: SECRET-STDERR\n")
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(git_core, "_run_process_group", odd_push)
+
+        with pytest.raises(GitRemoteUnavailableError) as failed:
+            push_working_pair("origin", repo, cwd=repo)
+
+        said = str(failed.value)
+        assert said.startswith(
+            "Could not push to 'origin'. Check your connection or credentials and try again. "
+            "Git's own message is recorded under incident "
+        )
+        assert "SECRET-STDERR" not in said
+        assert self._remote_refs(repo, bare) == ["refs/heads/main"]
+
     def test_bootstrap_race_with_same_default_tip_publishes_pair(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1514,6 +1896,163 @@ class TestRemotesAndPush:
             push_working_pair("origin", repo, cwd=repo)
         assert exc.value.rejection.is_rewrite is True
         assert "rewritten" in exc.value.rejection.message
+
+
+class TestStartFromDefault:
+    """A new working branch started where the remote's default branch is now: the way to the
+    next change once a pull request has merged, whatever way it was completed."""
+
+    @pytest.fixture
+    def shared(self, repo: Path, tmp_path: Path) -> tuple[Path, Path]:
+        """The project published to a remote, and a colleague's clone of it."""
+        from haute._git_state import write_working_branch
+
+        resolve_ledger(WORKING, cwd=repo)
+        write_working_branch(repo, WORKING)
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        push_working_pair("origin", repo, cwd=repo)
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        return bare, other
+
+    @staticmethod
+    def _merged_on_the_remote(other: Path, name: str = "merged.txt") -> str:
+        """A change that reached the remote's default branch another way: a squashed pull
+        request, or a colleague's merge."""
+        _git(other, "checkout", "main")
+        (other / name).write_text("merged on the remote\n")
+        _git(other, "add", name)
+        _git(other, "commit", "-m", f"merged {name}")
+        _git(other, "push", "origin", "main")
+        return _git(other, "rev-parse", "main")
+
+    def test_the_new_branch_holds_what_the_remotes_default_holds_now(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+        from haute._git_state import read_working_branch
+
+        _, other = shared
+        merged = self._merged_on_the_remote(other)
+        local_main = _git(repo, "rev-parse", "main")
+        old_pair = (_git(repo, "rev-parse", WORKING), _git(repo, "rev-parse", LEDGER))
+
+        res = start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert (res.working_branch, res.switched, res.moved) == ("next-change", True, False)
+        assert read_working_branch(repo) == "next-change"
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "next-change-save"
+        assert _git(repo, "rev-parse", "next-change") == merged
+        assert _git(repo, "rev-parse", "next-change-save") == merged
+        assert (repo / "merged.txt").read_text() == "merged on the remote\n"
+        # The default branch here is never written, and the branch left is as it was.
+        assert _git(repo, "rev-parse", "main") == local_main
+        assert (_git(repo, "rev-parse", WORKING), _git(repo, "rev-parse", LEDGER)) == old_pair
+        assert check_invariants("next-change", cwd=repo) == []
+
+    def test_the_new_branch_is_published_as_any_other(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+
+        bare, other = shared
+        self._merged_on_the_remote(other)
+        start_from_default("next-change", "origin", repo, cwd=repo)
+        _write_and_save(repo, "next-change", {"rating.py": "# the next change\n"})
+        commit_milestone("the next change", repo, cwd=repo)
+
+        res = push_working_pair("origin", repo, cwd=repo)
+
+        assert res.pushed_refs == ["next-change", "next-change-save"]
+        # It is a fast-forward of the remote's default: a pull request from it merges cleanly.
+        _git(other, "fetch", "origin")
+        assert _git(other, "merge-base", "origin/main", "origin/next-change") == _git(
+            other, "rev-parse", "origin/main"
+        )
+
+    def test_a_version_label_on_the_default_line_comes_with_it(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+
+        _, other = shared
+        merged = self._merged_on_the_remote(other)
+        _git(other, "tag", "-a", "version/2.0", "-m", "2.0", merged)
+        _git(other, "push", "origin", "version/2.0")
+
+        start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", "version/2.0^{commit}") == merged
+
+    def test_a_remote_that_cannot_be_reached_starts_nothing(
+        self, repo: Path, shared: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        from haute._git import GitRemoteUnavailableError, start_from_default
+
+        _git(repo, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+
+        with pytest.raises(GitRemoteUnavailableError) as failed:
+            start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert str(failed.value) == (
+            "Could not refresh 'origin'. Check your connection or credentials and try again."
+        )
+        assert "next-change" not in _git(repo, "branch", "--list")
+
+    def test_a_file_changed_outside_haute_is_named_before_anything_is_replaced(
+        self, repo: Path, shared: tuple[Path, Path]
+    ) -> None:
+        from haute._git import start_from_default
+
+        _, other = shared
+        self._merged_on_the_remote(other)
+        (repo / "rating.py").write_text("# typed in another program\n")
+
+        with pytest.raises(GitDomainError, match="rating.py"):
+            start_from_default("next-change", "origin", repo, cwd=repo)
+
+        assert "next-change" not in _git(repo, "branch", "--list")
+        assert (repo / "rating.py").read_text() == "# typed in another program\n"
+
+    @pytest.mark.parametrize("taken", [WORKING, "main", f"{WORKING}-save"])
+    def test_a_name_that_cannot_be_a_new_working_branch_is_refused(
+        self, repo: Path, shared: tuple[Path, Path], taken: str
+    ) -> None:
+        from haute._git import start_from_default
+
+        with pytest.raises(GitError):
+            start_from_default(taken, "origin", repo, cwd=repo)
+
+    def test_an_unknown_remote_is_refused(self, repo: Path, shared: tuple[Path, Path]) -> None:
+        from haute._git import start_from_default
+
+        with pytest.raises(GitDomainError, match="No remote named 'elsewhere'"):
+            start_from_default("next-change", "elsewhere", repo, cwd=repo)
+
+    def test_another_projects_default_branch_is_refused(
+        self, repo: Path, shared: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        from haute._git import start_from_default
+
+        stranger = tmp_path / "stranger"
+        stranger.mkdir()
+        _git(stranger, "init", "-b", "main")
+        _git(stranger, "config", "user.name", "Stranger")
+        _git(stranger, "config", "user.email", "stranger@example.com")
+        (stranger / "theirs.txt").write_text("another project\n")
+        _git(stranger, "add", "theirs.txt")
+        _git(stranger, "commit", "-m", "another project")
+        _git(repo, "remote", "add", "elsewhere", str(stranger))
+
+        with pytest.raises(GitDomainError, match="unrelated"):
+            start_from_default("next-change", "elsewhere", repo, cwd=repo)
+
+        assert "next-change" not in _git(repo, "branch", "--list")
+        assert not (repo / "theirs.txt").exists()
 
 
 class TestFastForwardPair:

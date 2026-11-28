@@ -122,7 +122,16 @@ still renders the row list without it, silently.
 archived branches, then the 20 most recent deletions, collapsed until opened. Each deletion
 carries a Restore, and a name box when its name is taken again, including by a ledger the
 list doesn't show (the server's refusal opens it). The manager has a "Create" / "Create & Move" split
-control. Peeking (viewing
+control, whose menu also lists, for each remote the project has, "Create from <remote>'s
+default branch": the new branch starts where that remote's default branch is now and is
+opened, the way to the next change once a pull request has merged. It is opened as a
+switch is, in the app, with no page reload: it asks about unsaved edits first, the
+checkout lands on the canvas through live sync, and since reading the remote takes time,
+what is dropped is what was chosen over when it was asked, so an edit made while it ran
+keeps every unsaved edit. The request carries no browser deadline, as Catch up's does not:
+the server bounds the fetch. Files changed outside Haute are asked about as for every
+operation that replaces the files. The remotes are read when the menu opens; a read that
+fails lists none. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again", and a preference that cannot be saved is reported in an

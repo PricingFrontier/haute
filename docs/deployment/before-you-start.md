@@ -177,43 +177,28 @@ When you work with a team, changes go through a review process before they go li
 
 ### 1. Create a branch
 
-A **branch** is like making a copy of the whole project to try something out. Your changes only exist on your branch - the main version is untouched.
+A **branch** is your own line of work on the project. Your changes only exist on your branch - the main version is untouched until your change is reviewed and merged.
 
-```powershell
-git checkout -b my-new-rates
-```
+In Haute, click the branch name in the toolbar to open the Git panel. Type a short name for your change, such as `my-new-rates`, open the arrow beside **Create**, and choose **Create from origin's default branch**. Haute reads the shared repository, starts your branch from what the main version holds now, and opens it. Any changes you make from here are on this branch.
 
-This creates a new branch called `my-new-rates`. Don't worry about what `checkout -b` means - it's just the Git command for "create a new branch and switch to it." You just need to replace `my-new-rates` with a short name describing your change. Any changes you make now are on this branch.
+Start every change this way, so it begins from everything your team has merged ([Starting your next change](../building-models/versions.md#starting-your-next-change)).
 
 ### 2. Save your changes (commit)
 
-A **commit** is saving a checkpoint of your changes with a short description. Think of it like saving a document with a note about what you changed.
-
-```powershell
-git add .
-git commit -m "Updated motor frequency model"
-```
-
-`git add .` means "include all my changed files" and `git commit -m "..."` saves them with a message. You don't need to memorise the syntax - just copy the pattern above and change the message in quotes.
+Every **Save** (Ctrl+S) is recorded on your branch, so nothing you save is lost. When the change is ready for someone else to look at, press **Commit** in the toolbar and describe it in a few words, such as "Updated motor frequency model". Haute gathers your saves into one **milestone**: the checkpoint your reviewer sees.
 
 ### 3. Upload your changes (push)
 
-**Pushing** uploads your branch to the shared repository (on GitHub/GitLab/Azure DevOps) so others can see it. The shared repository already exists on the hosting service (see [Getting your project ready](#getting-your-project-ready-for-deployment)) - `git push` just sends your latest changes to it.
+**Pushing** uploads your branch to the shared repository (on GitHub/GitLab/Azure DevOps) so others can see it. The shared repository already exists on the hosting service (see [Getting your project ready](#getting-your-project-ready-for-deployment)).
 
-```powershell
-git push -u origin my-new-rates
-```
+In the Git panel, choose the remote, usually `origin`, and press **Push**. Nothing leaves your computer until you do ([Sharing your work for review](../building-models/versions.md#sharing-your-work-for-review)).
 
-The first push of a branch names where it goes: `-u origin my-new-rates` creates the branch in the shared repository and links yours to it. After that, `git push` is enough.
-
-!!! info "First time pushing? Git will ask you to log in"
-    The very first time you push, Git needs to verify who you are. A **browser window will open** asking you to sign in to your GitHub, GitLab, or Azure DevOps account. Sign in with your normal work credentials and you're done - Git remembers you after this, so you won't be asked again.
-
-    If no browser window opens and the terminal asks for a username/password, enter your account username and a **personal access token** (not your normal password). Ask your IT team if you're unsure - they can help you through this the first time.
+!!! info "First time pushing? Git needs to know who you are"
+    Haute pushes with the sign-in Git has on your computer, and never asks for a password itself. If Git has not signed in to your hosting service on this computer yet, **Push** tells you to check your connection or credentials: ask your IT team to sign Git in once, then press **Push** again.
 
 ### 4. Ask for a review (pull request)
 
-A **pull request** (PR) - called a **merge request** (MR) on GitLab - is asking your teammate to review your changes before they go into the main version. You create this on the website, not in the terminal.
+A **pull request** (PR) - called a **merge request** (MR) on GitLab - is asking your teammate to review your changes before they go into the main version. You create this on the hosting service's website.
 
 After you push, go to your project page in your browser:
 

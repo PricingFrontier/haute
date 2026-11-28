@@ -73,6 +73,7 @@ from haute.errors import (
     ConflictError,
     ForbiddenError,
     HauteError,
+    NotFoundError,
     RequestRefusedError,
     UnprocessableError,
 )
@@ -127,8 +128,6 @@ _ROLE_CLAIMS = frozenset({"roles", "http://schemas.microsoft.com/ws/2008/06/iden
 #: What the app's quote store needs in the image past the scoring runtime, whatever its
 #: environments; each declared environment's driver joins them (:func:`store_dependencies`).
 STORE_DEPENDENCIES = ("sqlalchemy", "alembic")
-#: The app's pages past its home, each the same page, which routes in the browser.
-APP_PAGES = ("/quotes/new", "/quotes/{reference}/{option}")
 #: What a browser says of a request's origin that a write is taken from: the page's own.
 _SAME_SITE = frozenset({"same-origin", "none"})
 
@@ -1072,10 +1071,20 @@ def create_app(
         )
     )
 
-    @app.get("/", include_in_schema=False)
-    @app.get(APP_PAGES[0], include_in_schema=False)
-    @app.get(APP_PAGES[1], include_in_schema=False)
-    async def page() -> Response:
+    app.mount("/assets", StaticFiles(directory=static / "assets", check_dir=False), name="assets")
+
+    @app.get("/api", include_in_schema=False)
+    @app.get("/api/{rest:path}", include_in_schema=False)
+    async def no_such_route(request: Request) -> Response:
+        """An address under the API's that no route above took: a 404 in JSON, never the
+        page, which the browser would fail to read as an answer."""
+        raise NotFoundError(f"No such route: {request.url.path}")
+
+    # Last, after every route and the files: the one page answers every other address, and
+    # routes in the browser (frontend/src/app/route.ts). No list of its addresses is kept
+    # here, so one the page moves to cannot be one the app does not serve.
+    @app.get("/{address:path}", include_in_schema=False)
+    async def page(address: str) -> Response:
         built = static / APP_PAGE
         if not built.is_file():
             raise RequestRefusedError(
@@ -1083,7 +1092,6 @@ def create_app(
             )
         return FileResponse(built)
 
-    app.mount("/assets", StaticFiles(directory=static / "assets", check_dir=False), name="assets")
     # Added last, so it is outermost: everything the app runs, its lifespan included,
     # runs in the release's project.
     app.add_middleware(ProjectContextMiddleware, context=release_project)
