@@ -221,12 +221,13 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   // offers none: the menu keeps what it always had.
   useEffect(() => {
     if (!createMenuOpen) return
-    let live = true
-    getGitRemotes()
-      .then((res) => { if (live) setRemoteNames(res.remotes.map((r) => r.name)) })
-      .catch(() => { if (live) setRemoteNames([]) })
-    return () => { live = false }
-  }, [createMenuOpen])
+    const asked = ask([under(life)])
+    void asked.answer(getGitRemotes(), {
+      ok: (res) => setRemoteNames(res.remotes.map((r) => r.name)),
+      failed: () => setRemoteNames([]),
+    })
+    return () => asked.release()
+  }, [createMenuOpen, life])
 
   // -- switch -----------------------------------------------------------------
   // In-app (feedback round 2): no page reload — the checkout lands on the
